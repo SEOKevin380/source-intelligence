@@ -437,38 +437,65 @@ def _try_multiple_urls(url):
     if wc_data:
         results["woocommerce_api"] = wc_data
 
-    # Try subpages for product info and site-wide policies
+    # Try WordPress REST API for policy/info pages (bypasses JS rendering)
     from urllib.parse import urlparse
     parsed = urlparse(url)
     site_root = f"{parsed.scheme}://{parsed.hostname}"
     product_base = url.split("?")[0].rstrip("/")
 
-    # Product-relative subpages (append to product URL)
-    product_subpages = ["/ingredients", "/supplement-facts"]
-
-    # Site-root subpages (append to domain root — policies, contact, about)
-    site_subpages = [
-        "/about", "/about-us", "/contact", "/contact-us",
-        "/shipping-policy", "/shipping", "/delivery",
-        "/refund-policy", "/return-policy", "/returns",
-        "/terms", "/terms-of-service", "/terms-and-conditions",
-        "/privacy-policy", "/faq", "/faqs",
-        "/warranty", "/guarantee",
+    wp_page_slugs = [
+        "about", "about-us", "contact", "contact-us",
+        "shipping", "shipping-info", "shipping-policy",
+        "refund-policy", "return-policy", "returns",
+        "terms", "terms-and-conditions", "terms-of-service",
+        "faq", "faqs", "privacy-policy", "warranty", "guarantee",
     ]
-
-    import io, contextlib
-    seen_urls = set()
-    for sub, base in [(s, product_base) for s in product_subpages] + [(s, site_root) for s in site_subpages]:
-        sub_url = base + sub
-        if sub_url in seen_urls:
-            continue
-        seen_urls.add(sub_url)
+    wp_api_found = 0
+    for slug in wp_page_slugs:
+        api_url = f"{site_root}/wp-json/wp/v2/pages?slug={slug}"
+        import io, contextlib
         stderr_capture = io.StringIO()
         with contextlib.redirect_stdout(stderr_capture):
-            content = fetch_url(sub_url, max_bytes=30000)
-        if content and len(content) > 500:
-            results[sub] = content
-            _emit(f"    Found subpage: {sub} ({len(content):,} bytes)")
+            resp = fetch_url(api_url, max_bytes=60000)
+        if resp and resp.strip().startswith("["):
+            try:
+                pages = json.loads(resp)
+                for page in pages:
+                    title = page.get("title", {}).get("rendered", slug)
+                    content_html = page.get("content", {}).get("rendered", "")
+                    content_text = strip_html(content_html)
+                    if content_text and len(content_text) > 50:
+                        key = f"wp_page_{slug}"
+                        results[key] = f"PAGE: {title}\n{content_text}"
+                        wp_api_found += 1
+            except (json.JSONDecodeError, TypeError):
+                pass
+    if wp_api_found:
+        _emit(f"    WordPress API returned {wp_api_found} page(s)")
+
+    # Fallback: try direct HTML fetch for sites without WP API
+    if wp_api_found == 0:
+        product_subpages = ["/ingredients", "/supplement-facts"]
+        site_subpages = [
+            "/about", "/about-us", "/contact", "/contact-us",
+            "/shipping-policy", "/shipping", "/delivery",
+            "/refund-policy", "/return-policy", "/returns",
+            "/terms", "/terms-of-service", "/terms-and-conditions",
+            "/privacy-policy", "/faq", "/faqs",
+            "/warranty", "/guarantee",
+        ]
+        seen_urls = set()
+        for sub, base in [(s, product_base) for s in product_subpages] + [(s, site_root) for s in site_subpages]:
+            sub_url = base + sub
+            if sub_url in seen_urls:
+                continue
+            seen_urls.add(sub_url)
+            stderr_capture = io.StringIO()
+            with contextlib.redirect_stdout(stderr_capture):
+                content = fetch_url(sub_url, max_bytes=30000)
+            if content and len(content) > 500:
+                results[sub] = content
+                _emit(f"    Found subpage: {sub} ({len(content):,} bytes)")
 
     return results
 
@@ -672,8 +699,9 @@ def phase1_extract_product(url, vsl_url=None, product_name=None):
             supplement_facts_raw += sf
 
     # Build combined text for extraction
-    # Priority order: structured data > policy subpages > main page HTML
+    # Priority order: structured API data > WP API pages > main page HTML > raw subpages
     has_structured = "woocommerce_api" in all_pages or "json_ld" in all_pages
+    has_wp_pages = any(k.startswith("wp_page_") for k in all_pages)
     page_texts = []
 
     # 1. Structured data sources first (most reliable)
@@ -681,17 +709,23 @@ def phase1_extract_product(url, vsl_url=None, product_name=None):
         if key in all_pages:
             page_texts.append(f"=== {key.upper()} DATA (HIGH PRIORITY — USE THIS) ===\n{all_pages[key][:10000]}")
 
-    # 2. Main page HTML — cap aggressively if we have structured data
+    # 2. WordPress API pages (real rendered content, not JS boilerplate)
+    for key, content in all_pages.items():
+        if key.startswith("wp_page_"):
+            page_texts.append(f"=== SITE PAGE: {key.replace('wp_page_', '').upper()} ===\n{content[:6000]}")
+
+    # 3. Main page HTML — cap aggressively if we have structured data
     if "main" in all_pages:
         text = strip_html(all_pages["main"])
-        main_cap = 5000 if has_structured else 15000
+        main_cap = 5000 if (has_structured or has_wp_pages) else 15000
         page_texts.append(f"MAIN PRODUCT PAGE:\n{text[:main_cap]}")
 
-    # 3. Subpages (policies, about, contact, FAQ — critical for complete extraction)
-    for key, content in all_pages.items():
-        if key not in ("main", "woocommerce_api", "json_ld"):
-            text = strip_html(content)
-            page_texts.append(f"SUBPAGE ({key}):\n{text[:4000]}")
+    # 4. Raw HTML subpages (only if no WP API pages — these are often JS-rendered garbage)
+    if not has_wp_pages:
+        for key, content in all_pages.items():
+            if key not in ("main", "woocommerce_api", "json_ld") and not key.startswith("wp_page_"):
+                text = strip_html(content)
+                page_texts.append(f"SUBPAGE ({key}):\n{text[:4000]}")
 
     combined_text = "\n\n".join(page_texts)
     if supplement_facts_raw:
@@ -810,7 +844,7 @@ Return ONLY valid JSON with this exact structure:
 }}
 
 SOURCE MATERIAL:
-{combined_text[:50000] if combined_text else f'Product name only: {product_name}. You may use your training knowledge about this product but mark ALL facts as needing verification.'}"""
+{combined_text[:80000] if combined_text else f'Product name only: {product_name}. You may use your training knowledge about this product but mark ALL facts as needing verification.'}"""
 
     _emit("  Extracting structured data via Claude Haiku...")
     response = call_claude(prompt, max_tokens=6000)
