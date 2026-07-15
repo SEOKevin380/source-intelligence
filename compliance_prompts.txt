@@ -4,7 +4,9 @@ MBK COMPLIANCE PROMPT TEMPLATES
 These are optimized prompts for the ChatGPT compliance review workflow.
 Goal: Reduce the back-and-forth from 4+ rounds to 1-2 rounds.
 
-Copy the relevant prompt, paste the draft article after it, and submit.
+SOP: Paste the Source Intelligence submission + the draft article into
+ChatGPT together so compliance can cross-reference the draft against
+the exact verified data that produced it.
 ================================================================================
 
 
@@ -12,62 +14,98 @@ Copy the relevant prompt, paste the draft article after it, and submit.
 PROMPT 1: INITIAL COMPLIANCE REVIEW (ChatGPT)
 ================================================================================
 Use this FIRST, right after Claude delivers the draft.
-Paste the draft article after this prompt.
+
+Paste THREE things after this prompt:
+  1. The Source Intelligence submission (the v3.10 intake data you
+     pasted into the Claude production project)
+  2. The draft article Claude produced
+  3. The official product URL
+
+This gives ChatGPT the verified source data, the draft output, AND
+the live brand page to cross-reference against each other.
 ================================================================================
 
 You are a compliance editor for paid advertorial health/supplement content
 published on Barchart, Accesswire, Globe Newswire, and similar platforms.
 
-Review this draft against ALL of the following categories simultaneously.
-Return ONE comprehensive report with every issue found, organized by
-category. Do not split findings across multiple responses.
+You have been given THREE documents:
+  1. SOURCE INTELLIGENCE SUBMISSION — the pre-verified research data
+     that was used to produce this draft, organized by verification
+     categories (C1 through C19). This is your verified-facts baseline.
+  2. DRAFT ARTICLE — the production output to review.
+  3. BRAND SOURCE URL — the official product page for live verification.
 
-BRAND SOURCE: [PASTE PRODUCT URL HERE]
-PLATFORM: [Barchart Advertorial / Accesswire / Globe Newswire]
-AFFILIATE LINK DOMAIN: [PASTE AFFILIATE URL HERE]
+Review the draft against ALL of the following categories simultaneously.
+Cross-reference EVERY factual claim in the draft against the Source
+Intelligence data AND the live product page. Return ONE comprehensive
+report with every issue found. Do not split across multiple responses.
 
-=== CATEGORY 1: FACTUAL VERIFICATION ===
-Check every factual claim against the official product page:
-- Do stated ingredients match the actual label/supplement facts?
-- Do stated prices match the live checkout?
-- Do guarantee terms match the published refund policy?
-- Do contact details match what the site publishes?
-- Are serving size/directions confirmed or speculative?
-- Flag any claim that cannot be traced to the official page or a
-  named, dated, independently verifiable third-party source.
+=== CATEGORY 1: SOURCE INTELLIGENCE CROSS-CHECK ===
+Compare the draft against the Source Intelligence submission line by line:
+- Do the draft's ingredients EXACTLY match C1 (Supplement Facts)?
+  Check every ingredient name, amount, form, and daily value.
+- Do the draft's prices EXACTLY match C2 (Pricing)?
+  Check every package tier, per-unit price, and shipping cost.
+- Do the draft's guarantee terms match C3 verbatim?
+- Does the draft's contact info match C4?
+- Does the draft use C7 research data accurately? Are study claims
+  bounded to what the PubMed citations actually show?
+- Does the draft respect categories marked [NOT CLEARED]? If C19 is
+  [NOT CLEARED], the draft should NOT state specific serving sizes
+  as confirmed facts.
+- Does the draft respect categories marked [PARTIAL]? If C5 is
+  [PARTIAL], entity details should be flagged as incomplete.
+- Did the draft FABRICATE any facts not present in the source data
+  or on the official product page? Flag immediately.
+- Did the draft accurately represent the C15 product category and
+  any label-vs-marketing discrepancy noted in the source data?
+
+=== CATEGORY 2: FACTUAL VERIFICATION (LIVE PAGE) ===
+Check the draft against the official product page:
+- Do stated claims match what the site currently says?
+- Are guarantee terms, shipping terms, and contact info current?
 - If the article says "not confirmed" about something in one section
   but states it as fact in another section, flag the inconsistency.
+- Flag any claim that cannot be traced to the source data, the
+  official page, or a named/dated third-party source.
 
-=== CATEGORY 2: YMYL / REGULATORY ===
+=== CATEGORY 3: YMYL / REGULATORY ===
 - Are all health claims properly hedged? ("may support," "research
   suggests" — never definitive treatment/cure language)
 - Is the FDA disclaimer present and accurate?
 - Are ingredient-level research claims properly bounded? (ingredient
-  studies ≠ finished-product evidence)
-- Are drug interaction warnings either properly sourced or replaced
-  with a generic "consult your physician" statement?
+  studies from C7 do NOT equal finished-product evidence)
+- Are drug interaction warnings from C6 either properly sourced or
+  replaced with a generic "consult your physician" statement?
 - Is there a California Proposition 65 notice WITHOUT a product-specific
   warning found? If so, flag for removal — absence of a warning is not
   a basis to invent one.
 - Are any disease-treatment claims present? Flag immediately.
 
-=== CATEGORY 3: ADVERTORIAL / DISCLOSURE COMPLIANCE ===
-- Is the affiliate disclosure in PASSIVE VOICE? ("A commission may be
-  earned" not "We earn a commission")
+=== CATEGORY 4: ADVERTORIAL / DISCLOSURE COMPLIANCE ===
+- Is the affiliate disclosure in PASSIVE VOICE? Correct: "The publisher
+  may earn a commission if a purchase is made through links in this
+  advertorial." Wrong: "We earn a commission" / "A commission is earned"
 - Is it clearly labeled as a paid advertorial?
 - Are affiliate link CTAs using neutral language? They must NEVER say
   "Official Order Page" or "Verified Order Page" if the href is an
-  affiliate intermediary domain, not the product's own domain.
-- Is BuyGoods identified as "retailer" (per their own disclosure),
+  affiliate intermediary domain. Check the AFFILIATE LINK field in the
+  source data — if it's not the product's own domain, all CTAs must
+  use neutral language like "View current package options" or "Check
+  current pricing."
+- Is BuyGoods identified as "retailer" (per their own site disclosure),
   NOT "checkout processor"?
 - Is the disclosure positioned correctly relative to the headline?
+- Does every affiliate disclosure sentence avoid first-person ("we,"
+  "our," "us")? The publishing platform is NOT the affiliate.
 
-=== CATEGORY 4: INTERNAL LANGUAGE LEAK ===
-Check for ANY of these terms that should NEVER appear in a published
-article — they are internal production system terminology:
+=== CATEGORY 5: INTERNAL LANGUAGE LEAK ===
+The Source Intelligence submission contains internal terminology that
+helps the production system but must NEVER appear in the published
+article. Check for ANY of these:
 - "pre-verified" or "pre-verified label data"
 - "source-intelligence" or "Source Intelligence Tool"
-- "label OCR" or "auto-detected"
+- "label OCR" or "auto-detected" or "label image OCR"
 - "Category-4" or "client-confirmed data"
 - "CVD" followed by any number (CVD-1, CVD-5, etc.)
 - "C1," "C2," "C15" or any verification category codes
@@ -77,41 +115,47 @@ article — they are internal production system terminology:
 - "gate check" or "pre-output gate"
 - "R7," "R8," "R14," "R23" or any R-rule codes
 - "B1," "B2," "B3," "B4" (Barchart overlay codes)
+- "intake" or "intake header" (internal submission format)
+- "[CLEARED]" or "[NOT CLEARED]" (verification status codes)
 Flag every instance with the exact text and location.
 
-=== CATEGORY 5: SOURCING INTEGRITY ===
-- Does every factual claim have a traceable source?
+=== CATEGORY 6: SOURCING INTEGRITY ===
+- Does every factual claim have a traceable source (source data,
+  official page, or named third-party publication)?
 - Are third-party reports properly attributed (named source, date,
   what they reported vs. what we concluded)?
 - Are competitor/similar product comparisons sourced or speculative?
 - Does the article distinguish between brand-stated claims and
   independently verified facts?
 - Is "fully disclosed" used only when every panel element is verified?
+  (Check: is C19 serving size cleared in the source data? If not,
+  "fully disclosed" is inaccurate.)
 - Are there any generalizations presented as fact? ("fraudulent
   operations typically don't..." — flag these)
 
-=== CATEGORY 6: SEO & CONVERSION QUALITY ===
+=== CATEGORY 7: SEO & CONVERSION QUALITY ===
 - Does the title accurately reflect what the evidence supports?
 - Are high-intent keywords present in H2 headers?
-- Is the article scannable? (bullet lists where appropriate, not
-  walls of text)
+- Is the article scannable? (bullet lists where appropriate)
 - Does it answer the main search intents? (scam/legit, ingredients,
   price, side effects, reviews/complaints)
-- Are internal cross-links present to related coverage?
 - Does it read like a human wrote it? (varied sentence length,
-  contractions, conversational tone — not a legal document)
+  contractions, conversational — not a legal document)
+- Is there a structured contact block at the end using C4 data?
 
 === OUTPUT FORMAT ===
 Organize your response as:
 
 VERDICT: [APPROVED / NOT APPROVED — X mandatory edits remain]
 
+SOURCE DATA ACCURACY: [X/X facts verified against source intelligence]
+
 MANDATORY EDITS (must fix before submission):
-1. [Issue] — [Exact text to change] → [Suggested replacement]
+1. [Category] — [Issue] — [Exact text] → [Suggested replacement]
 2. ...
 
 RECOMMENDED EDITS (improve quality, not blockers):
-1. [Issue] — [Suggestion]
+1. [Category] — [Issue] — [Suggestion]
 2. ...
 
 APPROVED ELEMENTS (what's working well):
@@ -119,7 +163,17 @@ APPROVED ELEMENTS (what's working well):
 
 Do not split this across multiple responses. One comprehensive report.
 
---- DRAFT BEGINS BELOW ---
+--- SOURCE INTELLIGENCE SUBMISSION BELOW ---
+
+[PASTE YOUR SOURCE INTELLIGENCE v3.10 SUBMISSION HERE]
+
+--- DRAFT ARTICLE BELOW ---
+
+[PASTE THE CLAUDE DRAFT HERE]
+
+--- OFFICIAL PRODUCT URL ---
+
+[PASTE THE PRODUCT URL HERE]
 
 
 ================================================================================
@@ -142,10 +196,15 @@ While applying edits, also do a full pass for:
    journalist wrote it, not a legal document or an AI. Use contractions,
    vary sentence length, speak directly to the reader.
 2. Scan for any remaining internal production terminology that should
-   not be in reader-facing content.
+   not be in reader-facing content (pre-verified, CVD, Category-4,
+   label OCR, Phase 0, MBK, Path A/B/C, R-codes, gate check, C1/C2
+   codes, [CLEARED]/[NOT CLEARED]).
 3. Verify all CTA anchor text uses neutral affiliate language (never
    "official order page" for affiliate links).
-4. Confirm affiliate disclosure is passive voice throughout.
+4. Confirm affiliate disclosure is passive voice throughout and never
+   uses first-person ("we," "our").
+5. Confirm BuyGoods is called "retailer" not "checkout processor."
+6. Confirm contact footer is present at end using C4 data.
 
 After applying, provide:
 - List of accepted edits
@@ -163,25 +222,33 @@ PROMPT 3: FINAL SIGN-OFF (ChatGPT)
 ================================================================================
 Use this for the final compliance pass before submission.
 Should only need this once if Prompt 1 was thorough.
-Paste the revised draft after this prompt.
+
+Paste TWO things after this prompt:
+  1. The Source Intelligence submission (same one from Prompt 1)
+  2. The revised draft article
 ================================================================================
 
 This is the FINAL compliance review before platform submission. The draft
 has already been through one compliance round and edits have been applied.
 
-Check ONLY for:
+You have the Source Intelligence submission and the revised draft. Check
+ONLY for:
 
 1. Were all MANDATORY edits from the previous review actually applied?
 2. Did the edit process introduce any NEW compliance issues?
-3. Remaining instances of internal production language (pre-verified,
-   CVD, Category-4, label OCR, Phase 0, MBK, Path A/B/C, R-codes)?
-4. Affiliate CTA wording — any remaining "official order page" or
+3. CROSS-CHECK: Do all facts in the revised draft still match the Source
+   Intelligence data? (ingredients, prices, guarantee terms, contact info)
+4. Remaining instances of internal production language? (pre-verified,
+   CVD, Category-4, label OCR, Phase 0, MBK, Path A/B/C, R-codes,
+   [CLEARED], [NOT CLEARED], gate check, intake)
+5. Affiliate CTA wording — any remaining "official order page" or
    "verified order page" on affiliate links?
-5. Passive voice on ALL affiliate disclosures?
-6. Factual consistency — does the article contradict itself anywhere?
+6. Passive voice on ALL affiliate disclosures? No first-person?
+7. Factual consistency — does the article contradict itself anywhere?
    (saying something is "not confirmed" in one spot but stating it
    as fact elsewhere)
-7. Any unsupported generalizations remaining?
+8. Any unsupported generalizations remaining?
+9. Contact footer present and matching C4?
 
 OUTPUT FORMAT:
 
@@ -191,13 +258,21 @@ If NOT APPROVED, list ONLY the remaining items with exact text and
 suggested fix. Do not re-review the entire article — just the gaps.
 
 If APPROVED, confirm:
+- All facts match source intelligence data
 - Title is defensible
-- Disclosure is compliant
+- Disclosure is compliant (passive voice, no first-person)
 - No internal language present
 - Factual claims are sourced
+- Contact footer present
 - Ready for [platform name] submission
 
+--- SOURCE INTELLIGENCE SUBMISSION BELOW ---
+
+[PASTE YOUR SOURCE INTELLIGENCE v3.10 SUBMISSION HERE]
+
 --- REVISED DRAFT BELOW ---
+
+[PASTE THE REVISED DRAFT HERE]
 
 
 ================================================================================
@@ -254,27 +329,41 @@ health claims or implying medical endorsement.
 
 
 ================================================================================
-NOTES ON WORKFLOW OPTIMIZATION
+WORKFLOW SUMMARY
 ================================================================================
 
-OLD WORKFLOW (4-6 rounds):
-  Claude draft → ChatGPT review → Claude edits → ChatGPT review →
-  Claude edits → ChatGPT review → Claude edits → ChatGPT approved
+SOP: Source Intelligence → Claude Draft → ChatGPT Compliance → Done
 
-NEW WORKFLOW (2-3 rounds):
-  Claude draft → Prompt 1 (comprehensive review) → Prompt 2 (apply
-  all edits + grammar + SEO in one pass) → Prompt 3 (final sign-off)
-  → Prompt 4 (SEO optimization, optional) → Prompt 5 (image)
+STEP 1: Run product through Source Intelligence Tool
+        → Generates v3.10 submission with verified data
 
-WHY THIS IS FASTER:
-  - Prompt 1 catches EVERYTHING in one pass (factual, regulatory,
-    disclosure, internal language, sourcing, SEO) instead of finding
-    new issues each round
-  - Prompt 2 tells Claude to apply ALL edits at once + do grammar +
-    scan for internal language — three passes combined into one
-  - Prompt 3 is a focused delta check, not a full re-review
-  - Most issues from the Memovance cycle are now also in the project
-    instructions, so Claude catches them in the first draft
+STEP 2: Paste submission into Claude production project (Barchart/ACW/Globe)
+        → Claude produces the draft article autonomously
+
+STEP 3: Paste SOURCE INTELLIGENCE SUBMISSION + DRAFT into ChatGPT
+        using Prompt 1
+        → ChatGPT cross-references draft against source data AND live page
+        → Returns one comprehensive compliance report
+
+STEP 4: Paste compliance report into Claude using Prompt 2
+        → Claude applies all edits + grammar + cleanup in one pass
+        → Delivers revised draft
+
+STEP 5: Paste SOURCE INTELLIGENCE SUBMISSION + REVISED DRAFT into ChatGPT
+        using Prompt 3
+        → Final sign-off (delta check only)
+        → Should be APPROVED if Prompt 1 was thorough
+
+STEP 6 (optional): Prompt 4 for SEO optimization, Prompt 5 for image
+
+WHY THE SOURCE INTELLIGENCE SUBMISSION MATTERS IN COMPLIANCE:
+  - ChatGPT can verify the draft used C1 ingredients correctly
+  - ChatGPT can check C2 pricing wasn't altered or fabricated
+  - ChatGPT can confirm [NOT CLEARED] items aren't stated as facts
+  - ChatGPT can catch internal language that leaked from the submission
+  - ChatGPT can verify C4 contact info made it into the footer
+  - ChatGPT has the same verified baseline the production system used,
+    so it catches drift, fabrication, and inconsistency in one pass
 
 WHAT THE PROJECT INSTRUCTIONS ALREADY HANDLE:
   These issues should no longer appear in drafts because they're now
@@ -288,6 +377,7 @@ WHAT THE PROJECT INSTRUCTIONS ALREADY HANDLE:
   - "Fully disclosed" usage
   - C15 mismatch = editorial opportunity, not blocker
   - Never stop / never ask / deliver the draft
+  - Contact footer from C4 data
 
 ================================================================================
 END OF COMPLIANCE PROMPT TEMPLATES
