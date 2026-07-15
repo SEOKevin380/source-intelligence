@@ -373,146 +373,252 @@ if "result_data" in st.session_state:
 
     # --- TAB: Export Prompt ---
     with tabs[7]:
-        st.markdown("### Export to Claude Prompt")
-        st.markdown("Fill in the fields below, then copy the generated prompt into Claude for article generation.")
+        st.markdown("### Export to Claude Projects (v3.8 Intake)")
+        st.markdown("Fill in the fields below. Copy the generated prompt — paste it directly into Claude Projects. Source intelligence data is embedded inline. No Google Drive needed.")
 
-        # User inputs for prompt fields
-        col1, col2 = st.columns(2)
-        with col1:
-            affiliate_link = st.text_input("Affiliate Link", placeholder="https://hop.clickbank.net/?affiliate=XXX&vendor=nervolyn")
-            publishing_platform = st.selectbox("Publishing Platform", [
-                "Barchart Advertorial", "AccessWire", "WordPress Direct",
-                "PVMedCenter", "TutelaMedical", "TotalHealthRD", "HathawayMD",
-                "HollyHerman", "UTCTS", "MICC", "TopShelfMushrooms", "Vitamins-for-Men",
-            ])
-        with col2:
-            previous_releases = st.text_input("Previous Release(s)", placeholder="URL of existing article on this product")
-            competitor_release = st.text_input("Competitor Release", placeholder="URL of competitor's article to beat")
+        st.divider()
 
-        # Build the ingredient summary
+        # Collect structured data for building the prompt
         sf = product.get("supplement_facts", {})
         ingredients = sf.get("ingredients", [])
-        ingredient_lines = []
-        for ing in ingredients:
-            research = data.get("ingredient_research", {}).get(ing.get("name", ""), {})
-            study_count = len(research.get("studies", []))
-            grade = research.get("evidence_grade", "")
-            dose_info = ""
-            if ing.get("amount") and research.get("clinical_dose_range"):
-                dose_info = f" (Product: {ing['amount']}, Clinical: {research['clinical_dose_range']})"
-            elif ing.get("amount"):
-                dose_info = f" ({ing['amount']})"
-            ingredient_lines.append(
-                f"- {ing.get('name', '')} {dose_info} — {study_count} PubMed studies, Evidence: {grade}"
-            )
-        ingredient_block = "\n".join(ingredient_lines) if ingredient_lines else "No ingredients extracted"
-
-        # Build safety summary
-        safety = data.get("safety", {})
-        safety_lines = []
-        for ing_name, sdata in safety.items():
-            interactions = sdata.get("drug_interactions", [])
-            if interactions:
-                for di in interactions:
-                    safety_lines.append(f"- {ing_name}: {di.get('severity', '')} interaction with {di.get('drug_class', '')} — {di.get('interaction', '')}")
-        safety_block = "\n".join(safety_lines) if safety_lines else "No significant drug interactions found"
-
-        # Build compliance summary
         compliance = data.get("compliance", {})
-        flagged = compliance.get("claim_audit", [])
-        compliance_lines = []
-        if flagged:
-            for item in flagged:
-                compliance_lines.append(f"- FLAGGED: \"{item.get('claim', '')}\" → Safe alternative: \"{item.get('safe_alternative', '')}\"")
-        compliance_block = "\n".join(compliance_lines) if compliance_lines else "No flagged claims"
-        disclaimers = "\n".join(f"- {d}" for d in compliance.get("required_disclaimers", []))
-
-        # Build pricing summary
+        safety = data.get("safety", {})
+        research = data.get("ingredient_research", {})
         pricing = product.get("pricing", [])
-        pricing_lines = []
-        for p in pricing:
-            pricing_lines.append(f"- {p.get('package', '')}: {p.get('price', '')} ({p.get('per_unit', '')}/unit) — Shipping: {p.get('shipping', 'N/A')}")
-        pricing_block = "\n".join(pricing_lines) if pricing_lines else "No pricing extracted"
-
-        # Build claims summary
         claims = product.get("claims", [])
-        claims_lines = []
-        for c in claims:
-            if isinstance(c, dict):
-                claims_lines.append(f"- \"{c.get('claim', '')}\" [UNVERIFIED]")
-        claims_block = "\n".join(claims_lines) if claims_lines else "No marketing claims captured"
-
-        # Refund policy
         rp = product.get("refund_policy", {})
-        refund_text = ""
-        if rp.get("duration_days"):
-            refund_text = f"{rp['duration_days']}-day money-back guarantee"
-            if rp.get("verbatim"):
-                refund_text += f"\nVerbatim: \"{rp['verbatim']}\""
 
-        # Build the full prompt
-        prompt_text = f"""PRODUCT NAME: {name}
+        # ---- Intake Fields ----
+        col1, col2 = st.columns(2)
+        with col1:
+            publishing_platform = st.selectbox("Publishing Platform", [
+                "Barchart Advertorial",
+                "Accesswire",
+                "Newswire.com",
+                "Globe Newswire",
+                "Domain Site",
+            ])
+            affiliate_link = st.text_input(
+                "Affiliate Link",
+                placeholder="https://hop.clickbank.net/?affiliate=XXX&vendor=product",
+                help="Tracking link, or type TRAFFIC-FIRST if no affiliate link"
+            )
+        with col2:
+            previous_releases = st.text_input(
+                "Previous Release(s)",
+                value="FIRST RELEASE",
+                help="URLs of previous articles about this product, or FIRST RELEASE"
+            )
+            release_type = st.selectbox("Release Type", [
+                "Single Product",
+                "Multi-Product Brand Guide",
+            ])
+
+        col3, col4 = st.columns(2)
+        with col3:
+            ymyl_status = "Yes" if compliance.get("risk_level") in ["High", "Very High", "Moderate"] else "No"
+            ymyl_category = st.selectbox(
+                "YMYL Category",
+                ["Yes", "No"],
+                index=0 if ymyl_status == "Yes" else 1,
+            )
+        with col4:
+            competitor_release = st.text_input(
+                "Competitor Release (optional)",
+                placeholder="URL of competitor article to beat"
+            )
+
+        # Optional fields
+        with st.expander("Optional Fields (leave blank to let the system generate)"):
+            opt1, opt2 = st.columns(2)
+            with opt1:
+                editor_title = st.text_input("Editor-Locked Title", placeholder="Leave blank for archetype selection")
+                release_summary = st.text_input("Release Summary (140 chars)", placeholder="Auto-generated if blank")
+            with opt2:
+                subtitle = st.text_input("Subtitle", placeholder="Auto-generated if blank")
+                release_tags = st.text_input("Release Tags (3-5, comma-separated)", placeholder="Auto-generated if blank")
+
+        # ---- Build the combined prompt ----
+        # Section 1: v3.8 Intake Fields
+        prompt = f"""PRODUCT NAME: {name}
 OFFICIAL WEBSITE URL: {product.get('official_url', '')}
-AFFILIATE LINK: {affiliate_link}
-Previous Release(s): {previous_releases}
-Competitor Release: {competitor_release}
 PUBLISHING PLATFORM: {publishing_platform}
 
-====== SOURCE INTELLIGENCE REPORT (VERIFIED) ======
+AFFILIATE LINK: {affiliate_link or 'TRAFFIC-FIRST'}
+RELEASE TYPE: {release_type}
+YMYL CATEGORY: {ymyl_category}
+PREVIOUS RELEASES: {previous_releases}
+GOOGLE DRIVE PRODUCT DATA: none — source intelligence data provided inline below"""
 
-PRODUCT TYPE: {product.get('product_type', 'supplement')}
-CATEGORY: {product.get('category', '')}
-BRAND: {product.get('brand_name', '')}
-RISK LEVEL: {compliance.get('risk_level', '')} (YMYL: {compliance.get('ymyl_category', '')})
+        if competitor_release:
+            prompt += f"\nCOMPETITOR RELEASE: {competitor_release}"
 
---- INGREDIENTS (PubMed-Verified) ---
-{ingredient_block}
+        if editor_title:
+            prompt += f"\nEDITOR-LOCKED TITLE: {editor_title}"
+        if subtitle:
+            prompt += f"\nSUBTITLE: {subtitle}"
+        if release_summary:
+            prompt += f"\nRELEASE SUMMARY (140 chars): {release_summary}"
+        if release_tags:
+            prompt += f"\nRELEASE TAGS: {release_tags}"
 
---- DRUG INTERACTIONS & SAFETY ---
-{safety_block}
+        # Section 2: Inline Source Intelligence Data
+        prompt += f"""
 
---- PRICING ---
-{pricing_block}
+════════════════════════════════════════════════════════
+SOURCE INTELLIGENCE DATA (Pre-Verified — Use for Phase 0)
+════════════════════════════════════════════════════════
 
---- REFUND POLICY ---
-{refund_text}
+Product Name: {name}
+Brand: {product.get('brand_name', '')}
+Product Type: {product.get('product_type', 'supplement')}
+Category: {product.get('category', '')}
+Official URL: {product.get('official_url', '')}
+Risk Level: {compliance.get('risk_level', 'Unknown')}
+AccessWire: {'PASS' if compliance.get('accesswire_blocklist_check', {}).get('passes') else 'FAIL'}
+Barchart: {'PASS' if compliance.get('barchart_compliance', {}).get('passes') else 'FAIL'}
 
---- COMPLIANCE NOTES ---
-{compliance_block}
-
-Required Disclaimers:
-{disclaimers}
-
---- MARKETING CLAIMS (VERBATIM — UNVERIFIED, DO NOT REPUBLISH AS FACT) ---
-{claims_block}
-
---- PUBLISHING RECOMMENDATIONS ---
+--- SUPPLEMENT FACTS ---
 """
-        # Add publishing recommendations
-        recs = data.get("publishing_recommendations", {})
-        for site, info in recs.items():
-            prompt_text += f"- {site}: Category IDs {info.get('category_ids', [])}\n"
+        if sf.get("proprietary_blend"):
+            prompt += f"PROPRIETARY BLEND — Total: {sf.get('proprietary_blend_total', 'Not disclosed')}\n"
 
-        # Add key PubMed citations
-        research = data.get("ingredient_research", {})
-        top_studies = []
+        for ing in ingredients:
+            line = f"- {ing.get('name', '')}"
+            if ing.get("amount"):
+                line += f" — {ing['amount']}"
+            if ing.get("daily_value"):
+                line += f" ({ing['daily_value']} DV)"
+            if ing.get("form"):
+                line += f" [Form: {ing['form']}]"
+            prompt += line + "\n"
+        if not ingredients:
+            prompt += "No ingredients extracted — invoke Thin Web Presence Protocol\n"
+
+        # Ingredient research with PubMed citations
+        prompt += "\n--- INGREDIENT RESEARCH (PubMed-Verified) ---\n"
         for ing_name, ing_data in research.items():
-            for s in ing_data.get("studies", [])[:3]:
-                if s.get("quality_tier") in ["gold", "silver"]:
-                    top_studies.append(f"- [{s.get('quality_tier', '').upper()}] {ing_name}: PMID:{s.get('pmid', '')} — {s.get('title', '')} ({s.get('journal', '')}, {s.get('year', '')})")
-        if top_studies:
-            prompt_text += f"\n--- KEY PUBMED CITATIONS (for article credibility) ---\n"
-            prompt_text += "\n".join(top_studies[:15])
+            studies = ing_data.get("studies", [])
+            grade = ing_data.get("evidence_grade", "N/A")
+            prompt += f"\n{ing_name} — Evidence: {grade} — {len(studies)} studies\n"
+            if ing_data.get("product_dose"):
+                prompt += f"  Product Dose: {ing_data['product_dose']}\n"
+            if ing_data.get("clinical_dose_range"):
+                prompt += f"  Clinical Dose Range: {ing_data['clinical_dose_range']}\n"
+            for s in studies:
+                tier = s.get("quality_tier", "standard").upper()
+                prompt += f"  [{tier}] PMID:{s.get('pmid', '')} — {s.get('title', '')} ({s.get('journal', '')}, {s.get('year', '')})\n"
+        if not research:
+            prompt += "No PubMed research available\n"
 
-        st.text_area("Generated Prompt", value=prompt_text, height=500, key="export_prompt")
+        # Safety & interactions
+        prompt += "\n--- DRUG INTERACTIONS & SAFETY ---\n"
+        has_safety = False
+        for ing_name, sdata in safety.items():
+            interactions = sdata.get("drug_interactions", [])
+            side_fx = sdata.get("side_effects", [])
+            contras = sdata.get("contraindications", [])
+            if interactions or side_fx or contras:
+                has_safety = True
+                prompt += f"\n{ing_name}:\n"
+                for di in interactions:
+                    prompt += f"  [{di.get('severity', 'Unknown')}] {di.get('drug_class', '')}: {di.get('interaction', '')}\n"
+                if side_fx:
+                    prompt += f"  Side Effects: {', '.join(side_fx)}\n"
+                if contras:
+                    prompt += f"  Contraindications: {', '.join(contras)}\n"
+        if not has_safety:
+            prompt += "No significant drug interactions identified\n"
+
+        # Pricing
+        prompt += "\n--- PRICING (Verified from live page) ---\n"
+        for p in pricing:
+            prompt += f"- {p.get('package', '')}: {p.get('price', '')} ({p.get('per_unit', '')}/unit) — Shipping: {p.get('shipping', 'N/A')}\n"
+        if not pricing:
+            prompt += "No pricing extracted — verify from live page\n"
+
+        # Refund policy
+        prompt += "\n--- REFUND POLICY ---\n"
+        if rp.get("duration_days"):
+            prompt += f"{rp['duration_days']}-day money-back guarantee\n"
+            if rp.get("conditions"):
+                prompt += f"Conditions: {rp['conditions']}\n"
+            if rp.get("verbatim"):
+                prompt += f"Verbatim: \"{rp['verbatim']}\"\n"
+        else:
+            prompt += "No refund policy extracted — verify from live page\n"
+
+        # Shipping
+        shipping = product.get("shipping", {})
+        if shipping:
+            prompt += "\n--- SHIPPING ---\n"
+            for k, v in shipping.items():
+                if v:
+                    prompt += f"{k.title()}: {v}\n"
+
+        # Company info
+        prompt += "\n--- COMPANY / CONTACT ---\n"
+        company = product.get("company", {})
+        if company:
+            for k, v in company.items():
+                if v:
+                    prompt += f"{k}: {v}\n"
+        else:
+            prompt += f"Name: {product.get('brand_name', name)}\n"
+            prompt += f"Website: {product.get('official_url', '')}\n"
+
+        # Marketing claims
+        prompt += "\n--- MARKETING CLAIMS (VERBATIM — UNVERIFIED, DO NOT REPUBLISH AS FACT) ---\n"
+        for c in claims:
+            if isinstance(c, dict):
+                prompt += f"- [{c.get('source', 'unknown')}] \"{c.get('claim', '')}\" (Verified: False)\n"
+        if not claims:
+            prompt += "No marketing claims captured\n"
+
+        # Compliance flagged claims
+        flagged = compliance.get("claim_audit", [])
+        if flagged:
+            prompt += f"\n--- COMPLIANCE FLAGS ({len(flagged)} flagged claims) ---\n"
+            for item in flagged:
+                prompt += f"FLAGGED: \"{item.get('claim', '')}\"\n"
+                for issue in item.get("issues", []):
+                    prompt += f"  Issue: {issue}\n"
+                prompt += f"  Safe Alternative: \"{item.get('safe_alternative', '')}\"\n"
+
+        # Required disclaimers
+        req_disclaimers = compliance.get("required_disclaimers", [])
+        if req_disclaimers:
+            prompt += "\n--- REQUIRED DISCLAIMERS ---\n"
+            for d in req_disclaimers:
+                prompt += f"- {d}\n"
+
+        # Testimonials (reference only)
+        testimonials = product.get("testimonials", [])
+        if testimonials:
+            prompt += "\n--- TESTIMONIALS (Reference Only — Do Not Republish as Verified) ---\n"
+            for t in testimonials:
+                if isinstance(t, dict) and t.get("text"):
+                    prompt += f"- {t.get('name', 'Anonymous')} ({t.get('location', '')}): \"{t['text'][:300]}...\"\n"
+
+        # Publishing recommendations
+        recs = data.get("publishing_recommendations", {})
+        if recs:
+            prompt += "\n--- PUBLISHING RECOMMENDATIONS ---\n"
+            for site, info in recs.items():
+                prompt += f"- {site}: Category IDs {info.get('category_ids', [])}\n"
+
+        prompt += "\n════════════════════════════════════════════════════════\n"
+
+        st.text_area("Copy this prompt into Claude Projects", value=prompt, height=500, key="export_prompt")
 
         col1, col2 = st.columns(2)
         with col1:
             st.download_button(
                 "Download Prompt (.txt)",
-                data=prompt_text,
+                data=prompt,
                 file_name=f"{name.lower().replace(' ', '-')}_prompt.txt",
                 mime="text/plain",
+                use_container_width=True,
             )
         with col2:
             st.download_button(
@@ -520,6 +626,7 @@ Required Disclaimers:
                 data=st.session_state.get("result_report", ""),
                 file_name=f"{name.lower().replace(' ', '-')}_source_report.md",
                 mime="text/markdown",
+                use_container_width=True,
             )
 
     # --- TAB: Raw JSON ---
