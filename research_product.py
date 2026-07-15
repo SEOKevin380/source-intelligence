@@ -444,7 +444,7 @@ def _try_multiple_urls(url):
     product_base = url.split("?")[0].rstrip("/")
 
     # Product-relative subpages (append to product URL)
-    product_subpages = ["/ingredients", "/supplement-facts", "/faq"]
+    product_subpages = ["/ingredients", "/supplement-facts"]
 
     # Site-root subpages (append to domain root — policies, contact, about)
     site_subpages = [
@@ -672,7 +672,8 @@ def phase1_extract_product(url, vsl_url=None, product_name=None):
             supplement_facts_raw += sf
 
     # Build combined text for extraction
-    # Priority order: structured data first, then HTML scrape
+    # Priority order: structured data > policy subpages > main page HTML
+    has_structured = "woocommerce_api" in all_pages or "json_ld" in all_pages
     page_texts = []
 
     # 1. Structured data sources first (most reliable)
@@ -680,16 +681,17 @@ def phase1_extract_product(url, vsl_url=None, product_name=None):
         if key in all_pages:
             page_texts.append(f"=== {key.upper()} DATA (HIGH PRIORITY — USE THIS) ===\n{all_pages[key][:10000]}")
 
-    # 2. Main page HTML (may be noisy/incomplete for JS sites)
+    # 2. Main page HTML — cap aggressively if we have structured data
     if "main" in all_pages:
         text = strip_html(all_pages["main"])
-        page_texts.append(f"MAIN PRODUCT PAGE:\n{text[:20000]}")
+        main_cap = 5000 if has_structured else 15000
+        page_texts.append(f"MAIN PRODUCT PAGE:\n{text[:main_cap]}")
 
-    # 3. Subpages
+    # 3. Subpages (policies, about, contact, FAQ — critical for complete extraction)
     for key, content in all_pages.items():
         if key not in ("main", "woocommerce_api", "json_ld"):
             text = strip_html(content)
-            page_texts.append(f"SUBPAGE ({key}):\n{text[:5000]}")
+            page_texts.append(f"SUBPAGE ({key}):\n{text[:4000]}")
 
     combined_text = "\n\n".join(page_texts)
     if supplement_facts_raw:
@@ -808,7 +810,7 @@ Return ONLY valid JSON with this exact structure:
 }}
 
 SOURCE MATERIAL:
-{combined_text[:25000] if combined_text else f'Product name only: {product_name}. You may use your training knowledge about this product but mark ALL facts as needing verification.'}"""
+{combined_text[:50000] if combined_text else f'Product name only: {product_name}. You may use your training knowledge about this product but mark ALL facts as needing verification.'}"""
 
     _emit("  Extracting structured data via Claude Haiku...")
     response = call_claude(prompt, max_tokens=6000)
