@@ -59,9 +59,10 @@ product_url = st.sidebar.text_input("Product URL", placeholder="https://product-
 vsl_url = st.sidebar.text_input("VSL URL (optional)", placeholder="https://product.com/vsl-page")
 product_name = st.sidebar.text_input("Product Name (if no URL)", placeholder="GlycoReset")
 label_file = st.sidebar.file_uploader("Label Image (optional)", type=["jpg", "jpeg", "png"])
-quick_mode = st.sidebar.checkbox("Quick Mode", value=True, help="Skip keyword research, reputation, and competitive analysis")
 
 run_button = st.sidebar.button("Run Research", type="primary", use_container_width=True)
+
+st.sidebar.caption("Every product runs the full 8-phase research pipeline. No shortcuts.")
 
 # Show previously researched products
 st.sidebar.markdown("---")
@@ -131,7 +132,7 @@ if run_button:
             url=product_url or None,
             vsl_url=vsl_url or None,
             product_name=product_name or None,
-            quick=quick_mode,
+            quick=False,
             label_image=label_path,
             progress_callback=streamlit_callback,
         )
