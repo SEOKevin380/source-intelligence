@@ -187,6 +187,43 @@ if "result_data" in st.session_state:
 
     st.markdown(f"## {name} — Source Intelligence Report")
 
+    # ── Release Details (fills into JSON + Export Prompt) ──
+    with st.expander("**Release Details** — affiliate link, previous releases, competitor URLs", expanded=False):
+        rd_col1, rd_col2 = st.columns(2)
+        with rd_col1:
+            rd_affiliate = st.text_input(
+                "Affiliate Link",
+                placeholder="https://hop.clickbank.net/?affiliate=XXX&vendor=product",
+                help="Tracking link for this product. Saved into JSON and prompt.",
+                key="rd_affiliate",
+            )
+            rd_previous = st.text_input(
+                "Previous Release(s)",
+                value="FIRST RELEASE",
+                help="URLs of your previous articles about this product (comma-separated). Drives anti-cannibalization.",
+                key="rd_previous",
+            )
+        with rd_col2:
+            rd_competitor = st.text_input(
+                "Competitor Release(s)",
+                placeholder="https://competitor.com/their-review",
+                help="Competitor article URLs (comma-separated). Drives SERP stacking strategy.",
+                key="rd_competitor",
+            )
+            rd_platform = st.selectbox(
+                "Publishing Platform",
+                ["Domain Site", "Barchart Advertorial", "Accesswire", "Newswire.com", "Globe Newswire"],
+                key="rd_platform",
+            )
+
+    # Merge release details into data dict so JSON/copies include them
+    data["release_details"] = {
+        "affiliate_link": rd_affiliate or "",
+        "previous_releases": rd_previous or "FIRST RELEASE",
+        "competitor_releases": rd_competitor or "",
+        "publishing_platform": rd_platform,
+    }
+
     # Quick Copy bar — most-used action front and center
     json_str = json.dumps(data, indent=2, default=str)
     with st.expander("**Copy Source Data** — click to expand, then use the copy icon (top-right of code block)", expanded=False):
@@ -521,30 +558,16 @@ if "result_data" in st.session_state:
 
         # === L6: Product Review (Domain Site) ===
         elif "Domain" in layer_type:
+            # Read from Release Details (filled above tabs)
+            rd = data.get("release_details", {})
+
             col1, col2 = st.columns(2)
             with col1:
-                affiliate_link = st.text_input(
-                    "Affiliate Link",
-                    placeholder="https://hop.clickbank.net/?affiliate=XXX&vendor=product",
-                    help="Tracking link, or type TRAFFIC-FIRST if no affiliate link",
-                    key="l6_aff_link",
-                )
                 ymyl_status = "Yes" if compliance.get("risk_level") in ["High", "Very High", "Moderate"] else "No"
                 ymyl_category = st.selectbox("YMYL Category", ["Yes", "No"],
                                              index=0 if ymyl_status == "Yes" else 1, key="l6_ymyl")
             with col2:
-                previous_releases = st.text_input("Previous Release(s)",
-                                                  value="FIRST RELEASE",
-                                                  help="Paste URLs of your previous articles about this product (comma-separated). Used for anti-cannibalization.",
-                                                  key="l6_prev")
                 release_type = st.selectbox("Release Type", ["Single Product", "Multi-Product Brand Guide"], key="l6_type")
-
-            competitor_release = st.text_input(
-                "Competitor Release(s)",
-                placeholder="https://competitor-site.com/their-review-of-this-product",
-                help="Paste competitor article URLs (comma-separated). The prompt will include strategy to outrank them.",
-                key="l6_comp",
-            )
 
             with st.expander("Optional Fields"):
                 opt1, opt2 = st.columns(2)
@@ -556,46 +579,30 @@ if "result_data" in st.session_state:
                     release_tags = st.text_input("Release Tags (comma-separated)", key="l6_tags")
 
             intake_fields = {
-                "platform": "Domain Site",
-                "affiliate_link": affiliate_link or "TRAFFIC-FIRST",
-                "previous_releases": previous_releases,
+                "platform": rd.get("publishing_platform", "Domain Site"),
+                "affiliate_link": rd.get("affiliate_link") or "TRAFFIC-FIRST",
+                "previous_releases": rd.get("previous_releases", "FIRST RELEASE"),
                 "release_type": release_type,
                 "ymyl_category": ymyl_category,
+                "competitor_release": rd.get("competitor_releases", ""),
                 "editor_title": editor_title if 'editor_title' in dir() else "",
                 "subtitle": subtitle if 'subtitle' in dir() else "",
                 "release_summary": release_summary if 'release_summary' in dir() else "",
                 "release_tags": release_tags if 'release_tags' in dir() else "",
-                "competitor_release": competitor_release if 'competitor_release' in dir() else "",
             }
             prompt = build_l6_review_prompt(data, site_config, intake_fields)
 
         # === L6: Product Review (Press Release) ===
         elif "Press Release" in layer_type:
+            rd = data.get("release_details", {})
+
             col1, col2 = st.columns(2)
             with col1:
-                pr_platform = st.selectbox("Platform", [
-                    "Barchart Advertorial", "Accesswire", "Newswire.com", "Globe Newswire",
-                ], key="pr_platform")
-                affiliate_link = st.text_input("Affiliate Link",
-                                               placeholder="https://hop.clickbank.net/...",
-                                               key="pr_aff_link")
-            with col2:
-                previous_releases = st.text_input("Previous Release(s)",
-                                                  value="FIRST RELEASE",
-                                                  help="Paste URLs of your previous articles about this product (comma-separated). Used for anti-cannibalization.",
-                                                  key="pr_prev")
                 release_type = st.selectbox("Release Type", ["Single Product", "Multi-Product Brand Guide"], key="pr_type")
-
-            ymyl_status = "Yes" if compliance.get("risk_level") in ["High", "Very High", "Moderate"] else "No"
-            ymyl_category = st.selectbox("YMYL Category", ["Yes", "No"],
-                                         index=0 if ymyl_status == "Yes" else 1, key="pr_ymyl")
-
-            competitor_release = st.text_input(
-                "Competitor Release(s)",
-                placeholder="https://competitor-site.com/their-review-of-this-product",
-                help="Paste competitor article URLs (comma-separated). The prompt will include strategy to outrank them.",
-                key="pr_comp",
-            )
+            with col2:
+                ymyl_status = "Yes" if compliance.get("risk_level") in ["High", "Very High", "Moderate"] else "No"
+                ymyl_category = st.selectbox("YMYL Category", ["Yes", "No"],
+                                             index=0 if ymyl_status == "Yes" else 1, key="pr_ymyl")
 
             with st.expander("Optional Fields"):
                 opt1, opt2 = st.columns(2)
@@ -607,16 +614,16 @@ if "result_data" in st.session_state:
                     release_tags = st.text_input("Release Tags (comma-separated)", key="pr_tags")
 
             intake_fields = {
-                "platform": pr_platform,
-                "affiliate_link": affiliate_link or "TRAFFIC-FIRST",
-                "previous_releases": previous_releases,
+                "platform": rd.get("publishing_platform", "Barchart Advertorial"),
+                "affiliate_link": rd.get("affiliate_link") or "TRAFFIC-FIRST",
+                "previous_releases": rd.get("previous_releases", "FIRST RELEASE"),
                 "release_type": release_type,
                 "ymyl_category": ymyl_category,
+                "competitor_release": rd.get("competitor_releases", ""),
                 "editor_title": editor_title if 'editor_title' in dir() else "",
                 "subtitle": subtitle if 'subtitle' in dir() else "",
                 "release_summary": release_summary if 'release_summary' in dir() else "",
                 "release_tags": release_tags if 'release_tags' in dir() else "",
-                "competitor_release": competitor_release if 'competitor_release' in dir() else "",
             }
             prompt = build_l6_press_release_prompt(data, intake_fields)
 
