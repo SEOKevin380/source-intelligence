@@ -361,7 +361,18 @@ def _try_woocommerce_api(url):
                     desc = strip_html(item.get("description", ""))
                     short_desc = strip_html(item.get("short_description", ""))
                     price = item.get("prices", {})
-                    price_str = price.get("price", "") if isinstance(price, dict) else str(price)
+                    if isinstance(price, dict):
+                        raw_price = price.get("price", "")
+                        currency = price.get("currency_code", "USD")
+                        # WooCommerce Store API returns prices in minor units (cents)
+                        try:
+                            decimal_places = int(price.get("currency_minor_unit", 2))
+                            price_val = int(raw_price) / (10 ** decimal_places)
+                            price_str = f"${price_val:.2f} {currency}"
+                        except (ValueError, TypeError):
+                            price_str = str(raw_price)
+                    else:
+                        price_str = str(price) if price else ""
 
                     text = f"PRODUCT: {name}\n"
                     if short_desc:
@@ -420,12 +431,11 @@ def _try_multiple_urls(url):
                 results["json_ld"] = ld_text
                 _emit(f"    Found JSON-LD product data")
 
-    # Try WooCommerce API for JS-rendered pages
-    main_text_len = len(strip_html(main)) if main else 0
-    if main_text_len < 2000:
-        wc_data = _try_woocommerce_api(url)
-        if wc_data:
-            results["woocommerce_api"] = wc_data
+    # Always try WooCommerce API — many product pages are JS-rendered
+    # and the HTML scrape gets boilerplate even when text length looks OK
+    wc_data = _try_woocommerce_api(url)
+    if wc_data:
+        results["woocommerce_api"] = wc_data
 
     # Try common subpages that often have ingredients/policies
     base = url.rstrip("/")
@@ -650,15 +660,22 @@ def phase1_extract_product(url, vsl_url=None, product_name=None):
             supplement_facts_raw += sf
 
     # Build combined text for extraction
+    # Priority order: structured data first, then HTML scrape
     page_texts = []
+
+    # 1. Structured data sources first (most reliable)
+    for key in ("woocommerce_api", "json_ld"):
+        if key in all_pages:
+            page_texts.append(f"=== {key.upper()} DATA (HIGH PRIORITY — USE THIS) ===\n{all_pages[key][:10000]}")
+
+    # 2. Main page HTML (may be noisy/incomplete for JS sites)
+    if "main" in all_pages:
+        text = strip_html(all_pages["main"])
+        page_texts.append(f"MAIN PRODUCT PAGE:\n{text[:20000]}")
+
+    # 3. Subpages
     for key, content in all_pages.items():
-        if key in ("json_ld", "woocommerce_api"):
-            # Already clean text, not HTML
-            page_texts.append(f"{key.upper()} DATA:\n{content[:10000]}")
-        elif key == "main":
-            text = strip_html(content)
-            page_texts.append(f"MAIN PRODUCT PAGE:\n{text[:20000]}")
-        else:
+        if key not in ("main", "woocommerce_api", "json_ld"):
             text = strip_html(content)
             page_texts.append(f"SUBPAGE ({key}):\n{text[:5000]}")
 
