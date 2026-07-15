@@ -985,6 +985,11 @@ PREVIOUS RELEASES: {previous}"""
         if val:
             prompt += f"\n{field}: {val}"
 
+    # Operator notes (verified contact info, special instructions, etc.)
+    notes = intake_fields.get("notes", "").strip()
+    if notes:
+        prompt += f"\nOPERATOR NOTES: {notes}"
+
     prompt += f"\nSOURCE MATERIALS: Pre-verified research data included below"
 
     has_prev = previous and previous.strip().upper() != "FIRST RELEASE"

@@ -13,6 +13,9 @@ Re-fetch policy pages (refund, shipping, ToS) for currency confirmation.
 SEO strategy, archetype selection, and angle differentiation are determined
 by your own real-time SERP analysis.
 
+When OPERATOR NOTES are included, treat them as supplementary data —
+verified contact info, special client instructions, or additional context.
+
 ## C15 Category Analysis — Supplement Products
 
 For supplement products, C15 analysis follows this protocol:

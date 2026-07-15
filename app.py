@@ -151,6 +151,12 @@ rd_client_title = st.sidebar.text_input(
     placeholder="Leave blank unless client requires a specific title",
     key="rd_client_title",
 )
+rd_notes = st.sidebar.text_area(
+    "Notes (optional)",
+    placeholder="Verified contact info, special instructions, extra context...",
+    height=100,
+    key="rd_notes",
+)
 
 st.sidebar.markdown("---")
 run_button = st.sidebar.button("Run Research", type="primary", use_container_width=True)
@@ -331,6 +337,7 @@ if "result_data" in st.session_state:
         "ymyl_category": "Yes" if compliance_data.get("risk_level") in ["High", "Very High", "Moderate"] else "No",
         "competitor_release": rd_competitor or "",
         "editor_title": rd_client_title or "",
+        "notes": rd_notes or "",
     }
 
     if layer_type.startswith("L1"):
