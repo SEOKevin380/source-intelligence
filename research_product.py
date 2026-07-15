@@ -153,6 +153,43 @@ def strip_html(html):
     return text.strip()
 
 
+def _decode_cloudflare_emails(html):
+    """Decode Cloudflare-obfuscated email addresses in HTML.
+
+    Cloudflare uses data-cfemail encoding:
+    <a href="/cdn-cgi/l/email-protection" data-cfemail="HEXSTRING">
+    The first 2 hex chars are the XOR key, remaining chars are the encoded email.
+    """
+    if not html or 'data-cfemail' not in html:
+        return html
+
+    def decode_cfemail(match):
+        encoded = match.group(1)
+        try:
+            key = int(encoded[:2], 16)
+            decoded = ''.join(
+                chr(int(encoded[i:i+2], 16) ^ key)
+                for i in range(2, len(encoded), 2)
+            )
+            return decoded
+        except (ValueError, IndexError):
+            return match.group(0)
+
+    # Replace data-cfemail attributes with decoded emails
+    result = re.sub(
+        r'<a[^>]*data-cfemail="([0-9a-fA-F]+)"[^>]*>\[email[^<]*\]</a>',
+        lambda m: decode_cfemail(m),
+        html
+    )
+    # Also replace standalone [email protected] placeholders
+    result = re.sub(
+        r'data-cfemail="([0-9a-fA-F]+)"',
+        lambda m: f'data-decoded-email="{decode_cfemail(m)}"',
+        result
+    )
+    return result
+
+
 def call_claude(prompt, system="You are a product research assistant. Extract ONLY verifiable facts. Never invent data.", max_tokens=4000, model="claude-haiku-4-5-20251001", images=None):
     """Call Claude API for intelligent extraction. Supports text and image inputs."""
     if not ANTHROPIC_API_KEY:
@@ -812,8 +849,38 @@ def _try_multiple_urls(url, browser_session=None):
                     main = rendered
                     site_needs_browser = True
                     _emit(f"    Browser recovered {len(strip_html(main)):,} chars of visible text")
+
+                # If still no pricing, look for checkout URL and fetch it
+                if not re.search(r'\$\d+', main):
+                    checkout_urls = re.findall(
+                        r'href=["\x27]([^"\x27]*(?:/checkout|/order|/cart|/buy)[^"\x27]*)["\x27]',
+                        main, re.IGNORECASE
+                    )
+                    # Deduplicate and resolve relative URLs
+                    seen_checkout = set()
+                    for ck_url in checkout_urls:
+                        # Skip asset/image/font URLs
+                        if re.search(r'\.(png|jpg|gif|svg|css|js|ico|woff|ttf)$', ck_url, re.IGNORECASE):
+                            continue
+                        if ck_url.startswith('/'):
+                            parsed = urllib.parse.urlparse(url)
+                            ck_url = f"{parsed.scheme}://{parsed.netloc}{ck_url}"
+                        if ck_url in seen_checkout or not ck_url.startswith('http'):
+                            continue
+                        seen_checkout.add(ck_url)
+                        _emit(f"    Fetching checkout page for pricing: {ck_url}")
+                        ck_html = browser_session.fetch(ck_url, wait_until='domcontentloaded',
+                                                        timeout_ms=20000)
+                        if ck_html and re.search(r'\$\d+', ck_html):
+                            results["checkout"] = ck_html
+                            _emit(f"    Checkout page: {len(strip_html(ck_html)):,} chars with pricing data")
+                            break  # Only need one checkout page
         except ImportError:
             pass
+
+    # Decode Cloudflare-obfuscated emails before storing
+    if main:
+        main = _decode_cloudflare_emails(main)
 
     if main:
         results["main"] = main
