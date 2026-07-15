@@ -474,6 +474,35 @@ if "result_data" in st.session_state:
                 st.table(table_data)
                 if sf.get("allergen_warnings"):
                     st.warning(f"Allergen Warnings: {', '.join(sf['allergen_warnings'])}")
+
+                # Data source badge
+                src = sf.get("_source", "page_extraction")
+                src_labels = {
+                    "dsld_verified": "NIH DSLD (government-verified)",
+                    "auto_label_ocr": "Label Image OCR (auto-detected)",
+                    "manual_label_ocr": "Label Image OCR (manual upload)",
+                }
+                if src in src_labels:
+                    st.success(f"Data Source: {src_labels[src]}")
+
+                # DSLD cross-reference
+                dsld_xref = data.get("product", {}).get("dsld_cross_reference")
+                if dsld_xref and dsld_xref.get("ingredients"):
+                    with st.expander(f"NIH DSLD Cross-Reference (Label ID: {dsld_xref.get('dsld_id', 'N/A')})", expanded=False):
+                        st.caption(f"Product: {dsld_xref.get('dsld_product_name', '')} by {dsld_xref.get('dsld_brand', '')}")
+                        dsld_table = []
+                        for ding in dsld_xref["ingredients"]:
+                            dsld_table.append({
+                                "Ingredient": ding.get("name", ""),
+                                "Amount": ding.get("amount", ""),
+                                "Category": ding.get("category", ""),
+                            })
+                        st.table(dsld_table)
+                        st.caption("Use DSLD data to verify extracted ingredient accuracy. Discrepancies may indicate reformulation.")
+
+                dsld_id = data.get("product", {}).get("dsld_id")
+                if dsld_id:
+                    st.markdown(f"[View in NIH DSLD](https://dsld.od.nih.gov/label/{dsld_id})")
             else:
                 st.info("No ingredients extracted.")
 
@@ -517,6 +546,24 @@ if "result_data" in st.session_state:
                                 st.markdown("**Contraindications:** " + ", ".join(sdata["contraindications"]))
             else:
                 st.info("No safety data collected.")
+
+            # FDA CAERS adverse event data
+            reputation_data = data.get("reputation", {})
+            caers = reputation_data.get("fda_caers", {})
+            if caers and caers.get("total_reports", 0) > 0:
+                st.markdown("---")
+                st.markdown(f"### FDA Adverse Event Reports (CAERS)")
+                st.markdown(f"**{caers['total_reports']}** adverse event reports found for \"{caers.get('query_matched', '')}\"")
+                top_reactions = caers.get("top_reactions", [])
+                if top_reactions:
+                    reaction_table = [{"Reaction": r["reaction"], "Reports": r["count"]} for r in top_reactions[:10]]
+                    st.table(reaction_table)
+                outcomes = caers.get("outcomes", [])
+                if outcomes:
+                    st.markdown("**Outcome Types:**")
+                    for o in outcomes:
+                        st.markdown(f"- {o['outcome']}: {o['count']}")
+                st.caption("CAERS reports are unverified consumer/healthcare provider submissions. They do not establish causation.")
 
         # --- Compliance ---
         with detail_tabs[4]:

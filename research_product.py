@@ -339,6 +339,10 @@ def _web_search_product(name, search_type="ingredients"):
 def _extract_json_ld(html):
     """Extract product data from JSON-LD structured data embedded in HTML."""
     results = []
+    target_types = (
+        "Product", "IndividualProduct", "Offer",
+        "DietarySupplement", "Drug", "MedicalDevice",
+    )
     pattern = r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>'
     for match in re.findall(pattern, html, re.DOTALL | re.IGNORECASE):
         try:
@@ -346,11 +350,27 @@ def _extract_json_ld(html):
             # Handle both single objects and arrays
             items = data if isinstance(data, list) else [data]
             for item in items:
-                if item.get("@type") in ("Product", "IndividualProduct", "Offer"):
+                item_type = item.get("@type", "")
+                # Handle type as string or list
+                if isinstance(item_type, list):
+                    if any(t in target_types for t in item_type):
+                        results.append(item)
+                elif item_type in target_types:
                     results.append(item)
                 elif item.get("@graph"):
                     for node in item["@graph"]:
-                        if node.get("@type") in ("Product", "IndividualProduct"):
+                        node_type = node.get("@type", "")
+                        if isinstance(node_type, list):
+                            if any(t in target_types for t in node_type):
+                                results.append(node)
+                        elif node_type in target_types:
+                            results.append(node)
+                # Also extract FAQPage structured data for content enrichment
+                elif item_type == "FAQPage":
+                    results.append(item)
+                elif item.get("@graph"):
+                    for node in item["@graph"]:
+                        if node.get("@type") == "FAQPage":
                             results.append(node)
         except (json.JSONDecodeError, TypeError):
             continue
@@ -435,6 +455,335 @@ def _try_woocommerce_api(url):
     return ""
 
 
+def _query_dsld(product_name, brand_name=""):
+    """Query the NIH Dietary Supplement Label Database for verified label data.
+
+    DSLD contains government-verified supplement facts panels. When a match is
+    found, this is the highest-quality ingredient data available — more reliable
+    than scraping or OCR. Returns dict with ingredients, serving info, contact,
+    and DSLD label ID, or empty dict if no match.
+    """
+    if not product_name:
+        return {}
+
+    # Search by product name
+    query = product_name.strip()
+    search_url = f"https://api.ods.od.nih.gov/dsld/v9/search-filter?q={urllib.parse.quote_plus(query)}&size=5"
+
+    try:
+        resp = fetch_url(search_url, max_bytes=100000)
+        if not resp:
+            return {}
+        data = json.loads(resp)
+        hits = data.get("hits", [])
+        if not hits:
+            # Try brand name if product name didn't match
+            if brand_name and brand_name.lower() != product_name.lower():
+                search_url2 = f"https://api.ods.od.nih.gov/dsld/v9/search-filter?q={urllib.parse.quote_plus(brand_name + ' ' + product_name)}&size=5"
+                resp2 = fetch_url(search_url2, max_bytes=100000)
+                if resp2:
+                    data2 = json.loads(resp2)
+                    hits = data2.get("hits", [])
+            if not hits:
+                return {}
+
+        # Find best match — require meaningful name overlap to avoid false matches
+        best_hit = None
+        query_lower = product_name.lower().strip()
+        query_words = set(query_lower.split())
+
+        for hit in hits:
+            src = hit.get("_source", {})
+            full_name = (src.get("fullName") or "").lower().strip()
+            hit_words = set(full_name.split())
+
+            # Exact match — best possible
+            if full_name == query_lower:
+                best_hit = hit
+                break
+
+            # Strip generic supplement words to find the unique brand/product words
+            generic_words = {"supplement", "support", "formula", "pro", "plus",
+                             "max", "ultra", "advanced", "daily", "natural",
+                             "premium", "gummies", "capsules", "tablets", "powder",
+                             "blend", "complex", "health", "care", "nerve",
+                             "brain", "joint", "weight", "loss", "eye", "skin",
+                             "hair", "bone", "heart", "immune", "gut", "sleep",
+                             "energy", "mood", "focus", "memory", "vision",
+                             "review", "reviews", "the", "and", "for", "with"}
+            # The product's UNIQUE name words (brand-specific, not generic)
+            unique_query = query_words - generic_words
+            unique_hit = hit_words - generic_words
+
+            # If the query has unique words, at least one must appear in the hit
+            if unique_query:
+                unique_overlap = unique_query & unique_hit
+                if unique_overlap:
+                    best_hit = hit
+                    break
+            else:
+                # No unique words (e.g., "Nerve Support") — require exact match
+                if full_name == query_lower:
+                    best_hit = hit
+                    break
+
+            # Or if the brand matches AND there's some word overlap
+            hit_brand = (src.get("brandName") or "").lower()
+            overlap = query_words & hit_words
+            if brand_name and brand_name.lower() == hit_brand and overlap:
+                best_hit = hit
+                break
+
+        if not best_hit:
+            _emit(f"    DSLD: No close match found (best candidate: {hits[0]['_source'].get('fullName', 'N/A')})")
+            return {}
+
+        label_id = best_hit.get("_id")
+        source = best_hit.get("_source", {})
+        _emit(f"    DSLD match: {source.get('fullName')} by {source.get('brandName')} (ID: {label_id})")
+
+        # Fetch full label for ingredient amounts
+        label_data = {}
+        if label_id:
+            label_url = f"https://api.ods.od.nih.gov/dsld/v9/label/{label_id}"
+            label_resp = fetch_url(label_url, max_bytes=200000)
+            if label_resp:
+                label_data = json.loads(label_resp)
+
+        # Build ingredient list from search allIngredients + label ingredientRows
+        ingredients = []
+        all_ings = source.get("allIngredients", [])
+        ing_rows = label_data.get("ingredientRows", [])
+
+        # Build amounts lookup from ingredientRows
+        # Rows have their own "order" field and an ingredientId — build
+        # a simple lookup by order so we can try to match
+        row_by_order = {}
+        for row in ing_rows:
+            quantities = row.get("quantity", [])
+            amt = ""
+            dv_pct = ""
+            if quantities and isinstance(quantities, list) and quantities:
+                q = quantities[0] if isinstance(quantities[0], dict) else {}
+                qty_val = q.get("quantity", "")
+                unit = q.get("unit", "")
+                if qty_val:
+                    amt = f"{qty_val} {unit}".strip() if unit else str(qty_val)
+                for dv_group in q.get("dailyValueTargetGroup", []):
+                    if isinstance(dv_group, dict):
+                        dv = dv_group.get("percent")
+                        if dv is not None:
+                            dv_pct = f"{dv}%"
+                            break
+            row_by_order[row.get("order")] = {"amount": amt, "dv": dv_pct}
+
+        # Map amounts to allIngredients by order (1-indexed)
+        for i, ing in enumerate(all_ings):
+            cat = ing.get("category", "")
+            if cat == "other":
+                continue
+
+            name = ing.get("name", "")
+            notes = ing.get("notes", "")
+            order = i + 1
+
+            # Try to find amount from ingredientRows
+            row_data = row_by_order.get(order, {})
+            amount = row_data.get("amount", "")
+            dv_pct = row_data.get("dv", "")
+
+            form = notes if notes else ""
+            ingredients.append({
+                "name": name,
+                "amount": amount,
+                "daily_value": dv_pct,
+                "form": form,
+                "category": cat,
+                "source": "dsld_verified",
+                "verified": True,
+            })
+
+        # Serving info
+        serving_sizes = label_data.get("servingSizes", [])
+        serving_size = ""
+        if serving_sizes:
+            ss = serving_sizes[0]
+            qty = ss.get("minQuantity", "")
+            unit = ss.get("unit", "")
+            serving_size = f"{qty} {unit}".strip()
+
+        servings_per_container = label_data.get("servingsPerContainer", "")
+
+        # Contact info
+        contacts = label_data.get("contacts", [])
+        contact = {}
+        if contacts:
+            cd = contacts[0].get("contactDetails", {})
+            contact = {
+                "name": cd.get("name", ""),
+                "address": f"{cd.get('city', '')}, {cd.get('state', '')} {cd.get('zipCode', '')}".strip(", "),
+                "phone": cd.get("phoneNumber", ""),
+                "email": cd.get("email", ""),
+                "website": cd.get("webAddress", ""),
+            }
+
+        result = {
+            "dsld_id": label_id,
+            "dsld_product_name": source.get("fullName", ""),
+            "dsld_brand": source.get("brandName", ""),
+            "ingredients": ingredients,
+            "serving_size": serving_size,
+            "servings_per_container": str(servings_per_container) if servings_per_container else "",
+            "contact": contact,
+            "other_ingredients": [
+                o.get("name", "") for o in
+                (label_data.get("otheringredients", {}).get("ingredients", [])
+                 if isinstance(label_data.get("otheringredients"), dict)
+                 else label_data.get("otheringredients", []))
+                if isinstance(o, dict) and o.get("name")
+            ],
+            "claims": [
+                c.get("langualCodeDescription", "") for c in label_data.get("claims", [])
+                if isinstance(c, dict) and c.get("langualCodeDescription")
+            ],
+        }
+
+        _emit(f"    DSLD: {len(ingredients)} ingredients, serving: {serving_size}, servings/container: {servings_per_container}")
+        return result
+
+    except (json.JSONDecodeError, Exception) as e:
+        _emit(f"    [!] DSLD query error: {e}")
+        return {}
+
+
+def _query_fda_caers(product_name, brand_name=""):
+    """Query FDA CFSAN Adverse Event Reporting System (CAERS) for safety signals.
+
+    Returns dict with adverse event count, common reactions, and outcomes.
+    This data enriches the safety profile — not used as a sole data source.
+    """
+    if not product_name:
+        return {}
+
+    # Try product name first, then brand
+    queries = [product_name]
+    if brand_name and brand_name.lower() != product_name.lower():
+        queries.append(brand_name)
+
+    for query in queries:
+        encoded = urllib.parse.quote_plus(f'"{query}"')
+        api_url = f"https://api.fda.gov/food/event.json?search=products.name_brand:{encoded}&limit=100"
+
+        try:
+            resp = fetch_url(api_url, max_bytes=200000)
+            if not resp:
+                continue
+            data = json.loads(resp)
+            total = data.get("meta", {}).get("results", {}).get("total", 0)
+
+            if total == 0:
+                continue
+
+            results = data.get("results", [])
+
+            # Aggregate reactions and outcomes
+            reaction_counts = {}
+            outcome_counts = {}
+            for report in results:
+                for reaction in report.get("reactions", []):
+                    r = reaction.strip().title()
+                    reaction_counts[r] = reaction_counts.get(r, 0) + 1
+                for outcome in report.get("outcomes", []):
+                    o = outcome.strip()
+                    outcome_counts[o] = outcome_counts.get(o, 0) + 1
+
+            # Sort by frequency
+            top_reactions = sorted(reaction_counts.items(), key=lambda x: x[1], reverse=True)[:15]
+            top_outcomes = sorted(outcome_counts.items(), key=lambda x: x[1], reverse=True)
+
+            caers_data = {
+                "total_reports": total,
+                "query_matched": query,
+                "top_reactions": [{"reaction": r, "count": c} for r, c in top_reactions],
+                "outcomes": [{"outcome": o, "count": c} for o, c in top_outcomes],
+                "reports_analyzed": len(results),
+                "note": "CAERS reports are unverified consumer submissions. "
+                        "They do not establish causation. Use for signal detection only.",
+            }
+
+            _emit(f"    FDA CAERS: {total} adverse event reports for '{query}'")
+            if top_reactions:
+                top3 = ", ".join(f"{r[0]} ({r[1]})" for r in top_reactions[:3])
+                _emit(f"    Top reactions: {top3}")
+            return caers_data
+
+        except (json.JSONDecodeError, Exception) as e:
+            _emit(f"    [!] FDA CAERS query error: {e}")
+            continue
+
+    return {}
+
+
+def _discover_linked_pages(html, base_url):
+    """Discover ingredient, FAQ, and policy pages linked from the main page.
+
+    Supplement sites often have separate pages for ingredients, FAQs, policies,
+    etc. This function finds those links so _try_multiple_urls can fetch them.
+    Returns list of discovered URLs to try.
+    """
+    if not html or not base_url:
+        return []
+
+    from urllib.parse import urljoin, urlparse
+
+    base_parsed = urlparse(base_url)
+    base_domain = base_parsed.hostname or ""
+
+    # Patterns for useful subpages
+    link_patterns = re.compile(
+        r'(?:ingredient|supplement.?fact|formula|what.?s.?inside|'
+        r'how.?it.?works|science|research|clinical|lab.?test|'
+        r'faq|frequently.?asked|question|'
+        r'refund|return|guarantee|money.?back|'
+        r'shipping|delivery|'
+        r'about|contact|privacy|terms|'
+        r'review|testimonial|result)',
+        re.IGNORECASE
+    )
+
+    discovered = []
+    seen = set()
+
+    # Find all <a href="..."> links
+    for match in re.finditer(r'<a[^>]*href=["\']([^"\'#]+)["\']', html, re.IGNORECASE):
+        href = match.group(1).strip()
+        if not href or href.startswith(("javascript:", "mailto:", "tel:", "#")):
+            continue
+
+        full_url = urljoin(base_url, href)
+        parsed = urlparse(full_url)
+
+        # Only follow same-domain links
+        if parsed.hostname and parsed.hostname != base_domain:
+            continue
+
+        # Skip if already seen or is the main page
+        clean_url = full_url.split("?")[0].split("#")[0].rstrip("/")
+        if clean_url in seen or clean_url == base_url.rstrip("/"):
+            continue
+
+        # Check if the URL path or anchor text matches our patterns
+        path = parsed.path.lower()
+        # Get surrounding text for context
+        tag_text = match.group(0).lower()
+
+        if link_patterns.search(path) or link_patterns.search(tag_text):
+            seen.add(clean_url)
+            discovered.append(clean_url)
+
+    return discovered[:15]  # Cap to prevent runaway crawling
+
+
 def _try_multiple_urls(url):
     """Try fetching a URL and common subpages to maximize content capture."""
     results = {}
@@ -449,8 +798,31 @@ def _try_multiple_urls(url):
         if json_ld:
             ld_text = ""
             for product in json_ld:
+                ptype = product.get("@type", "")
+                # Handle FAQPage separately
+                if ptype == "FAQPage" or (isinstance(ptype, list) and "FAQPage" in ptype):
+                    faq_entries = product.get("mainEntity", [])
+                    if faq_entries:
+                        ld_text += "\nFAQ (structured data):\n"
+                        for faq in faq_entries[:20]:
+                            q = faq.get("name", "")
+                            a_obj = faq.get("acceptedAnswer", {})
+                            a = a_obj.get("text", "") if isinstance(a_obj, dict) else ""
+                            if q:
+                                ld_text += f"Q: {q}\nA: {a}\n\n"
+                    continue
+
                 ld_text += f"\nPRODUCT (structured data): {product.get('name', '')}\n"
                 ld_text += f"Description: {product.get('description', '')}\n"
+                # DietarySupplement-specific fields
+                if product.get("activeIngredient"):
+                    ld_text += f"Active Ingredient: {product['activeIngredient']}\n"
+                if product.get("nonProprietaryName"):
+                    ld_text += f"Non-Proprietary Name: {product['nonProprietaryName']}\n"
+                if product.get("dosageForm"):
+                    ld_text += f"Dosage Form: {product['dosageForm']}\n"
+                if product.get("mechanismOfAction"):
+                    ld_text += f"Mechanism: {product['mechanismOfAction']}\n"
                 if product.get("offers"):
                     offers = product["offers"] if isinstance(product["offers"], list) else [product["offers"]]
                     for o in offers:
@@ -526,6 +898,30 @@ def _try_multiple_urls(url):
             if content and len(content) > 500:
                 results[sub] = content
                 _emit(f"    Found subpage: {sub} ({len(content):,} bytes)")
+
+    # Discover linked pages from main HTML (ingredients, FAQ, policies)
+    main_html = results.get("main", "")
+    if main_html:
+        discovered = _discover_linked_pages(main_html, url)
+        if discovered:
+            _emit(f"    Discovered {len(discovered)} linked pages to check")
+            fetch_count = 0
+            for disc_url in discovered:
+                # Skip if we already have this page
+                disc_path = urllib.parse.urlparse(disc_url).path
+                if any(disc_path.rstrip("/").endswith(k.strip("/")) for k in results if k not in ("main", "woocommerce_api", "json_ld")):
+                    continue
+                import io, contextlib
+                stderr_capture = io.StringIO()
+                with contextlib.redirect_stdout(stderr_capture):
+                    content = fetch_url(disc_url, max_bytes=30000)
+                if content and len(content) > 500:
+                    key = f"discovered_{disc_path.strip('/').replace('/', '_')}"
+                    results[key] = content
+                    fetch_count += 1
+                    _emit(f"    Found linked page: {disc_path} ({len(content):,} bytes)")
+                if fetch_count >= 5:  # Cap discovered page fetches
+                    break
 
     return results
 
@@ -640,6 +1036,44 @@ def _extract_buygoods_pricing(html):
                     "per_unit": f"${price}",
                     "shipping": "",
                     "guarantee": "",
+                })
+
+    # Pattern 3: Inline text pricing (e.g., "6 Bottles ... $49 Per bottle ... Total: $294")
+    # Common on BuyGoods funnel pages that don't use data attributes
+    if not pricing:
+        text = strip_html(html) if html else ""
+        # Look for patterns like "X Bottles" followed by pricing
+        bottle_blocks = re.finditer(
+            r'(\d+)\s*Bottle[s]?\s*(\d+)-day\s*supply\s*\$\s*(\d+)\s*Per\s*bottle'
+            r'.*?Total:\s*\$?\s*[\d,]+\s*\$\s*(\d+)',
+            text, re.IGNORECASE | re.DOTALL
+        )
+        for match in bottle_blocks:
+            bottles = match.group(1)
+            per_unit = match.group(3)
+            total = match.group(4)
+            key = f"{bottles}-{total}"
+            if key not in seen:
+                seen.add(key)
+                shipping_text = ""
+                # Check for shipping info near this block
+                after = text[match.end():match.end()+100]
+                if "FREE SHIPPING" in after.upper():
+                    shipping_text = "Free"
+                elif "SHIPPING" in after.upper():
+                    shipping_text = "Paid"
+                # Check for guarantee
+                guarantee_match = re.search(r'(\d+)\s*-?\s*(?:day|days)\s*(?:money\s*back\s*)?guarantee', text, re.IGNORECASE)
+                guarantee = guarantee_match.group(1) if guarantee_match else ""
+
+                pricing.append({
+                    "package": f"{bottles} Bottles",
+                    "total": total,
+                    "original": "",
+                    "bottles": bottles,
+                    "per_unit": f"${per_unit}",
+                    "shipping": shipping_text,
+                    "guarantee": guarantee,
                 })
 
     # Sort by bottle count
@@ -993,6 +1427,53 @@ SOURCE MATERIAL:
             data["supplement_facts"]["ingredients"] = enrichment
             ingredient_count = len(enrichment)
             _emit(f"  [ENRICHMENT] Found {ingredient_count} ingredients via targeted search")
+
+    # Layer 5b: NIH DSLD cross-reference — government-verified label data
+    product_type = data.get("product_type", "supplement")
+    if product_type in ("supplement", "food", "topical"):
+        pname = data.get("product_name", product_name or "")
+        bname = data.get("brand_name", "")
+        if pname:
+            _emit(f"  [DSLD] Querying NIH Dietary Supplement Label Database for: {pname}")
+            dsld_data = _query_dsld(pname, bname)
+            if dsld_data and dsld_data.get("ingredients"):
+                dsld_ingredients = dsld_data["ingredients"]
+                current_count = len(data.get("supplement_facts", {}).get("ingredients", []))
+
+                if current_count == 0:
+                    # No ingredients from any source — use DSLD as primary
+                    data["supplement_facts"]["ingredients"] = dsld_ingredients
+                    data["supplement_facts"]["_source"] = "dsld_verified"
+                    _emit(f"  [DSLD] Using DSLD as PRIMARY ingredient source ({len(dsld_ingredients)} ingredients)")
+                else:
+                    # We have ingredients already — store DSLD as cross-reference
+                    data["dsld_cross_reference"] = dsld_data
+                    _emit(f"  [DSLD] Stored as cross-reference ({len(dsld_ingredients)} DSLD vs {current_count} extracted)")
+
+                # DSLD serving info fills gaps
+                if dsld_data.get("serving_size") and not data["supplement_facts"].get("serving_size"):
+                    data["supplement_facts"]["serving_size"] = dsld_data["serving_size"]
+                    _emit(f"  [DSLD] Serving size from DSLD: {dsld_data['serving_size']}")
+                if dsld_data.get("servings_per_container") and not data["supplement_facts"].get("servings_per_container"):
+                    data["supplement_facts"]["servings_per_container"] = dsld_data["servings_per_container"]
+
+                # DSLD contact info fills gaps
+                if dsld_data.get("contact"):
+                    co = data.get("company", {})
+                    dsld_co = dsld_data["contact"]
+                    if not co.get("name") and dsld_co.get("name"):
+                        data.setdefault("company", {})["name"] = dsld_co["name"]
+                    if not co.get("phone") and dsld_co.get("phone"):
+                        data.setdefault("company", {})["phone"] = dsld_co["phone"]
+                    if not co.get("address") and dsld_co.get("address"):
+                        data.setdefault("company", {})["address"] = dsld_co["address"]
+
+                # Store DSLD ID for reference
+                data["dsld_id"] = dsld_data.get("dsld_id")
+            elif dsld_data:
+                _emit(f"  [DSLD] Match found but no ingredient data")
+            else:
+                _emit(f"  [DSLD] No match in DSLD database")
 
     # Image extraction — grab product images for reference
     product_images = []
@@ -1684,6 +2165,24 @@ def phase5_reputation_check(product_data):
     }
 
     _emit(f"  Generated {len(reputation['search_queries_to_run'])} reputation check queries")
+
+    # Query FDA CAERS for adverse event reports
+    product_type = product_data.get("product_type", "supplement")
+    if product_type in ("supplement", "food", "topical"):
+        _emit(f"  [FDA CAERS] Querying adverse event reports...")
+        caers = _query_fda_caers(name, brand)
+        if caers and caers.get("total_reports", 0) > 0:
+            reputation["fda_caers"] = caers
+            reputation["fda_caers_summary"] = (
+                f"{caers['total_reports']} adverse event reports found. "
+                f"Top reactions: {', '.join(r['reaction'] for r in caers.get('top_reactions', [])[:5])}. "
+                f"Note: CAERS reports are unverified and do not establish causation."
+            )
+            _emit(f"  [FDA CAERS] {caers['total_reports']} reports found")
+        else:
+            reputation["fda_caers"] = {"total_reports": 0, "note": "No adverse event reports found in FDA CAERS"}
+            _emit(f"  [FDA CAERS] No adverse event reports found")
+
     return reputation
 
 
@@ -1866,6 +2365,34 @@ def format_source_document(product_data, ingredient_research, safety_data, keywo
         lines.append(f"Allergen Warnings: {', '.join(sf['allergen_warnings'])}")
         lines.append("")
 
+    # Data source attribution
+    sf_source = sf.get("_source", "page_extraction")
+    if sf_source == "dsld_verified":
+        lines.append("**Data Source:** NIH Dietary Supplement Label Database (government-verified)")
+    elif sf_source == "auto_label_ocr":
+        lines.append("**Data Source:** Label image OCR extraction")
+    elif sf_source == "manual_label_ocr":
+        lines.append("**Data Source:** Manual label image upload + OCR extraction")
+    lines.append("")
+
+    # DSLD cross-reference (when we have ingredients from another source but DSLD also matched)
+    dsld_xref = product_data.get("dsld_cross_reference")
+    if dsld_xref and dsld_xref.get("ingredients"):
+        lines.append(f"### NIH DSLD Cross-Reference (Label ID: {dsld_xref.get('dsld_id', 'N/A')})")
+        lines.append(f"Product: {dsld_xref.get('dsld_product_name', '')} by {dsld_xref.get('dsld_brand', '')}")
+        lines.append("")
+        lines.append("| DSLD Ingredient | Amount | Category |")
+        lines.append("|----------------|--------|----------|")
+        for ding in dsld_xref["ingredients"]:
+            lines.append(f"| {ding.get('name', '')} | {ding.get('amount', '')} | {ding.get('category', '')} |")
+        lines.append("")
+        lines.append("*Use DSLD data to verify extracted ingredient accuracy. Discrepancies may indicate reformulation.*")
+        lines.append("")
+
+    if product_data.get("dsld_id"):
+        lines.append(f"DSLD Label ID: {product_data['dsld_id']} — https://dsld.od.nih.gov/label/{product_data['dsld_id']}")
+        lines.append("")
+
     # Section 3: Ingredient Research
     lines.append("## 3. INGREDIENT RESEARCH (PubMed-Verified)")
     if ingredient_research:
@@ -1982,6 +2509,33 @@ def format_source_document(product_data, ingredient_research, safety_data, keywo
         lines.append(f"Reddit Sentiment: {reputation.get('reddit_sentiment', 'Not checked')}")
         lines.append(f"FDA Warnings: {reputation.get('fda_warnings', 'Not checked')}")
         lines.append(f"Lawsuits: {reputation.get('lawsuits', 'Not checked')}")
+
+        # FDA CAERS data (if queried)
+        caers = reputation.get("fda_caers", {})
+        if caers.get("total_reports", 0) > 0:
+            lines.append("")
+            lines.append(f"### FDA Adverse Event Reports (CAERS)")
+            lines.append(f"- Total Reports: {caers['total_reports']}")
+            lines.append(f"- Reports Analyzed: {caers.get('reports_analyzed', 'N/A')}")
+            lines.append(f"- Query: \"{caers.get('query_matched', '')}\"")
+            top_reactions = caers.get("top_reactions", [])
+            if top_reactions:
+                lines.append("- Top Reported Reactions:")
+                for r in top_reactions[:10]:
+                    lines.append(f"  - {r['reaction']}: {r['count']} reports")
+            outcomes = caers.get("outcomes", [])
+            if outcomes:
+                lines.append("- Outcome Types:")
+                for o in outcomes:
+                    lines.append(f"  - {o['outcome']}: {o['count']}")
+            lines.append("")
+            lines.append("*CAERS reports are unverified consumer/healthcare provider submissions.*")
+            lines.append("*They do not establish causation and cannot estimate incidence rates.*")
+            lines.append("*Use for signal detection and editorial context only.*")
+        elif caers:
+            lines.append("")
+            lines.append("### FDA Adverse Event Reports (CAERS)")
+            lines.append("- No adverse event reports found in FDA CAERS database")
     lines.append("")
 
     # Section 9: Competitive Landscape
