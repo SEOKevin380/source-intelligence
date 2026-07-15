@@ -9,7 +9,16 @@
 Submissions from the MBK Source Intelligence Tool follow v3.10 intake format
 with pre-verified research data organized by CVD-5 verification categories.
 The source data is verified — use it as your Phase 0.1 facts inventory.
-Re-fetch policy pages (refund, shipping, ToS) for currency confirmation.
+
+Data marked [CLEARED] is already verified — use it as provided. Do not
+re-fetch label images, ingredient lists, or PubMed studies that are
+already included. C1 supplement facts were extracted via label OCR and
+are your authoritative ingredient data.
+
+You MAY re-fetch policy pages (refund, shipping, ToS) and contact info
+for currency confirmation, as these change frequently. Fetch any category
+marked [NOT CLEARED] or [PARTIAL] live.
+
 SEO strategy, archetype selection, and angle differentiation are determined
 by your own real-time SERP analysis.
 

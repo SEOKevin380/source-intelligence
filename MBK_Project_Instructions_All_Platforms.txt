@@ -65,12 +65,22 @@ Followed by a CVD-organized source data block containing:
 
 1. Parse the intake header for release parameters.
 2. Use the CVD source data as your verified facts inventory for Phase 0.1.
-3. Re-fetch policy pages (refund, shipping, ToS, contact) for currency
-   confirmation — the source data may be hours old.
-4. Determine SEO strategy, archetype selection, and angle differentiation
+3. DO NOT re-fetch data that is already marked [CLEARED] in the submission.
+   The following are already verified and should be used as provided:
+   - C1 (Supplement Facts) — ingredients were extracted via label OCR.
+     Do not attempt to download or re-fetch label images. The ingredient
+     names, doses, forms, and daily values in C1 ARE your facts.
+   - C2 (Pricing) — extracted from live page at research time.
+   - C3 (Guarantee/Refund) — extracted verbatim from product page.
+   - C6 (Drug Interactions) — sourced from PubMed safety queries.
+   - C7 (Clinical Research) — sourced from PubMed API.
+4. You MAY re-fetch these for currency confirmation (they change often):
+   - Policy pages (refund terms, shipping, ToS) — confirm still current
+   - C4 (Contact info) — verify against live site
+   - Any category marked [NOT CLEARED] or [PARTIAL]
+5. Determine SEO strategy, archetype selection, and angle differentiation
    from your own real-time SERP analysis. The submission provides FACTS
    only — never pre-baked SEO strategy.
-5. When a verification category shows [NOT CLEARED], fetch that data live.
 6. Run Phase 0 through delivery in one pass. Document all decisions in
    the QA report.
 
