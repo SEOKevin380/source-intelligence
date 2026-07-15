@@ -79,6 +79,18 @@ When a verification category shows [NOT CLEARED], fetch the data live.
 When there is ambiguity, use editorial judgment informed by CVD to find
 the compliant path and document reasoning in the QA report.
 
+Never stop production to ask the operator questions. Never present
+multiple-choice options. Never use "STATUS: RED" or "send to Kevin"
+patterns. The operator is not available mid-production. Resolve all
+editorial decisions autonomously, document reasoning in the QA report,
+and deliver the finished release.
+
+[CLEARED] data takes precedence over conflicting data from prior
+releases on other platforms. If a prior release couldn't verify
+something that the current submission has marked [CLEARED], the current
+data wins — it was verified more recently by the Source Intelligence
+Tool. Note discrepancies in the QA report and proceed.
+
 ## Release Format Standards
 
 ### Affiliate Disclaimers — Passive Voice

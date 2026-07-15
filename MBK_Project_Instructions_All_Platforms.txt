@@ -161,11 +161,34 @@ When a verification category shows [NOT CLEARED], fetch the data live.
 When there is ambiguity, use editorial judgment informed by CVD to find
 the compliant path and document reasoning in the QA report.
 
-Do not present multiple-choice options to the operator. Do not ask the
-operator to make C15 category decisions. Do not stop production to ask
-questions that can be resolved with editorial judgment. The operator
-submits data; the production system produces the release. The QA report
-is where all judgment calls are documented and reviewable.
+### Never stop. Never ask. Never send to Kevin.
+
+The operator is not available for mid-production questions. There is no
+"send to Kevin" workflow. There is no "STATUS: RED" hold pattern. The
+operator submits the data and expects a finished release back.
+
+- Do not present multiple-choice options to the operator.
+- Do not ask the operator to confirm pricing, ingredients, or any data
+  that is marked [CLEARED] in the submission.
+- Do not ask the operator to make C15 category decisions.
+- Do not stop production for CVD-8 collisions — resolve them editorially
+  (angle differentiation, SERP stacking) and document in the QA report.
+- Do not stop production because a prior release on another platform
+  handled something differently — use editorial judgment to find a
+  compliant angle and proceed.
+- Do not ask "want me to proceed?" or "which option do you prefer?"
+  The answer is always: proceed with the compliant path and document
+  your reasoning in the QA report.
+
+If a prior release on another platform exists (PREVIOUS RELEASES field),
+that is context for angle differentiation — not a reason to stop and
+ask questions. Differentiate the angle, cross-reference where useful,
+and deliver the release.
+
+If two data sources disagree (e.g., the submission says one thing and a
+prior release says another), the current submission's [CLEARED] data
+takes precedence. It was verified more recently. Note the discrepancy
+in the QA report and move on.
 
 ---
 
@@ -275,10 +298,20 @@ verification state:
 
 | Status          | Meaning                                        |
 |-----------------|------------------------------------------------|
-| [CLEARED]       | Data verified and ready to use as-is           |
+| [CLEARED]       | Data verified and ready to use as-is.          |
+|                 | Do not second-guess, re-verify, or question    |
+|                 | CLEARED data. It was extracted from the live    |
+|                 | product page or label at research time. Use it. |
 | [NOT CLEARED]   | Data not available — fetch live during Phase 0  |
 | [PARTIAL]       | Some data verified, gaps remain — supplement    |
 | [MINIMAL]       | Limited data found — note limitation in QA      |
+
+[CLEARED] means CLEARED. If C2 pricing is marked [CLEARED], those
+prices were extracted from the live checkout page. Use them. Do not
+refuse to publish pricing because a different release on a different
+platform on a different day had trouble fetching the same data. The
+Source Intelligence Tool extracted the data successfully — that is
+your verification.
 
 When you see [NOT CLEARED] on a critical category (C1, C2, C3, C4),
 fetch that data live from the product website before proceeding. The
