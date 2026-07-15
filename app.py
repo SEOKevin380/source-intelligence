@@ -21,6 +21,52 @@ st.set_page_config(
     layout="wide",
 )
 
+# ── Dark theme CSS overrides ──
+st.markdown("""
+<style>
+    /* Tighten spacing */
+    .block-container { padding-top: 2rem; }
+
+    /* Code blocks — dark with good contrast */
+    .stCodeBlock { border: 1px solid #2d3748; border-radius: 8px; }
+
+    /* Metric cards */
+    [data-testid="stMetric"] {
+        background: #1a1d27;
+        border: 1px solid #2d3748;
+        border-radius: 8px;
+        padding: 12px 16px;
+    }
+
+    /* Expander styling */
+    .streamlit-expanderHeader {
+        background: #1a1d27;
+        border-radius: 8px;
+    }
+
+    /* Input label styling */
+    .stTextInput label, .stSelectbox label { font-weight: 500; }
+
+    /* Download buttons */
+    .stDownloadButton button {
+        border: 1px solid #3b82f6;
+        color: #3b82f6;
+    }
+
+    /* Section dividers */
+    hr { border-color: #2d3748; }
+
+    /* Tab styling */
+    .stTabs [data-baseweb="tab-list"] { gap: 4px; }
+    .stTabs [data-baseweb="tab"] {
+        background: #1a1d27;
+        border-radius: 6px 6px 0 0;
+        padding: 8px 16px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
 # ============================================================================
 # AUTH GATE (with "Remember Me" via URL token)
 # ============================================================================
@@ -74,7 +120,7 @@ from prompt_builders import (
 # ============================================================================
 
 st.sidebar.title("Source Intelligence")
-st.sidebar.markdown("Research any product in under 3 minutes.")
+st.sidebar.caption("Research any product in under 3 minutes.")
 
 product_url = st.sidebar.text_input("Product URL", placeholder="https://product-website.com/")
 vsl_url = st.sidebar.text_input("VSL URL (optional)", placeholder="https://product.com/vsl-page")
@@ -82,8 +128,6 @@ product_name = st.sidebar.text_input("Product Name (if no URL)", placeholder="Gl
 label_file = st.sidebar.file_uploader("Label Image (optional)", type=["jpg", "jpeg", "png"])
 
 run_button = st.sidebar.button("Run Research", type="primary", use_container_width=True)
-
-st.sidebar.caption("Every product runs the full 8-phase research pipeline. No shortcuts.")
 
 # Show previously researched products
 st.sidebar.markdown("---")
@@ -96,8 +140,8 @@ existing = sorted(
 )
 if existing:
     for fname in existing[:10]:
-        name = fname.replace("_source.json", "").replace("-", " ").title()
-        if st.sidebar.button(f"📄 {name}", key=f"hist_{fname}", use_container_width=True):
+        display_name = fname.replace("_source.json", "").replace("-", " ").title()
+        if st.sidebar.button(f"📄 {display_name}", key=f"hist_{fname}", use_container_width=True):
             json_path = os.path.join(OUTPUT_DIR, fname)
             md_path = json_path.replace("_source.json", "_source_report.md")
             with open(json_path) as f:
@@ -115,7 +159,7 @@ else:
 # MAIN AREA
 # ============================================================================
 
-st.title("Product Source Intelligence")
+st.title("Source Intelligence")
 
 # Run research
 if run_button:
@@ -142,7 +186,6 @@ if run_button:
         if not msg:
             return
         progress_log.append(msg)
-        # Update the status label with phase info
         if "PHASE" in msg:
             progress_container.update(label=msg.strip("= "))
         progress_container.write(msg)
@@ -171,489 +214,417 @@ if run_button:
         progress_container.update(label="Error", state="error")
         st.error(f"Research failed: {e}")
     finally:
-        # Clean up temp file
         if label_path and os.path.exists(label_path):
             os.unlink(label_path)
 
 
 # ============================================================================
-# DISPLAY RESULTS
+# DISPLAY RESULTS — Clean workflow: Inputs → Output → Details
 # ============================================================================
 
 if "result_data" in st.session_state:
     data = st.session_state.result_data
     product = data.get("product", {})
     name = product.get("product_name", "Unknown")
+    compliance_data = data.get("compliance", {})
 
-    st.markdown(f"## {name} — Source Intelligence Report")
+    # ── Product Header ──
+    st.markdown(f"## {name}")
 
-    # ── Release Details (fills into JSON + Export Prompt) ──
-    with st.expander("**Release Details** — affiliate link, previous releases, competitor URLs", expanded=False):
-        rd_col1, rd_col2 = st.columns(2)
-        with rd_col1:
-            rd_affiliate = st.text_input(
-                "Affiliate Link",
-                placeholder="https://hop.clickbank.net/?affiliate=XXX&vendor=product",
-                help="Tracking link for this product. Saved into JSON and prompt.",
-                key="rd_affiliate",
-            )
-            rd_previous = st.text_input(
-                "Previous Release(s)",
-                value="FIRST RELEASE",
-                help="URLs of your previous articles about this product (comma-separated). Drives anti-cannibalization.",
-                key="rd_previous",
-            )
-        with rd_col2:
-            rd_competitor = st.text_input(
-                "Competitor Release(s)",
-                placeholder="https://competitor.com/their-review",
-                help="Competitor article URLs (comma-separated). Drives SERP stacking strategy.",
-                key="rd_competitor",
-            )
-            rd_platform = st.selectbox(
-                "Publishing Platform",
-                ["Domain Site", "Barchart Advertorial", "Accesswire", "Newswire.com", "Globe Newswire"],
-                key="rd_platform",
-            )
+    # Quick stats bar
+    sf = product.get("supplement_facts", {})
+    ing_count = len(sf.get("ingredients", []))
+    study_count = sum(len(r.get("studies", [])) for r in data.get("ingredient_research", {}).values())
+    risk = compliance_data.get("risk_level", "Unknown")
+    aw_pass = compliance_data.get("accesswire_blocklist_check", {}).get("passes", False)
+    bc_pass = compliance_data.get("barchart_compliance", {}).get("passes", False)
 
-    # Merge release details into data dict so JSON/copies include them
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Ingredients", ing_count)
+    m2.metric("PubMed Studies", study_count)
+    m3.metric("Risk Level", risk)
+    m4.metric("AccessWire", "PASS" if aw_pass else "FAIL")
+    m5.metric("Barchart", "PASS" if bc_pass else "FAIL")
+
+    st.divider()
+
+    # ====================================================================
+    # SECTION 1: RELEASE DETAILS — The inputs the team fills in
+    # ====================================================================
+
+    st.markdown("### Release Details")
+    st.caption("Fill these in before generating your prompt.")
+
+    rd_col1, rd_col2 = st.columns(2)
+    with rd_col1:
+        rd_affiliate = st.text_input(
+            "Affiliate Link",
+            placeholder="https://hop.clickbank.net/?affiliate=XXX&vendor=product",
+            key="rd_affiliate",
+        )
+        rd_previous = st.text_input(
+            "Previous Release(s)",
+            value="FIRST RELEASE",
+            help="URLs of your previous articles about this product (comma-separated)",
+            key="rd_previous",
+        )
+        rd_platform = st.selectbox(
+            "Publishing Platform",
+            ["Barchart Advertorial", "Accesswire", "Newswire.com", "Globe Newswire", "Domain Site"],
+            key="rd_platform",
+        )
+    with rd_col2:
+        rd_competitor = st.text_input(
+            "Competitor Release(s)",
+            placeholder="https://competitor.com/their-review",
+            help="Competitor article URLs (comma-separated)",
+            key="rd_competitor",
+        )
+        rd_client_title = st.text_input(
+            "Client Locked Title (optional)",
+            placeholder="Leave blank unless client requires a specific title",
+            key="rd_client_title",
+        )
+        # Determine if this is a domain site or press release flow
+        is_domain = rd_platform == "Domain Site"
+
+    # Site selector (only for domain site flow)
+    site_config = None
+    if is_domain:
+        site_names = get_site_names()
+        site_display = [s[1] for s in site_names]
+        site_keys = [s[0] for s in site_names]
+        selected_site_idx = st.selectbox(
+            "Target Site",
+            range(len(site_display)),
+            format_func=lambda i: site_display[i],
+            key="target_site",
+        )
+        site_config = SITE_CONFIGS.get(site_keys[selected_site_idx])
+
+    # Store release details in data
     data["release_details"] = {
         "affiliate_link": rd_affiliate or "",
         "previous_releases": rd_previous or "FIRST RELEASE",
         "competitor_releases": rd_competitor or "",
         "publishing_platform": rd_platform,
+        "client_locked_title": rd_client_title or "",
     }
 
-    # Quick Copy bar — most-used action front and center
-    json_str = json.dumps(data, indent=2, default=str)
-    with st.expander("**Copy Source Data** — click to expand, then use the copy icon (top-right of code block)", expanded=False):
-        copy_tab1, copy_tab2 = st.tabs(["Full JSON", "Markdown Report"])
-        with copy_tab1:
-            st.code(json_str, language="json", wrap_lines=True)
-        with copy_tab2:
-            report_md = st.session_state.get("result_report", "")
-            if report_md:
-                st.code(report_md, language="markdown", wrap_lines=True)
-            else:
-                st.info("No markdown report available.")
+    st.divider()
 
-    # Download buttons (secondary)
-    col1, col2 = st.columns(2)
-    with col1:
-        st.download_button(
-            "Download JSON",
-            data=json_str,
-            file_name=f"{name.lower().replace(' ', '-')}_source.json",
-            mime="application/json",
-        )
-    with col2:
-        if "result_report" in st.session_state:
-            st.download_button(
-                "Download Report (MD)",
-                data=st.session_state.result_report,
-                file_name=f"{name.lower().replace(' ', '-')}_source_report.md",
-                mime="text/markdown",
-            )
+    # ====================================================================
+    # SECTION 2: GENERATED PROMPT — The output
+    # ====================================================================
 
-    # Tabbed results
-    tabs = st.tabs(["Overview", "Ingredients", "Research", "Safety", "Compliance", "Claims", "Images", "Ingredient KB", "Export Prompt", "Raw JSON"])
+    st.markdown("### Generated Prompt")
 
-    # --- TAB: Overview ---
-    with tabs[0]:
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("**Product Details**")
-            st.markdown(f"- **Name:** {name}")
-            st.markdown(f"- **Brand:** {product.get('brand_name', 'N/A')}")
-            st.markdown(f"- **Type:** {product.get('product_type', 'N/A')}")
-            st.markdown(f"- **Category:** {product.get('category', 'N/A')}")
-            if product.get("official_url"):
-                st.markdown(f"- **URL:** {product['official_url']}")
-
-        with c2:
-            st.markdown("**Quick Stats**")
-            sf = product.get("supplement_facts", {})
-            ing_count = len(sf.get("ingredients", []))
-            study_count = sum(len(r.get("studies", [])) for r in data.get("ingredient_research", {}).values())
-            st.metric("Ingredients", ing_count)
-            st.metric("PubMed Studies", study_count)
-            compliance = data.get("compliance", {})
-            st.metric("Flagged Claims", compliance.get("flagged_claims_count", 0))
-
-        # Pricing table
-        pricing = product.get("pricing", [])
-        if pricing:
-            st.markdown("**Pricing**")
-            st.table(pricing)
-
-        # Refund policy
-        rp = product.get("refund_policy", {})
-        if rp and rp.get("duration_days"):
-            st.markdown(f"**Refund Policy:** {rp['duration_days']}-day money-back guarantee")
-            if rp.get("conditions"):
-                st.caption(rp["conditions"])
-
-        # Publishing recommendations
-        recs = data.get("publishing_recommendations", {})
-        if recs:
-            st.markdown("**Publishing Recommendations**")
-            for site, info in recs.items():
-                st.markdown(f"- **{site}**: Category IDs {info.get('category_ids', [])}")
-
-    # --- TAB: Ingredients ---
-    with tabs[1]:
-        sf = product.get("supplement_facts", {})
-        ingredients = sf.get("ingredients", [])
-        if ingredients:
-            if sf.get("proprietary_blend"):
-                st.warning(f"Proprietary Blend (Total: {sf.get('proprietary_blend_total', 'Not disclosed')})")
-
-            # Build table data
-            table_data = []
-            for ing in ingredients:
-                studies = data.get("ingredient_research", {}).get(ing.get("name", ""), {}).get("studies", [])
-                table_data.append({
-                    "Ingredient": ing.get("name", ""),
-                    "Amount": ing.get("amount", ""),
-                    "Daily Value": ing.get("daily_value", ""),
-                    "Form": ing.get("form", ""),
-                    "Studies": len(studies),
-                })
-            st.table(table_data)
-
-            if sf.get("allergen_warnings"):
-                st.warning(f"Allergen Warnings: {', '.join(sf['allergen_warnings'])}")
-        else:
-            st.info("No ingredients extracted. Try providing a label image.")
-
-    # --- TAB: Research ---
-    with tabs[2]:
-        research = data.get("ingredient_research", {})
-        if research:
-            for ing_name, ing_data in research.items():
-                with st.expander(f"{ing_name} — {ing_data.get('evidence_grade', 'N/A')} ({len(ing_data.get('studies', []))} studies)", expanded=False):
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.markdown(f"**Product Dose:** {ing_data.get('product_dose', 'N/A')}")
-                    with c2:
-                        st.markdown(f"**Clinical Dose:** {ing_data.get('clinical_dose_range', 'Not determined')}")
-
-                    for study in ing_data.get("studies", []):
-                        tier = study.get("quality_tier", "standard").upper()
-                        badge_color = {"GOLD": "🟡", "SILVER": "⚪", "BRONZE": "🟤"}.get(tier, "⚫")
-                        st.markdown(
-                            f"{badge_color} **[{tier}]** PMID:{study.get('pmid', '')} — "
-                            f"{study.get('title', '')} (*{study.get('journal', '')}*, {study.get('year', '')})"
-                        )
-        else:
-            st.info("No PubMed research available.")
-
-    # --- TAB: Safety ---
-    with tabs[3]:
-        safety = data.get("safety", {})
-        if safety:
-            for ing_name, sdata in safety.items():
-                has_data = sdata.get("side_effects") or sdata.get("drug_interactions") or sdata.get("contraindications")
-                if has_data:
-                    with st.expander(f"{ing_name}", expanded=True):
-                        if sdata.get("drug_interactions"):
-                            for di in sdata["drug_interactions"]:
-                                severity = di.get("severity", "Unknown")
-                                icon = {"High": "🔴", "Moderate": "🟡", "Low": "🟢"}.get(severity, "⚫")
-                                st.markdown(f"{icon} **{severity}** — {di.get('drug_class', '')}: {di.get('interaction', '')}")
-                        if sdata.get("side_effects"):
-                            st.markdown("**Side Effects:** " + ", ".join(sdata["side_effects"]))
-                        if sdata.get("contraindications"):
-                            st.markdown("**Contraindications:** " + ", ".join(sdata["contraindications"]))
-        else:
-            st.info("No safety data collected.")
-
-    # --- TAB: Compliance ---
-    with tabs[4]:
-        compliance = data.get("compliance", {})
-        if compliance:
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                risk = compliance.get("risk_level", "Unknown")
-                color = {"High": "🔴", "Very High": "🔴", "Moderate": "🟡", "Low": "🟢"}.get(risk, "⚫")
-                st.markdown(f"**Risk Level:** {color} {risk}")
-            with c2:
-                aw = compliance.get("accesswire_blocklist_check", {})
-                st.markdown(f"**AccessWire:** {'✅ PASS' if aw.get('passes') else '❌ FAIL'}")
-            with c3:
-                bc = compliance.get("barchart_compliance", {})
-                st.markdown(f"**Barchart:** {'✅ PASS' if bc.get('passes') else '❌ FAIL'}")
-
-            # Flagged claims
-            audit = compliance.get("claim_audit", [])
-            if audit:
-                st.markdown(f"### Flagged Claims ({len(audit)})")
-                for item in audit:
-                    st.error(f"**Claim:** \"{item.get('claim', '')}\"")
-                    for issue in item.get("issues", []):
-                        st.caption(f"Issue: {issue}")
-                    st.success(f"**Safe Alternative:** \"{item.get('safe_alternative', '')}\"")
-
-            # Required disclaimers
-            disclaimers = compliance.get("required_disclaimers", [])
-            if disclaimers:
-                st.markdown("### Required Disclaimers")
-                for d in disclaimers:
-                    st.markdown(f"- {d}")
-        else:
-            st.info("No compliance data.")
-
-    # --- TAB: Claims ---
-    with tabs[5]:
-        claims = product.get("claims", [])
-        if claims:
-            st.markdown(f"**{len(claims)} marketing claims captured** (verbatim, unverified)")
-            for c in claims:
-                if isinstance(c, dict):
-                    st.markdown(f"- [{c.get('source', 'unknown')}] \"{c.get('claim', '')}\"")
-                else:
-                    st.markdown(f"- \"{c}\"")
-
-            # Testimonials
-            testimonials = product.get("testimonials", [])
-            if testimonials:
-                st.markdown("---")
-                st.markdown(f"**{len(testimonials)} testimonials** (reference only — do not republish as verified)")
-                for t in testimonials:
-                    if isinstance(t, dict) and t.get("text"):
-                        st.caption(f"**{t.get('name', 'Anonymous')}** ({t.get('location', '')}): \"{t['text'][:300]}...\"")
-        else:
-            st.info("No marketing claims captured.")
-
-    # --- TAB: Images ---
-    with tabs[6]:
-        images = product.get("product_images", [])
-        if images:
-            st.markdown(f"**{len(images)} product images extracted** (reference only — create original images from these)")
-            cols = st.columns(3)
-            for i, img in enumerate(images):
-                with cols[i % 3]:
-                    local_path = img.get("local_path", "")
-                    if local_path and os.path.exists(local_path):
-                        st.image(local_path, caption=img.get("alt", f"Image {i+1}"), use_container_width=True)
-                    else:
-                        st.markdown(f"[Image {i+1}]({img.get('url', '')})")
-                    st.caption(f"{img.get('width', '?')}x{img.get('height', '?')} | {img.get('size_bytes', 0)//1024}KB")
-        else:
-            st.info("No product images extracted.")
-
-    # --- TAB: Ingredient KB ---
-    with tabs[7]:
-        st.markdown("### Ingredient Knowledge Base")
-        st.markdown("Accumulated research across all products. Grows with every research run.")
-
-        # Load ingredient KB
-        kb = {}
-        if os.path.exists(INGREDIENT_DB_PATH):
-            with open(INGREDIENT_DB_PATH) as f:
-                kb = json.load(f)
-
-        if kb:
-            total_studies = sum(len(entry.get("studies", [])) for entry in kb.values())
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.metric("Ingredients", len(kb))
-            with c2:
-                st.metric("Total Studies", total_studies)
-            with c3:
-                strong = sum(1 for e in kb.values() if e.get("evidence_grade") == "Strong")
-                st.metric("Strong Evidence", strong)
-
-            search = st.text_input("Search ingredients", placeholder="e.g., magnesium", key="kb_search")
-
-            for key in sorted(kb.keys()):
-                if search and search.lower() not in key.lower():
-                    continue
-                entry = kb[key]
-                studies = entry.get("studies", [])
-                grade = entry.get("evidence_grade", "Unknown")
-                grade_icon = {"Strong": "🟢", "Moderate": "🟡", "Preliminary": "🟠", "Insufficient": "🔴"}.get(grade, "⚫")
-                updated = entry.get("last_updated", "unknown")
-
-                with st.expander(f"{grade_icon} **{key.title()}** — {grade} ({len(studies)} studies) — Updated: {updated}"):
-                    if entry.get("clinical_dose_range"):
-                        st.markdown(f"**Clinical Dose Range:** {entry['clinical_dose_range']}")
-
-                    # Safety summary
-                    safety_items = []
-                    if entry.get("side_effects"):
-                        safety_items.append(f"Side effects: {', '.join(entry['side_effects'])}")
-                    if entry.get("drug_interactions"):
-                        for di in entry["drug_interactions"]:
-                            if isinstance(di, dict):
-                                safety_items.append(f"[{di.get('severity', '?')}] {di.get('drug_class', '')}: {di.get('interaction', '')}")
-                    if entry.get("contraindications"):
-                        safety_items.append(f"Contraindications: {', '.join(entry['contraindications'])}")
-                    if safety_items:
-                        st.markdown("**Safety:**")
-                        for item in safety_items:
-                            st.caption(item)
-
-                    # Studies
-                    if studies:
-                        st.markdown("**Studies:**")
-                        for s in studies:
-                            tier = s.get("quality_tier", "standard").upper()
-                            badge = {"GOLD": "🟡", "SILVER": "⚪", "BRONZE": "🟤"}.get(tier, "⚫")
-                            st.markdown(
-                                f"{badge} **[{tier}]** PMID:{s.get('pmid', '')} — "
-                                f"{s.get('title', '')} (*{s.get('journal', '')}*, {s.get('year', '')})"
-                            )
-        else:
-            st.info("No ingredients in the knowledge base yet. Run your first product research to start building it.")
-
-    # --- TAB: Export Prompt ---
-    with tabs[8]:
-        st.markdown("### Generate Production Prompt")
-        st.markdown("Select output type. **Domain Site** = self-contained writing prompt. **Press Release** = MBK production submission (paste into Barchart/ACW/Globe project — system runs the full pipeline autonomously).")
-
-        st.divider()
-
-        # Layer type selector
-        layer_type = st.selectbox("Content Layer", [
-            "L6: Product Review (Domain Site)",
-            "L6: Press Release (MBK Production)",
+    # Content layer selector (simplified)
+    if is_domain:
+        layer_type = st.selectbox("Content Type", [
+            "L6: Product Review",
             "L1: Ingredient Profile",
             "L3: Safety & Interactions Guide",
         ], key="layer_type")
+    else:
+        layer_type = "L6: MBK Production"
+        st.caption(f"Platform: **{rd_platform}** — MBK production submission (paste into Claude project, system runs autonomously)")
 
-        # Collect structured data
-        compliance = data.get("compliance", {})
-        safety = data.get("safety", {})
-        ingredients_list = product.get("supplement_facts", {}).get("ingredients", [])
+    # Build the prompt based on selection
+    prompt = ""
+    ingredients_list = sf.get("ingredients", [])
+    safety = data.get("safety", {})
 
-        # Site selector (for L1, L3, and L6 domain — not press releases)
-        site_config = None
-        if "Press Release" not in layer_type and "MBK" not in layer_type:
-            site_names = get_site_names()
-            site_display = [s[1] for s in site_names]
-            site_keys = [s[0] for s in site_names]
-            selected_site_idx = st.selectbox(
-                "Target Site",
-                range(len(site_display)),
-                format_func=lambda i: site_display[i],
-                key="target_site",
+    # Shared intake fields
+    intake_fields = {
+        "platform": rd_platform,
+        "affiliate_link": rd_affiliate or "TRAFFIC-FIRST",
+        "previous_releases": rd_previous or "FIRST RELEASE",
+        "release_type": "Single Product",
+        "ymyl_category": "Yes" if compliance_data.get("risk_level") in ["High", "Very High", "Moderate"] else "No",
+        "competitor_release": rd_competitor or "",
+        "editor_title": rd_client_title or "",
+    }
+
+    if layer_type.startswith("L1"):
+        # Ingredient Profile
+        ing_names = [ing.get("name", "") for ing in ingredients_list if ing.get("name")]
+        if ing_names:
+            selected_ing = st.selectbox("Select Ingredient", ing_names, key="l1_ingredient")
+            prompt = build_l1_ingredient_prompt(selected_ing, data, safety, site_config)
+        else:
+            st.warning("No ingredients available. Research a product first.")
+
+    elif layer_type.startswith("L3"):
+        # Safety & Interactions Guide
+        prompt = build_l3_safety_prompt(data, safety, site_config)
+
+    elif is_domain:
+        # L6: Domain Site Review
+        prompt = build_l6_review_prompt(data, site_config, intake_fields)
+
+    else:
+        # L6: MBK Production (press release platforms)
+        prompt = build_l6_press_release_prompt(data, intake_fields)
+
+    # Display the output
+    if prompt:
+        st.markdown("**Copy the prompt below and paste it into your Claude project chat:**")
+        st.code(prompt, language="text", wrap_lines=True)
+
+        slug = name.lower().replace(" ", "-")
+        layer_tag = layer_type.split(":")[0].strip().lower()
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.download_button(
+                "Download Prompt (.txt)",
+                data=prompt,
+                file_name=f"{slug}_{layer_tag}_prompt.txt",
+                mime="text/plain",
+                use_container_width=True,
             )
-            site_config = SITE_CONFIGS.get(site_keys[selected_site_idx])
+        with col2:
+            st.download_button(
+                "Download Full Report (.md)",
+                data=st.session_state.get("result_report", ""),
+                file_name=f"{slug}_source_report.md",
+                mime="text/markdown",
+                use_container_width=True,
+            )
 
-        prompt = ""
+    st.divider()
 
-        # === L1: Ingredient Profile ===
-        if layer_type.startswith("L1"):
-            ing_names = [ing.get("name", "") for ing in ingredients_list if ing.get("name")]
-            if ing_names:
-                selected_ing = st.selectbox("Select Ingredient", ing_names, key="l1_ingredient")
-                prompt = build_l1_ingredient_prompt(selected_ing, data, safety, site_config)
+    # ====================================================================
+    # SECTION 3: RESEARCH DETAILS — Hidden by default
+    # ====================================================================
+
+    with st.expander("View Research Details", expanded=False):
+        detail_tabs = st.tabs([
+            "Overview", "Ingredients", "Research", "Safety",
+            "Compliance", "Claims", "Images", "Ingredient KB", "Raw JSON",
+        ])
+
+        # --- Overview ---
+        with detail_tabs[0]:
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("**Product Details**")
+                st.markdown(f"- **Name:** {name}")
+                st.markdown(f"- **Brand:** {product.get('brand_name', 'N/A')}")
+                st.markdown(f"- **Type:** {product.get('product_type', 'N/A')}")
+                st.markdown(f"- **Category:** {product.get('category', 'N/A')}")
+                if product.get("official_url"):
+                    st.markdown(f"- **URL:** {product['official_url']}")
+
+            with c2:
+                pricing = product.get("pricing", [])
+                if pricing:
+                    st.markdown("**Pricing**")
+                    st.table(pricing)
+
+                rp = product.get("refund_policy", {})
+                if rp and rp.get("duration_days"):
+                    st.markdown(f"**Refund:** {rp['duration_days']}-day money-back guarantee")
+                    if rp.get("conditions"):
+                        st.caption(rp["conditions"])
+
+            recs = data.get("publishing_recommendations", {})
+            if recs:
+                st.markdown("**Publishing Recommendations**")
+                for site, info in recs.items():
+                    st.markdown(f"- **{site}**: Category IDs {info.get('category_ids', [])}")
+
+        # --- Ingredients ---
+        with detail_tabs[1]:
+            ingredients = sf.get("ingredients", [])
+            if ingredients:
+                if sf.get("proprietary_blend"):
+                    st.warning(f"Proprietary Blend (Total: {sf.get('proprietary_blend_total', 'Not disclosed')})")
+                table_data = []
+                for ing in ingredients:
+                    studies = data.get("ingredient_research", {}).get(ing.get("name", ""), {}).get("studies", [])
+                    table_data.append({
+                        "Ingredient": ing.get("name", ""),
+                        "Amount": ing.get("amount", ""),
+                        "Daily Value": ing.get("daily_value", ""),
+                        "Form": ing.get("form", ""),
+                        "Studies": len(studies),
+                    })
+                st.table(table_data)
+                if sf.get("allergen_warnings"):
+                    st.warning(f"Allergen Warnings: {', '.join(sf['allergen_warnings'])}")
             else:
-                st.warning("No ingredients available. Research a product first.")
+                st.info("No ingredients extracted.")
 
-        # === L3: Safety & Interactions Guide ===
-        elif layer_type.startswith("L3"):
-            prompt = build_l3_safety_prompt(data, safety, site_config)
+        # --- Research ---
+        with detail_tabs[2]:
+            research = data.get("ingredient_research", {})
+            if research:
+                for ing_name, ing_data in research.items():
+                    with st.expander(f"{ing_name} — {ing_data.get('evidence_grade', 'N/A')} ({len(ing_data.get('studies', []))} studies)", expanded=False):
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            st.markdown(f"**Product Dose:** {ing_data.get('product_dose', 'N/A')}")
+                        with c2:
+                            st.markdown(f"**Clinical Dose:** {ing_data.get('clinical_dose_range', 'Not determined')}")
+                        for study in ing_data.get("studies", []):
+                            tier = study.get("quality_tier", "standard").upper()
+                            badge = {"GOLD": "🟡", "SILVER": "⚪", "BRONZE": "🟤"}.get(tier, "⚫")
+                            st.markdown(
+                                f"{badge} **[{tier}]** PMID:{study.get('pmid', '')} — "
+                                f"{study.get('title', '')} (*{study.get('journal', '')}*, {study.get('year', '')})"
+                            )
+            else:
+                st.info("No PubMed research available.")
 
-        # === L6: Product Review (Domain Site) ===
-        elif "Domain" in layer_type:
-            # Read from Release Details (filled above tabs)
-            rd = data.get("release_details", {})
+        # --- Safety ---
+        with detail_tabs[3]:
+            safety_data = data.get("safety", {})
+            if safety_data:
+                for ing_name, sdata in safety_data.items():
+                    has_data = sdata.get("side_effects") or sdata.get("drug_interactions") or sdata.get("contraindications")
+                    if has_data:
+                        with st.expander(f"{ing_name}", expanded=True):
+                            if sdata.get("drug_interactions"):
+                                for di in sdata["drug_interactions"]:
+                                    severity = di.get("severity", "Unknown")
+                                    icon = {"High": "🔴", "Moderate": "🟡", "Low": "🟢"}.get(severity, "⚫")
+                                    st.markdown(f"{icon} **{severity}** — {di.get('drug_class', '')}: {di.get('interaction', '')}")
+                            if sdata.get("side_effects"):
+                                st.markdown("**Side Effects:** " + ", ".join(sdata["side_effects"]))
+                            if sdata.get("contraindications"):
+                                st.markdown("**Contraindications:** " + ", ".join(sdata["contraindications"]))
+            else:
+                st.info("No safety data collected.")
 
-            col1, col2 = st.columns(2)
-            with col1:
-                ymyl_status = "Yes" if compliance.get("risk_level") in ["High", "Very High", "Moderate"] else "No"
-                ymyl_category = st.selectbox("YMYL Category", ["Yes", "No"],
-                                             index=0 if ymyl_status == "Yes" else 1, key="l6_ymyl")
-            with col2:
-                release_type = st.selectbox("Release Type", ["Single Product", "Multi-Product Brand Guide"], key="l6_type")
+        # --- Compliance ---
+        with detail_tabs[4]:
+            if compliance_data:
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    color = {"High": "🔴", "Very High": "🔴", "Moderate": "🟡", "Low": "🟢"}.get(risk, "⚫")
+                    st.markdown(f"**Risk Level:** {color} {risk}")
+                with c2:
+                    st.markdown(f"**AccessWire:** {'✅ PASS' if aw_pass else '❌ FAIL'}")
+                with c3:
+                    st.markdown(f"**Barchart:** {'✅ PASS' if bc_pass else '❌ FAIL'}")
 
-            with st.expander("Optional Fields"):
-                opt1, opt2 = st.columns(2)
-                with opt1:
-                    editor_title = st.text_input("Editor-Locked Title", key="l6_title")
-                    release_summary = st.text_input("Release Summary (140 chars)", key="l6_summary")
-                with opt2:
-                    subtitle = st.text_input("Subtitle", key="l6_subtitle")
-                    release_tags = st.text_input("Release Tags (comma-separated)", key="l6_tags")
+                audit = compliance_data.get("claim_audit", [])
+                if audit:
+                    st.markdown(f"### Flagged Claims ({len(audit)})")
+                    for item in audit:
+                        st.error(f"**Claim:** \"{item.get('claim', '')}\"")
+                        for issue in item.get("issues", []):
+                            st.caption(f"Issue: {issue}")
+                        st.success(f"**Safe Alternative:** \"{item.get('safe_alternative', '')}\"")
 
-            intake_fields = {
-                "platform": rd.get("publishing_platform", "Domain Site"),
-                "affiliate_link": rd.get("affiliate_link") or "TRAFFIC-FIRST",
-                "previous_releases": rd.get("previous_releases", "FIRST RELEASE"),
-                "release_type": release_type,
-                "ymyl_category": ymyl_category,
-                "competitor_release": rd.get("competitor_releases", ""),
-                "editor_title": editor_title if 'editor_title' in dir() else "",
-                "subtitle": subtitle if 'subtitle' in dir() else "",
-                "release_summary": release_summary if 'release_summary' in dir() else "",
-                "release_tags": release_tags if 'release_tags' in dir() else "",
-            }
-            prompt = build_l6_review_prompt(data, site_config, intake_fields)
+                disclaimers = compliance_data.get("required_disclaimers", [])
+                if disclaimers:
+                    st.markdown("### Required Disclaimers")
+                    for d in disclaimers:
+                        st.markdown(f"- {d}")
+            else:
+                st.info("No compliance data.")
 
-        # === L6: Press Release (MBK Production) ===
-        elif "Press Release" in layer_type or "MBK" in layer_type:
-            rd = data.get("release_details", {})
+        # --- Claims ---
+        with detail_tabs[5]:
+            claims = product.get("claims", [])
+            if claims:
+                st.markdown(f"**{len(claims)} marketing claims captured** (verbatim, unverified)")
+                for c in claims:
+                    if isinstance(c, dict):
+                        st.markdown(f"- [{c.get('source', 'unknown')}] \"{c.get('claim', '')}\"")
+                    else:
+                        st.markdown(f"- \"{c}\"")
 
-            col1, col2 = st.columns(2)
-            with col1:
-                release_type = st.selectbox("Release Type", ["Single Product", "Multi-Product Brand Guide"], key="pr_type")
-            with col2:
-                ymyl_status = "Yes" if compliance.get("risk_level") in ["High", "Very High", "Moderate"] else "No"
-                ymyl_category = st.selectbox("YMYL Category", ["Yes", "No"],
-                                             index=0 if ymyl_status == "Yes" else 1, key="pr_ymyl")
+                testimonials = product.get("testimonials", [])
+                if testimonials:
+                    st.markdown("---")
+                    st.markdown(f"**{len(testimonials)} testimonials** (reference only)")
+                    for t in testimonials:
+                        if isinstance(t, dict) and t.get("text"):
+                            st.caption(f"**{t.get('name', 'Anonymous')}** ({t.get('location', '')}): \"{t['text'][:300]}...\"")
+            else:
+                st.info("No marketing claims captured.")
 
-            with st.expander("Optional Fields"):
-                opt1, opt2 = st.columns(2)
-                with opt1:
-                    editor_title = st.text_input("Editor-Locked Title", key="pr_title")
-                    release_summary = st.text_input("Release Summary (140 chars)", key="pr_summary")
-                with opt2:
-                    subtitle = st.text_input("Subtitle", key="pr_subtitle")
-                    release_tags = st.text_input("Release Tags (comma-separated)", key="pr_tags")
+        # --- Images ---
+        with detail_tabs[6]:
+            images = product.get("product_images", [])
+            if images:
+                st.markdown(f"**{len(images)} product images extracted**")
+                cols = st.columns(3)
+                for i, img in enumerate(images):
+                    with cols[i % 3]:
+                        local_path = img.get("local_path", "")
+                        if local_path and os.path.exists(local_path):
+                            st.image(local_path, caption=img.get("alt", f"Image {i+1}"), use_container_width=True)
+                        else:
+                            st.markdown(f"[Image {i+1}]({img.get('url', '')})")
+                        st.caption(f"{img.get('width', '?')}x{img.get('height', '?')} | {img.get('size_bytes', 0)//1024}KB")
+            else:
+                st.info("No product images extracted.")
 
-            intake_fields = {
-                "platform": rd.get("publishing_platform", "Barchart Advertorial"),
-                "affiliate_link": rd.get("affiliate_link") or "TRAFFIC-FIRST",
-                "previous_releases": rd.get("previous_releases", "FIRST RELEASE"),
-                "release_type": release_type,
-                "ymyl_category": ymyl_category,
-                "competitor_release": rd.get("competitor_releases", ""),
-                "editor_title": editor_title if 'editor_title' in dir() else "",
-                "subtitle": subtitle if 'subtitle' in dir() else "",
-                "release_summary": release_summary if 'release_summary' in dir() else "",
-                "release_tags": release_tags if 'release_tags' in dir() else "",
-            }
-            prompt = build_l6_press_release_prompt(data, intake_fields)
+        # --- Ingredient KB ---
+        with detail_tabs[7]:
+            st.markdown("### Ingredient Knowledge Base")
+            st.caption("Accumulated research across all products.")
 
-        # Display the generated prompt
-        if prompt:
-            st.markdown("**Click the copy icon (top-right of box) to copy the full prompt:**")
-            st.code(prompt, language="text", wrap_lines=True)
+            kb = {}
+            if os.path.exists(INGREDIENT_DB_PATH):
+                with open(INGREDIENT_DB_PATH) as f:
+                    kb = json.load(f)
 
-            slug = name.lower().replace(" ", "-")
-            layer_tag = layer_type.split(":")[0].strip().lower()
+            if kb:
+                total_studies = sum(len(entry.get("studies", [])) for entry in kb.values())
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    st.metric("Ingredients", len(kb))
+                with c2:
+                    st.metric("Total Studies", total_studies)
+                with c3:
+                    strong = sum(1 for e in kb.values() if e.get("evidence_grade") == "Strong")
+                    st.metric("Strong Evidence", strong)
 
-            col1, col2 = st.columns(2)
-            with col1:
-                st.download_button(
-                    "Download Prompt (.txt)",
-                    data=prompt,
-                    file_name=f"{slug}_{layer_tag}_prompt.txt",
-                    mime="text/plain",
-                    use_container_width=True,
-                )
-            with col2:
-                st.download_button(
-                    "Download Full Report (.md)",
-                    data=st.session_state.get("result_report", ""),
-                    file_name=f"{slug}_source_report.md",
-                    mime="text/markdown",
-                    use_container_width=True,
-                )
+                search = st.text_input("Search ingredients", placeholder="e.g., magnesium", key="kb_search")
 
-    # --- TAB: Raw JSON ---
-    with tabs[9]:
-        st.markdown("**Click the copy icon (top-right) to copy the full JSON:**")
-        st.code(json.dumps(data, indent=2, default=str), language="json", wrap_lines=True)
+                for key in sorted(kb.keys()):
+                    if search and search.lower() not in key.lower():
+                        continue
+                    entry = kb[key]
+                    studies = entry.get("studies", [])
+                    grade = entry.get("evidence_grade", "Unknown")
+                    grade_icon = {"Strong": "🟢", "Moderate": "🟡", "Preliminary": "🟠", "Insufficient": "🔴"}.get(grade, "⚫")
+                    updated = entry.get("last_updated", "unknown")
+
+                    with st.expander(f"{grade_icon} **{key.title()}** — {grade} ({len(studies)} studies) — Updated: {updated}"):
+                        if entry.get("clinical_dose_range"):
+                            st.markdown(f"**Clinical Dose Range:** {entry['clinical_dose_range']}")
+                        safety_items = []
+                        if entry.get("side_effects"):
+                            safety_items.append(f"Side effects: {', '.join(entry['side_effects'])}")
+                        if entry.get("drug_interactions"):
+                            for di in entry["drug_interactions"]:
+                                if isinstance(di, dict):
+                                    safety_items.append(f"[{di.get('severity', '?')}] {di.get('drug_class', '')}: {di.get('interaction', '')}")
+                        if entry.get("contraindications"):
+                            safety_items.append(f"Contraindications: {', '.join(entry['contraindications'])}")
+                        if safety_items:
+                            st.markdown("**Safety:**")
+                            for item in safety_items:
+                                st.caption(item)
+                        if studies:
+                            st.markdown("**Studies:**")
+                            for s in studies:
+                                tier = s.get("quality_tier", "standard").upper()
+                                badge = {"GOLD": "🟡", "SILVER": "⚪", "BRONZE": "🟤"}.get(tier, "⚫")
+                                st.markdown(
+                                    f"{badge} **[{tier}]** PMID:{s.get('pmid', '')} — "
+                                    f"{s.get('title', '')} (*{s.get('journal', '')}*, {s.get('year', '')})"
+                                )
+            else:
+                st.info("No ingredients in the knowledge base yet. Run your first product research to start building it.")
+
+        # --- Raw JSON ---
+        with detail_tabs[8]:
+            st.code(json.dumps(data, indent=2, default=str), language="json", wrap_lines=True)
