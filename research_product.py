@@ -205,9 +205,21 @@ def call_claude(prompt, system="You are a product research assistant. Extract ON
         if images:
             for img_path in images:
                 with open(img_path, "rb") as f:
-                    img_data = base64.standard_b64encode(f.read()).decode("utf-8")
-                ext = img_path.rsplit(".", 1)[-1].lower()
-                media_type = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif", "webp": "image/webp"}.get(ext, "image/jpeg")
+                    raw = f.read()
+                img_data = base64.standard_b64encode(raw).decode("utf-8")
+                # Detect media type from magic bytes first, fall back to extension
+                media_type = None
+                if raw[:4] == b'RIFF' and raw[8:12] == b'WEBP':
+                    media_type = "image/webp"
+                elif raw[:8] == b'\x89PNG\r\n\x1a\n':
+                    media_type = "image/png"
+                elif raw[:2] == b'\xff\xd8':
+                    media_type = "image/jpeg"
+                elif raw[:4] == b'GIF8':
+                    media_type = "image/gif"
+                if not media_type:
+                    ext = img_path.rsplit(".", 1)[-1].lower()
+                    media_type = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif", "webp": "image/webp"}.get(ext, "image/jpeg")
                 content.append({"type": "image", "source": {"type": "base64", "media_type": media_type, "data": img_data}})
         content.append({"type": "text", "text": prompt})
 
@@ -251,7 +263,11 @@ Rules:
 - Include proprietary blend ingredients even without individual amounts
 - Capture "Other Ingredients" separately at the end with amount=""
 - Be precise — this is a legal document
-- If serving size or servings per container is not visible, use "" for that field"""
+- If serving size or servings per container is not visible, use "" for that field
+
+If this image does NOT contain a Supplement Facts panel or ingredient list (e.g., it
+is a product mockup, marketing graphic, or unrelated image), return exactly:
+{"error": "no_supplement_facts", "ingredients": []}"""
 
     response = call_claude(prompt, max_tokens=3000, images=[image_path])
     if not response:
@@ -265,9 +281,14 @@ Rules:
         obj_match = re.search(r'\{[\s\S]*\}', clean)
         if obj_match:
             parsed = json.loads(obj_match.group())
+            # Check for "no supplement facts" response
+            if isinstance(parsed, dict) and parsed.get("error") == "no_supplement_facts":
+                _emit("  [!] Label image does not contain a Supplement Facts panel")
+                _emit("      Provide a direct image of the Supplement Facts label (not a product mockup)")
+                return []
             if isinstance(parsed, dict) and "ingredients" in parsed:
                 ingredients = parsed["ingredients"]
-                if isinstance(ingredients, list):
+                if isinstance(ingredients, list) and len(ingredients) > 0:
                     for ing in ingredients:
                         ing["source"] = "label_image"
                         ing["verified"] = True
@@ -281,6 +302,9 @@ Rules:
                         "serving_size": parsed.get("serving_size", ""),
                         "servings_per_container": parsed.get("servings_per_container", ""),
                     }
+                else:
+                    _emit("  [!] Label image OCR returned 0 ingredients — image may not show a Supplement Facts panel")
+                    return []
 
         # Fallback: try parsing as array (old format, ingredients only)
         arr_match = re.search(r'\[[\s\S]*\]', clean)
@@ -337,6 +361,7 @@ def _web_search_product(name, search_type="ingredients"):
         review_urls = [
             f"https://www.supplementcritique.com/{slug}-review/",
             f"https://www.healthline.com/nutrition/{slug}",
+            f"https://www.supplementcritique.com/{slug}-reviews/",
         ]
     elif search_type == "pricing":
         review_urls = [
@@ -354,7 +379,7 @@ def _web_search_product(name, search_type="ingredients"):
             if len(text) > 200:
                 combined.append(text[:4000])
 
-    # Also try the DuckDuckGo API (different from HTML search)
+    # Strategy 3: DuckDuckGo Instant Answer API (for well-known products)
     try:
         ddg_api = f"https://api.duckduckgo.com/?q={urllib.parse.quote_plus(name + ' product')}&format=json&no_html=1"
         resp = fetch_url(ddg_api, max_bytes=30000)
@@ -363,7 +388,6 @@ def _web_search_product(name, search_type="ingredients"):
             abstract = data.get("AbstractText", "")
             if abstract:
                 combined.append(f"OVERVIEW: {abstract}")
-            # Related topics
             for topic in data.get("RelatedTopics", [])[:5]:
                 if isinstance(topic, dict) and topic.get("Text"):
                     combined.append(topic["Text"])
@@ -828,6 +852,19 @@ def _try_multiple_urls(url, browser_session=None):
 
     # Try main URL
     main = fetch_url(url)
+
+    # If URL path is a funnel slug (/pv, /v4, /checkout, etc.), also fetch root domain
+    # — checkout funnels often have zero product info, while root may have a sales page
+    parsed_url = urllib.parse.urlparse(url)
+    path = parsed_url.path.rstrip("/")
+    funnel_patterns = re.compile(r'^/(?:pv|v\d+|checkout|order|buy|cart|offer|special|promo|lp|landing|sales?)$', re.IGNORECASE)
+    if path and funnel_patterns.match(path):
+        root_url = f"{parsed_url.scheme}://{parsed_url.netloc}/"
+        _emit(f"    Funnel page detected ({path}) — also checking root domain")
+        root_html = fetch_url(root_url, max_bytes=60000)
+        if root_html and len(strip_html(root_html)) > len(strip_html(main or "")):
+            _emit(f"    Root domain has more content ({len(strip_html(root_html)):,} chars)")
+            results["root_page"] = root_html
 
     # If content looks like a JS shell or missing pricing, retry with browser
     if browser_session and browser_session.available:
@@ -2946,6 +2983,9 @@ def research_product(url=None, vsl_url=None, product_name=None, quick=False, lab
                     _emit(f"  Label override: {len(label_result)} verified ingredients from label image")
                     product_data["supplement_facts"]["ingredients"] = label_result
                 product_data["supplement_facts"]["_source"] = "label_image_verified"
+            else:
+                _emit("  [!] Label image provided but no ingredients extracted")
+                _emit("      Make sure the image URL points to a clear Supplement Facts label photo")
         if not product_data:
             _emit("\n[ABORT] Could not extract product data")
             return None

@@ -223,11 +223,22 @@ if run_button:
             resp = requests.get(label_url.strip(), timeout=15,
                                 headers={"User-Agent": "Mozilla/5.0"})
             if resp.status_code == 200 and len(resp.content) > 5000:
+                # Determine extension from Content-Type header first (handles S3/CDN
+                # URLs with no file extension), then fall back to URL path
                 ext = ".png"
-                for e in [".jpg", ".jpeg", ".png", ".webp"]:
-                    if e in label_url.lower():
-                        ext = e
-                        break
+                ct = resp.headers.get("Content-Type", "").lower()
+                ct_map = {
+                    "image/jpeg": ".jpg", "image/jpg": ".jpg",
+                    "image/png": ".png", "image/webp": ".webp",
+                    "image/gif": ".gif",
+                }
+                if ct in ct_map:
+                    ext = ct_map[ct]
+                else:
+                    for e in [".jpg", ".jpeg", ".png", ".webp"]:
+                        if e in label_url.lower():
+                            ext = e
+                            break
                 tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
                 tmp.write(resp.content)
                 tmp.close()
