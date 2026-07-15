@@ -124,6 +124,12 @@ st.sidebar.title("Source Intelligence")
 product_url = st.sidebar.text_input("Product URL", placeholder="https://product-website.com/")
 product_name = st.sidebar.text_input("Product Name", placeholder="Memovance PRO")
 vsl_url = st.sidebar.text_input("VSL URL (optional)", placeholder="https://product.com/vsl-page")
+label_url = st.sidebar.text_input(
+    "Label Image URL (optional)",
+    placeholder="https://example.com/supplement-facts-label.png",
+    help="Direct URL to a supplement facts label image for OCR extraction",
+    key="label_url",
+)
 label_file = None  # kept for API compatibility
 rd_affiliate = st.sidebar.text_input(
     "Affiliate Link",
@@ -199,9 +205,29 @@ if run_button:
         st.error("Provide a Product URL or Product Name.")
         st.stop()
 
-    # Handle label image upload
+    # Handle label image — from URL or file upload
     label_path = None
-    if label_file:
+    if label_url and label_url.strip():
+        import requests
+        try:
+            resp = requests.get(label_url.strip(), timeout=15,
+                                headers={"User-Agent": "Mozilla/5.0"})
+            if resp.status_code == 200 and len(resp.content) > 5000:
+                ext = ".png"
+                for e in [".jpg", ".jpeg", ".png", ".webp"]:
+                    if e in label_url.lower():
+                        ext = e
+                        break
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
+                tmp.write(resp.content)
+                tmp.close()
+                label_path = tmp.name
+                st.sidebar.success(f"Label image downloaded ({len(resp.content)//1024}KB)")
+            else:
+                st.sidebar.warning(f"Could not download label image (status {resp.status_code})")
+        except Exception as e:
+            st.sidebar.warning(f"Label download failed: {e}")
+    elif label_file:
         suffix = "." + label_file.name.rsplit(".", 1)[-1]
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
         tmp.write(label_file.read())
