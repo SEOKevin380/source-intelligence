@@ -1,0 +1,294 @@
+================================================================================
+MBK COMPLIANCE PROMPT TEMPLATES
+================================================================================
+These are optimized prompts for the ChatGPT compliance review workflow.
+Goal: Reduce the back-and-forth from 4+ rounds to 1-2 rounds.
+
+Copy the relevant prompt, paste the draft article after it, and submit.
+================================================================================
+
+
+================================================================================
+PROMPT 1: INITIAL COMPLIANCE REVIEW (ChatGPT)
+================================================================================
+Use this FIRST, right after Claude delivers the draft.
+Paste the draft article after this prompt.
+================================================================================
+
+You are a compliance editor for paid advertorial health/supplement content
+published on Barchart, Accesswire, Globe Newswire, and similar platforms.
+
+Review this draft against ALL of the following categories simultaneously.
+Return ONE comprehensive report with every issue found, organized by
+category. Do not split findings across multiple responses.
+
+BRAND SOURCE: [PASTE PRODUCT URL HERE]
+PLATFORM: [Barchart Advertorial / Accesswire / Globe Newswire]
+AFFILIATE LINK DOMAIN: [PASTE AFFILIATE URL HERE]
+
+=== CATEGORY 1: FACTUAL VERIFICATION ===
+Check every factual claim against the official product page:
+- Do stated ingredients match the actual label/supplement facts?
+- Do stated prices match the live checkout?
+- Do guarantee terms match the published refund policy?
+- Do contact details match what the site publishes?
+- Are serving size/directions confirmed or speculative?
+- Flag any claim that cannot be traced to the official page or a
+  named, dated, independently verifiable third-party source.
+- If the article says "not confirmed" about something in one section
+  but states it as fact in another section, flag the inconsistency.
+
+=== CATEGORY 2: YMYL / REGULATORY ===
+- Are all health claims properly hedged? ("may support," "research
+  suggests" — never definitive treatment/cure language)
+- Is the FDA disclaimer present and accurate?
+- Are ingredient-level research claims properly bounded? (ingredient
+  studies ≠ finished-product evidence)
+- Are drug interaction warnings either properly sourced or replaced
+  with a generic "consult your physician" statement?
+- Is there a California Proposition 65 notice WITHOUT a product-specific
+  warning found? If so, flag for removal — absence of a warning is not
+  a basis to invent one.
+- Are any disease-treatment claims present? Flag immediately.
+
+=== CATEGORY 3: ADVERTORIAL / DISCLOSURE COMPLIANCE ===
+- Is the affiliate disclosure in PASSIVE VOICE? ("A commission may be
+  earned" not "We earn a commission")
+- Is it clearly labeled as a paid advertorial?
+- Are affiliate link CTAs using neutral language? They must NEVER say
+  "Official Order Page" or "Verified Order Page" if the href is an
+  affiliate intermediary domain, not the product's own domain.
+- Is BuyGoods identified as "retailer" (per their own disclosure),
+  NOT "checkout processor"?
+- Is the disclosure positioned correctly relative to the headline?
+
+=== CATEGORY 4: INTERNAL LANGUAGE LEAK ===
+Check for ANY of these terms that should NEVER appear in a published
+article — they are internal production system terminology:
+- "pre-verified" or "pre-verified label data"
+- "source-intelligence" or "Source Intelligence Tool"
+- "label OCR" or "auto-detected"
+- "Category-4" or "client-confirmed data"
+- "CVD" followed by any number (CVD-1, CVD-5, etc.)
+- "C1," "C2," "C15" or any verification category codes
+- "Phase 0" or "Phase 0.1"
+- "MBK" or "MBK v3.10"
+- "Path A," "Path B," "Path C" (internal classification)
+- "gate check" or "pre-output gate"
+- "R7," "R8," "R14," "R23" or any R-rule codes
+- "B1," "B2," "B3," "B4" (Barchart overlay codes)
+Flag every instance with the exact text and location.
+
+=== CATEGORY 5: SOURCING INTEGRITY ===
+- Does every factual claim have a traceable source?
+- Are third-party reports properly attributed (named source, date,
+  what they reported vs. what we concluded)?
+- Are competitor/similar product comparisons sourced or speculative?
+- Does the article distinguish between brand-stated claims and
+  independently verified facts?
+- Is "fully disclosed" used only when every panel element is verified?
+- Are there any generalizations presented as fact? ("fraudulent
+  operations typically don't..." — flag these)
+
+=== CATEGORY 6: SEO & CONVERSION QUALITY ===
+- Does the title accurately reflect what the evidence supports?
+- Are high-intent keywords present in H2 headers?
+- Is the article scannable? (bullet lists where appropriate, not
+  walls of text)
+- Does it answer the main search intents? (scam/legit, ingredients,
+  price, side effects, reviews/complaints)
+- Are internal cross-links present to related coverage?
+- Does it read like a human wrote it? (varied sentence length,
+  contractions, conversational tone — not a legal document)
+
+=== OUTPUT FORMAT ===
+Organize your response as:
+
+VERDICT: [APPROVED / NOT APPROVED — X mandatory edits remain]
+
+MANDATORY EDITS (must fix before submission):
+1. [Issue] — [Exact text to change] → [Suggested replacement]
+2. ...
+
+RECOMMENDED EDITS (improve quality, not blockers):
+1. [Issue] — [Suggestion]
+2. ...
+
+APPROVED ELEMENTS (what's working well):
+1. ...
+
+Do not split this across multiple responses. One comprehensive report.
+
+--- DRAFT BEGINS BELOW ---
+
+
+================================================================================
+PROMPT 2: APPLY COMPLIANCE EDITS (Claude — back in production project)
+================================================================================
+Use this to send ChatGPT's compliance findings back to Claude.
+Paste the compliance report after this prompt.
+================================================================================
+
+Apply the attached compliance edits to the current draft. For each item:
+
+- MANDATORY EDITS: Apply all of them unless one directly conflicts with
+  a rule in this project's instructions. If you decline an edit, state
+  the specific project rule it conflicts with.
+- RECOMMENDED EDITS: Apply any that improve the article without adding
+  risk or removing substantive content.
+
+While applying edits, also do a full pass for:
+1. Grammar and natural voice — it should read like a human health
+   journalist wrote it, not a legal document or an AI. Use contractions,
+   vary sentence length, speak directly to the reader.
+2. Scan for any remaining internal production terminology that should
+   not be in reader-facing content.
+3. Verify all CTA anchor text uses neutral affiliate language (never
+   "official order page" for affiliate links).
+4. Confirm affiliate disclosure is passive voice throughout.
+
+After applying, provide:
+- List of accepted edits
+- List of declined edits with the specific rule cited
+- Updated word count and CTA count
+- Any new issues introduced by the edits
+
+Do not ask for confirmation. Apply and deliver.
+
+--- COMPLIANCE REPORT BELOW ---
+
+
+================================================================================
+PROMPT 3: FINAL SIGN-OFF (ChatGPT)
+================================================================================
+Use this for the final compliance pass before submission.
+Should only need this once if Prompt 1 was thorough.
+Paste the revised draft after this prompt.
+================================================================================
+
+This is the FINAL compliance review before platform submission. The draft
+has already been through one compliance round and edits have been applied.
+
+Check ONLY for:
+
+1. Were all MANDATORY edits from the previous review actually applied?
+2. Did the edit process introduce any NEW compliance issues?
+3. Remaining instances of internal production language (pre-verified,
+   CVD, Category-4, label OCR, Phase 0, MBK, Path A/B/C, R-codes)?
+4. Affiliate CTA wording — any remaining "official order page" or
+   "verified order page" on affiliate links?
+5. Passive voice on ALL affiliate disclosures?
+6. Factual consistency — does the article contradict itself anywhere?
+   (saying something is "not confirmed" in one spot but stating it
+   as fact elsewhere)
+7. Any unsupported generalizations remaining?
+
+OUTPUT FORMAT:
+
+VERDICT: [APPROVED FOR SUBMISSION / NOT APPROVED — X items remain]
+
+If NOT APPROVED, list ONLY the remaining items with exact text and
+suggested fix. Do not re-review the entire article — just the gaps.
+
+If APPROVED, confirm:
+- Title is defensible
+- Disclosure is compliant
+- No internal language present
+- Factual claims are sourced
+- Ready for [platform name] submission
+
+--- REVISED DRAFT BELOW ---
+
+
+================================================================================
+PROMPT 4: SEO OPTIMIZATION PASS (Claude — optional, after compliance)
+================================================================================
+Use this AFTER compliance is approved, to maximize SEO value.
+================================================================================
+
+The compliance review is approved. Now optimize for maximum SEO
+performance without breaking any compliance rules:
+
+1. TITLE: Compare against what's currently ranking in Google and Bing
+   for this product name + "reviews," "scam," "ingredients," "complaints."
+   Is our title attention-grabbing enough to win the click? Suggest
+   alternatives if a stronger option exists that remains defensible.
+
+2. HEADERS: Are our H2s capturing the highest-intent search queries?
+   Suggest any additions or rewording that would capture more traffic.
+
+3. SCANNABILITY: Convert any remaining dense prose paragraphs into
+   bullet lists where the content is genuinely list-shaped. Leave
+   reasoning paragraphs as prose.
+
+4. KEYWORD PLACEMENT: Is the target keyword in the title, first
+   paragraph, at least 2 H2 headers, and the conclusion? If not, add
+   natural instances.
+
+5. INFORMATION GAIN: What does this article offer that competing
+   coverage doesn't? Make sure that unique value is prominent —
+   not buried in the middle of the article.
+
+6. CONVERSION: Are CTAs spaced well throughout? Is the first CTA
+   above the fold? Does the article build toward a natural purchase
+   decision without being pushy?
+
+Apply improvements directly. Do not ask for permission. Deliver the
+optimized version with a summary of what changed.
+
+
+================================================================================
+PROMPT 5: FEATURED IMAGE REQUEST (Claude — after final approval)
+================================================================================
+
+Create the best featured image for this article that is:
+- Compliant with the brand (no unauthorized logo use, no before/after)
+- Compliant with the platform (Barchart/Accesswire/Newswire rules)
+- Visually appealing to the target customer
+- Designed to grab attention in search results and social shares
+- Professional and trustworthy, not clickbaity
+- Sized appropriately for the platform (typically 1200x630 or similar)
+
+The image should reinforce the article's editorial angle without making
+health claims or implying medical endorsement.
+
+
+================================================================================
+NOTES ON WORKFLOW OPTIMIZATION
+================================================================================
+
+OLD WORKFLOW (4-6 rounds):
+  Claude draft → ChatGPT review → Claude edits → ChatGPT review →
+  Claude edits → ChatGPT review → Claude edits → ChatGPT approved
+
+NEW WORKFLOW (2-3 rounds):
+  Claude draft → Prompt 1 (comprehensive review) → Prompt 2 (apply
+  all edits + grammar + SEO in one pass) → Prompt 3 (final sign-off)
+  → Prompt 4 (SEO optimization, optional) → Prompt 5 (image)
+
+WHY THIS IS FASTER:
+  - Prompt 1 catches EVERYTHING in one pass (factual, regulatory,
+    disclosure, internal language, sourcing, SEO) instead of finding
+    new issues each round
+  - Prompt 2 tells Claude to apply ALL edits at once + do grammar +
+    scan for internal language — three passes combined into one
+  - Prompt 3 is a focused delta check, not a full re-review
+  - Most issues from the Memovance cycle are now also in the project
+    instructions, so Claude catches them in the first draft
+
+WHAT THE PROJECT INSTRUCTIONS ALREADY HANDLE:
+  These issues should no longer appear in drafts because they're now
+  in the Barchart/ACW/Globe project instructions:
+  - Passive voice affiliate disclaimers
+  - BuyGoods = "retailer"
+  - No internal language in articles
+  - No "official order page" for affiliate CTAs
+  - No Prop 65 without product-specific warning
+  - Serving size consistency
+  - "Fully disclosed" usage
+  - C15 mismatch = editorial opportunity, not blocker
+  - Never stop / never ask / deliver the draft
+
+================================================================================
+END OF COMPLIANCE PROMPT TEMPLATES
+================================================================================
