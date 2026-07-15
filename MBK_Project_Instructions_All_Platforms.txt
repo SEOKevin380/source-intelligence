@@ -88,29 +88,72 @@ Followed by a CVD-organized source data block containing:
 
 ## C15 CATEGORY ANALYSIS — SUPPLEMENT PRODUCTS
 
-For supplement products, C15 analysis follows this protocol:
+For Source Intelligence submissions, C15 analysis uses THIS protocol.
+This supersedes any other C15/Path A/Path C definitions in this project
+for submissions that include the v3.10 intake header.
 
-1. Check R12 blocklist. If the product is on it, HALT. If not, continue.
+### Step 1: R12 Blocklist Check
 
-2. Compare label ingredients to marketing positioning.
+Is the product on the R12 blocklist (weapons, controlled substances,
+illegal products, explicitly prohibited categories)?
 
-3. If there is a mismatch (e.g., the label contains amino acids but
-   marketing says "brain health"), this is a label-vs-copy discrepancy.
-   Handle it editorially:
+- YES → HALT. This is the ONLY halt condition.
+- NO → Continue to Step 2.
+
+### Step 2: It's a legal supplement. Proceed.
+
+If the product passed R12, it is a legal dietary supplement sold through
+legitimate retail channels. All legal supplements proceed to production
+regardless of any ingredient-vs-marketing mismatch. There is no "Path A
+HALT" for legal supplements that pass R12.
+
+### Step 3: Handle any label-vs-marketing mismatch editorially.
+
+If the label ingredients don't match the marketing positioning (e.g.,
+a nitric oxide stack marketed as cognitive support, an amino acid blend
+marketed as brain health, a blood flow formula marketed as memory
+support), this is an editorial opportunity — NOT a blocker:
 
    - Lead with what the label actually contains (verified ingredients)
    - Frame content around what those ingredients do per PubMed research
-   - Reference the brand's marketing positioning as context, not as your
-     own editorial claim
-   - If ingredients have any legitimate pathway to the marketed benefit
-     (e.g., arginine -> blood flow -> cerebrovascular support), note the
-     connection with hedging language
-   - Document the analysis in the QA report
+   - Reference the brand's marketing positioning as context, not as
+     your own editorial claim
+   - If ingredients have ANY legitimate pathway to the marketed benefit
+     (e.g., arginine → blood flow → cerebrovascular support → brain
+     oxygenation), note the connection with hedging language
+   - This IS the article's editorial spine — the mismatch is the
+     information gain that differentiates our content
+   - Document the C15 analysis in the QA report
 
-Label-vs-marketing mismatches on legal supplement products are editorial
-opportunities, not production blockers. The discrepancy itself is the
-information gain that differentiates our content from every other review
-that just parrots the sales page.
+### Why this is never Path A for legal supplements:
+
+A nitric oxide formula marketed as "cognitive wellness" is not a
+category conflict — it is a marketing positioning choice by the brand.
+The ingredients (arginine, citrulline) have documented cerebrovascular
+pathways. The editorial treatment is to explain what the ingredients
+actually do, note the brand's positioning, and let the reader decide.
+This is exactly what good health journalism does.
+
+The mismatch between label contents and marketing claims is the single
+most valuable piece of information in the entire article. It is what
+makes our content worth reading. Stopping production because of it
+would be like a journalist refusing to report a story because the
+facts don't match the press release.
+
+### Examples of mismatches that are EDITORIAL OPPORTUNITIES (proceed):
+
+- NO/pump stack marketed as brain health → write about blood flow,
+  note cerebrovascular pathways, document the positioning gap
+- Amino acid blend marketed as weight loss → write about what amino
+  acids do, note the brand's weight loss claims as their positioning
+- Vitamin/mineral stack marketed as testosterone booster → write about
+  what the vitamins do, note limited evidence for testosterone claims
+- Any legal supplement where label ≠ marketing → lead with label facts
+
+### The ONLY thing that halts production:
+
+R12 blocklist match. That's it. Nothing else halts production on a
+legal dietary supplement.
 
 ---
 

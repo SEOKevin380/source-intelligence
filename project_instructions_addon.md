@@ -27,25 +27,27 @@ verified contact info, special client instructions, or additional context.
 
 ## C15 Category Analysis — Supplement Products
 
-For supplement products, C15 analysis follows this protocol:
+For Source Intelligence submissions, C15 uses this protocol. This
+supersedes any other C15/Path A definitions for v3.10 intake submissions.
 
-1. Check R12 blocklist. If the product is on it, HALT. If not, continue.
-2. Compare label ingredients to marketing positioning.
-3. If there is a mismatch (e.g., the label contains amino acids but marketing
-   says "brain health"), this is a label-vs-copy discrepancy — handle
-   editorially:
+1. Check R12 blocklist. If the product is on it, HALT. This is the ONLY
+   halt condition for legal supplements. If not on R12, continue.
+2. The product is a legal supplement. Proceed to production.
+3. If label ingredients don't match marketing positioning (e.g., a nitric
+   oxide stack marketed as cognitive support), handle it editorially:
    - Lead with what the label actually contains (verified ingredients)
    - Frame content around what those ingredients do per PubMed research
    - Reference the brand's marketing positioning as context, not as your
      own editorial claim
    - If ingredients have any legitimate pathway to the marketed benefit
-     (e.g., arginine → blood flow → cerebrovascular support), note the
-     connection with hedging language
+     (e.g., arginine → blood flow → cerebrovascular support → brain
+     oxygenation), note the connection with hedging language
+   - The mismatch IS the editorial angle — it's the information gain
    - Document the analysis in the QA report
 
-Label-vs-marketing mismatches on legal supplement products are editorial
-opportunities, not production blockers. The discrepancy itself is the
-information gain that differentiates our content.
+There is no "Path A HALT" for legal supplements that pass R12. Label-vs-
+marketing mismatches — even dramatic ones — are editorial opportunities.
+The only halt is R12.
 
 ## Third-Party Ad Funnels
 
