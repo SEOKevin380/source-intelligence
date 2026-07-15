@@ -300,20 +300,11 @@ SAFETY DATA — ALL INGREDIENTS
 
 
 # =============================================================================
-# L6: PRODUCT REVIEW PROMPT (DOMAIN SITE)
+# SHARED: SOURCE DATA BLOCK
 # =============================================================================
 
-def build_l6_review_prompt(full_data, site_config, intake_fields):
-    """Build a prompt for generating an L6 Product Review for a domain site.
-
-    This is the refactored version of the current Export Prompt tab logic,
-    enriched with accumulated KB data.
-
-    Args:
-        full_data: Complete source intelligence data dict
-        site_config: Site configuration dict (or None for generic)
-        intake_fields: Dict with platform, affiliate_link, previous_releases, etc.
-    """
+def _build_source_data_block(full_data):
+    """Build the source intelligence data section used by all L6 prompts."""
     product = full_data.get("product", {})
     name = product.get("product_name", "Unknown")
     compliance = full_data.get("compliance", {})
@@ -326,49 +317,9 @@ def build_l6_review_prompt(full_data, site_config, intake_fields):
     ingredients = sf.get("ingredients", [])
     ingredient_kb = _load_ingredient_kb()
 
-    # v3.10 intake fields
-    prompt = f"""PRODUCT NAME: {name}
-OFFICIAL WEBSITE URL: {product.get('official_url', '')}
-PUBLISHING PLATFORM: {intake_fields.get('platform', 'Domain Site')}
-AFFILIATE LINK: {intake_fields.get('affiliate_link', 'TRAFFIC-FIRST')}
-RELEASE TYPE: {intake_fields.get('release_type', 'Single Product')}
-YMYL CATEGORY: {intake_fields.get('ymyl_category', 'Yes')}
-PREVIOUS RELEASES: {intake_fields.get('previous_releases', 'FIRST RELEASE')}
-SOURCE MATERIALS: Source intelligence data provided inline below"""
-
-    # Optional intake fields
-    for field, key in [
-        ("COMPETITOR RELEASE", "competitor_release"),
-        ("EDITOR-LOCKED TITLE", "editor_title"),
-        ("SUBTITLE", "subtitle"),
-        ("RELEASE SUMMARY (140 chars)", "release_summary"),
-        ("RELEASE TAGS", "release_tags"),
-    ]:
-        val = intake_fields.get(key, "")
-        if val:
-            prompt += f"\n{field}: {val}"
-
-    # Site-specific editorial instructions
-    if site_config:
-        prompt += f"""
-
-═══════════════════════════════════════════════
-EDITORIAL INSTRUCTIONS ({site_config.get('name', '')})
-═══════════════════════════════════════════════
-Voice: {site_config.get('editorial_voice', '')}
-Byline: {site_config.get('byline', '')}
-Word Count: {site_config.get('word_count_range', (1000, 1500))[0]}-{site_config.get('word_count_range', (1000, 1500))[1]} words
-"""
-        if site_config.get("disclaimer_top"):
-            prompt += f"Top Disclaimer (include verbatim): {site_config['disclaimer_top']}\n"
-        if site_config.get("disclaimer_bottom"):
-            prompt += f"Bottom Disclaimer (include verbatim): {site_config['disclaimer_bottom']}\n"
-
-    # Source intelligence data
-    prompt += f"""
-
+    block = f"""
 ════════════════════════════════════════════════════════
-SOURCE INTELLIGENCE DATA (Pre-Verified — Use for Phase 0)
+SOURCE MATERIALS (Pre-Verified Research Data)
 ════════════════════════════════════════════════════════
 
 Product Name: {name}
@@ -383,7 +334,7 @@ Barchart: {'PASS' if compliance.get('barchart_compliance', {}).get('passes') els
 --- SUPPLEMENT FACTS ---
 """
     if sf.get("proprietary_blend"):
-        prompt += f"PROPRIETARY BLEND — Total: {sf.get('proprietary_blend_total', 'Not disclosed')}\n"
+        block += f"PROPRIETARY BLEND — Total: {sf.get('proprietary_blend_total', 'Not disclosed')}\n"
 
     for ing in ingredients:
         line = f"- {ing.get('name', '')}"
@@ -393,114 +344,319 @@ Barchart: {'PASS' if compliance.get('barchart_compliance', {}).get('passes') els
             line += f" ({ing['daily_value']} DV)"
         if ing.get("form"):
             line += f" [Form: {ing['form']}]"
-        prompt += line + "\n"
+        block += line + "\n"
     if not ingredients:
-        prompt += "No ingredients extracted — invoke Thin Web Presence Protocol\n"
+        block += "No ingredients extracted — invoke Thin Web Presence Protocol\n"
 
     # Ingredient research — enriched with KB data
-    prompt += "\n--- INGREDIENT RESEARCH (PubMed-Verified, Enriched from Ingredient KB) ---\n"
+    block += "\n--- INGREDIENT RESEARCH (PubMed-Verified) ---\n"
     for ing_name, ing_data in ingredient_research.items():
         enriched = _get_enriched_ingredient(ing_name, ingredient_research, ingredient_kb)
-        prompt += f"\n{ing_name} — Evidence: {enriched['evidence_grade']} — {len(enriched['studies'])} studies\n"
+        block += f"\n{ing_name} — Evidence: {enriched['evidence_grade']} — {len(enriched['studies'])} studies\n"
         if enriched.get("product_dose"):
-            prompt += f"  Product Dose: {enriched['product_dose']}\n"
+            block += f"  Product Dose: {enriched['product_dose']}\n"
         if enriched.get("clinical_dose_range"):
-            prompt += f"  Clinical Dose Range: {enriched['clinical_dose_range']}\n"
+            block += f"  Clinical Dose Range: {enriched['clinical_dose_range']}\n"
         for s in enriched["studies"][:8]:
             tier = s.get("quality_tier", "standard").upper()
-            prompt += f"  [{tier}] PMID:{s.get('pmid', '')} — {s.get('title', '')} ({s.get('journal', '')}, {s.get('year', '')})\n"
+            block += f"  [{tier}] PMID:{s.get('pmid', '')} — {s.get('title', '')} ({s.get('journal', '')}, {s.get('year', '')})\n"
     if not ingredient_research:
-        prompt += "No PubMed research available\n"
+        block += "No PubMed research available\n"
 
     # Safety
-    prompt += "\n--- DRUG INTERACTIONS & SAFETY ---\n"
+    block += "\n--- DRUG INTERACTIONS & SAFETY ---\n"
     has_safety = False
     for ing_name, sdata in safety.items():
-        block = _format_safety_block(ing_name, safety)
-        if block:
+        sblock = _format_safety_block(ing_name, safety)
+        if sblock:
             has_safety = True
-            prompt += block
+            block += sblock
     if not has_safety:
-        prompt += "No significant drug interactions identified\n"
+        block += "No significant drug interactions identified\n"
 
     # Pricing
-    prompt += "\n--- PRICING (Verified from live page) ---\n"
+    block += "\n--- PRICING (Verified from live page) ---\n"
     for p in pricing:
-        prompt += f"- {p.get('package', '')}: {p.get('price', '')} ({p.get('per_unit', '')}/unit) — Shipping: {p.get('shipping', 'N/A')}\n"
+        block += f"- {p.get('package', '')}: {p.get('price', '')} ({p.get('per_unit', '')}/unit) — Shipping: {p.get('shipping', 'N/A')}\n"
     if not pricing:
-        prompt += "No pricing extracted — verify from live page\n"
+        block += "No pricing extracted — verify from live page\n"
 
     # Refund policy
-    prompt += "\n--- REFUND POLICY ---\n"
+    block += "\n--- REFUND POLICY ---\n"
     if rp.get("duration_days"):
-        prompt += f"{rp['duration_days']}-day money-back guarantee\n"
+        block += f"{rp['duration_days']}-day money-back guarantee\n"
         if rp.get("conditions"):
-            prompt += f"Conditions: {rp['conditions']}\n"
+            block += f"Conditions: {rp['conditions']}\n"
         if rp.get("verbatim"):
-            prompt += f"Verbatim: \"{rp['verbatim']}\"\n"
+            block += f"Verbatim: \"{rp['verbatim']}\"\n"
     else:
-        prompt += "No refund policy extracted — verify from live page\n"
+        block += "No refund policy extracted — verify from live page\n"
 
     # Shipping
     shipping = product.get("shipping_policy", product.get("shipping", {}))
     if shipping:
-        prompt += "\n--- SHIPPING ---\n"
+        block += "\n--- SHIPPING ---\n"
         for k, v in shipping.items():
             if v:
-                prompt += f"{k.replace('_', ' ').title()}: {v}\n"
+                block += f"{k.replace('_', ' ').title()}: {v}\n"
 
     # Company
-    prompt += "\n--- COMPANY / CONTACT ---\n"
+    block += "\n--- COMPANY / CONTACT ---\n"
     company = product.get("company", {})
     if company:
         for k, v in company.items():
             if v:
-                prompt += f"{k}: {v}\n"
+                block += f"{k}: {v}\n"
     else:
-        prompt += f"Name: {product.get('brand_name', name)}\n"
-        prompt += f"Website: {product.get('official_url', '')}\n"
+        block += f"Name: {product.get('brand_name', name)}\n"
+        block += f"Website: {product.get('official_url', '')}\n"
 
     # Marketing claims
-    prompt += "\n--- MARKETING CLAIMS (VERBATIM — UNVERIFIED, DO NOT REPUBLISH AS FACT) ---\n"
+    block += "\n--- MARKETING CLAIMS (VERBATIM — UNVERIFIED, DO NOT REPUBLISH AS FACT) ---\n"
     for c in claims:
         if isinstance(c, dict):
-            prompt += f"- [{c.get('source', 'unknown')}] \"{c.get('claim', '')}\" (Verified: False)\n"
+            block += f"- [{c.get('source', 'unknown')}] \"{c.get('claim', '')}\" (Verified: False)\n"
     if not claims:
-        prompt += "No marketing claims captured\n"
+        block += "No marketing claims captured\n"
 
     # Compliance flags
     flagged = compliance.get("claim_audit", [])
     if flagged:
-        prompt += f"\n--- COMPLIANCE FLAGS ({len(flagged)} flagged claims) ---\n"
+        block += f"\n--- COMPLIANCE FLAGS ({len(flagged)} flagged claims) ---\n"
         for item in flagged:
-            prompt += f"FLAGGED: \"{item.get('claim', '')}\"\n"
+            block += f"FLAGGED: \"{item.get('claim', '')}\"\n"
             for issue in item.get("issues", []):
-                prompt += f"  Issue: {issue}\n"
-            prompt += f"  Safe Alternative: \"{item.get('safe_alternative', '')}\"\n"
+                block += f"  Issue: {issue}\n"
+            block += f"  Safe Alternative: \"{item.get('safe_alternative', '')}\"\n"
 
     # Required disclaimers
     req_disclaimers = compliance.get("required_disclaimers", [])
     if req_disclaimers:
-        prompt += "\n--- REQUIRED DISCLAIMERS ---\n"
+        block += "\n--- REQUIRED DISCLAIMERS ---\n"
         for d in req_disclaimers:
-            prompt += f"- {d}\n"
+            block += f"- {d}\n"
 
     # Testimonials
     testimonials = product.get("testimonials", [])
     if testimonials:
-        prompt += "\n--- TESTIMONIALS (Reference Only — Do Not Republish as Verified) ---\n"
+        block += "\n--- TESTIMONIALS (Reference Only — Do Not Republish as Verified) ---\n"
         for t in testimonials:
             if isinstance(t, dict) and t.get("text"):
-                prompt += f"- {t.get('name', 'Anonymous')} ({t.get('location', '')}): \"{t['text'][:300]}...\"\n"
+                block += f"- {t.get('name', 'Anonymous')} ({t.get('location', '')}): \"{t['text'][:300]}...\"\n"
 
     # Publishing recommendations
     recs = full_data.get("publishing_recommendations", {})
     if recs:
-        prompt += "\n--- PUBLISHING RECOMMENDATIONS ---\n"
+        block += "\n--- PUBLISHING RECOMMENDATIONS ---\n"
         for site, info in recs.items():
-            prompt += f"- {site}: Category IDs {info.get('category_ids', [])}\n"
+            block += f"- {site}: Category IDs {info.get('category_ids', [])}\n"
 
-    prompt += "\n════════════════════════════════════════════════════════\n"
+    block += "\n════════════════════════════════════════════════════════\n"
+    return block
+
+
+def _build_serp_stacking_section(previous_releases, competitor_release):
+    """Build anti-cannibalization and SERP stacking instructions.
+
+    Only included when previous releases or competitor releases exist.
+    """
+    has_prev = previous_releases and previous_releases.strip().upper() != "FIRST RELEASE"
+    has_comp = competitor_release and competitor_release.strip()
+
+    if not has_prev and not has_comp:
+        return ""
+
+    section = """
+═══════════════════════════════════════════════
+SERP STACKING & ANTI-CANNIBALIZATION STRATEGY
+═══════════════════════════════════════════════
+"""
+
+    if has_prev:
+        section += f"""
+PREVIOUS RELEASES TO DIFFERENTIATE FROM:
+{previous_releases}
+
+CRITICAL — DO NOT CANNIBALIZE:
+You MUST create content that targets a DIFFERENT search intent than the previous release(s) listed above.
+Before writing, analyze what angles and keywords the previous release(s) likely target, then deliberately
+choose a different content angle. The goal is SERP stacking — multiple releases that each rank for
+different queries and collectively dominate the SERP landscape for this product.
+
+CONTENT DIVERSIFICATION RULES:
+- If previous release was a standard review → write an ingredients deep-dive, safety guide, or comparison
+- If previous release was ingredients-focused → write a buyer's guide, side effects analysis, or "who should avoid" angle
+- If previous release was a comparison → write a standalone investigative review or ingredients breakdown
+- NEVER use the same title structure, H2 pattern, or intro angle as a previous release
+- Each release must target at least 3 unique long-tail keywords not covered by previous releases
+
+INTER-RELEASE LINKING STRATEGY:
+- Reference previous release(s) with natural anchor text within your article
+- Position this new release as complementary: "For our full review, see [previous]" or "We previously examined [X], and now we're investigating [Y]"
+- Each release should make the others stronger — they work as a network, not standalone pieces
+"""
+
+    if has_comp:
+        section += f"""
+COMPETITOR RELEASES TO OUTRANK:
+{competitor_release}
+
+COMPETITIVE STRATEGY:
+- Study the competitor release angle and deliberately write something MORE useful
+- Include information the competitor missed: dose-math comparisons, specific PubMed citations, safety data
+- Target their exact keywords PLUS related long-tail queries they missed
+- Provide genuine Information Gain — original analysis, unique comparisons, specific findings not in the competitor piece
+- Your content should make the competitor release look shallow by comparison
+- Do NOT copy or closely paraphrase competitor content — beat them with better research and analysis
+"""
+
+    return section
+
+
+# =============================================================================
+# L6: PRODUCT REVIEW PROMPT (DOMAIN SITE)
+# =============================================================================
+
+def build_l6_review_prompt(full_data, site_config, intake_fields):
+    """Build a COMPLETE, self-contained production prompt for an L6 Product Review.
+
+    This generates a full prompt ready to paste into ANY Claude chat for article
+    generation — includes intake fields, editorial instructions, content generation
+    rules, anti-cannibalization strategy, and all source materials inline.
+
+    Args:
+        full_data: Complete source intelligence data dict
+        site_config: Site configuration dict (or None for generic)
+        intake_fields: Dict with platform, affiliate_link, previous_releases, etc.
+    """
+    product = full_data.get("product", {})
+    name = product.get("product_name", "Unknown")
+    compliance = full_data.get("compliance", {})
+
+    # Determine site-specific values
+    if site_config:
+        voice = site_config.get("editorial_voice", "")
+        byline = site_config.get("byline", "Editorial Team")
+        site_name = site_config.get("name", "")
+        wc_range = site_config.get("word_count_range", (1000, 1500))
+        slug_pattern = site_config.get("slug_pattern", "product-review")
+    else:
+        voice = "Professional, evidence-based health analysis."
+        byline = "Editorial Team"
+        site_name = "Domain Site"
+        wc_range = (1000, 1500)
+        slug_pattern = "product-review"
+
+    # Build intake header
+    prompt = f"""═══════════════════════════════════════════════
+CONTENT GENERATION BRIEF — {name}
+═══════════════════════════════════════════════
+
+PRODUCT NAME: {name}
+OFFICIAL WEBSITE URL: {product.get('official_url', '')}
+PUBLISHING PLATFORM: {intake_fields.get('platform', 'Domain Site')}
+AFFILIATE LINK: {intake_fields.get('affiliate_link', 'TRAFFIC-FIRST')}
+RELEASE TYPE: {intake_fields.get('release_type', 'Single Product')}
+YMYL CATEGORY: {intake_fields.get('ymyl_category', 'Yes')}
+PREVIOUS RELEASES: {intake_fields.get('previous_releases', 'FIRST RELEASE')}
+SOURCE MATERIALS: Included inline below"""
+
+    # Optional intake fields
+    for field, key in [
+        ("COMPETITOR RELEASE", "competitor_release"),
+        ("EDITOR-LOCKED TITLE", "editor_title"),
+        ("SUBTITLE", "subtitle"),
+        ("RELEASE SUMMARY (140 chars)", "release_summary"),
+        ("RELEASE TAGS", "release_tags"),
+    ]:
+        val = intake_fields.get(key, "")
+        if val:
+            prompt += f"\n{field}: {val}"
+
+    # SERP stacking & anti-cannibalization (conditional)
+    prompt += _build_serp_stacking_section(
+        intake_fields.get("previous_releases", ""),
+        intake_fields.get("competitor_release", ""),
+    )
+
+    # Editorial voice & content generation instructions
+    prompt += f"""
+
+═══════════════════════════════════════════════
+CONTENT GENERATION INSTRUCTIONS
+═══════════════════════════════════════════════
+
+You are the {byline} for {site_name}. Write a comprehensive product review article.
+
+EDITORIAL VOICE: {voice}
+
+OUTPUT FORMAT:
+- Pure HTML output (no html/head/body wrapper), start with H2 as the article title
+- {wc_range[0]}-{wc_range[1]} words of substantive content
+- Slug pattern: {slug_pattern}
+- Include a suggested slug at the top as an HTML comment: <!-- slug: your-slug-here -->
+"""
+
+    # Disclaimers
+    if site_config and site_config.get("disclaimer_top"):
+        prompt += f"""
+REQUIRED OPENING DISCLAIMER (include VERBATIM at the very top, before any content):
+{site_config['disclaimer_top']}
+"""
+    if site_config and site_config.get("disclaimer_bottom"):
+        prompt += f"""
+REQUIRED CLOSING DISCLAIMER (include VERBATIM at the very end, after all content):
+{site_config['disclaimer_bottom']}
+"""
+
+    prompt += f"""
+ARTICLE STRUCTURE (vary section names and order — do NOT use this exact order every time):
+- Product overview — what it is, who it's for, what it claims
+- Ingredients deep-dive — list each ingredient, its amount, clinical dose comparison, and evidence grade
+- How it works / mechanism of action
+- Benefits assessment (use hedging: "may support," "research suggests")
+- Real considerations — who should NOT use this, limitations, gaps in the formula
+- Pricing breakdown — include all package options with per-unit cost
+- Refund/guarantee policy details
+- Pros and cons (separate bulleted lists)
+- Bottom line — balanced editorial verdict
+- FAQs (4-5 Q&A pairs using H3 for questions)
+
+CONTENT QUALITY RULES (NON-NEGOTIABLE):
+1. HEDGING LANGUAGE THROUGHOUT: "may help," "could support," "believed to," "research suggests"
+   — NEVER make definitive health claims
+2. DOSE-MATH: For every ingredient, compare the product's dose to clinical trial doses from the research data.
+   Call out when a product under-doses or uses proprietary blends that hide individual amounts
+3. EVIDENCE GRADING: Reference the evidence grade for each ingredient (Strong/Moderate/Preliminary/Insufficient)
+   and be transparent about the quality of supporting research
+4. BALANCE IS MANDATORY: Include genuine limitations, "who this is NOT for," and negative observations.
+   A one-sided positive review fails Google's Product Review System
+5. NO MARKETING LANGUAGE: Do not republish marketing claims as fact. Analyze them skeptically.
+   Note which claims are supported by research and which are marketing hype
+6. CITE REAL RESEARCH: Reference PubMed studies by PMID from the source data below.
+   Do NOT fabricate or hallucinate citations — only cite studies provided in the source materials
+7. YMYL COMPLIANCE: This is health content subject to Google's highest scrutiny.
+   Named byline, evidence-based analysis, prominent disclaimers, balanced perspective
+8. UNIQUE CONTENT: This article must provide Information Gain — original analysis,
+   specific findings, dose-math comparisons, and insights not available in other reviews
+9. NO FILLER: Get to substance within the first 2-3 sentences. No generic introductions.
+   Every paragraph should contain specific, verifiable information
+10. AFFILIATE LINK: Use the provided affiliate link for any purchase/CTA links.
+    If "TRAFFIC-FIRST" — do not include purchase links, focus on informational value
+"""
+
+    # Append source data block
+    prompt += _build_source_data_block(full_data)
+
+    prompt += f"""
+═══════════════════════════════════════════════
+FINAL INSTRUCTIONS
+═══════════════════════════════════════════════
+
+Write the complete article now in pure HTML. Follow ALL rules above.
+Ensure the content is original, balanced, evidence-graded, and would pass
+review by a Google Quality Rater evaluating E-E-A-T for YMYL health content.
+"""
 
     return prompt
 
@@ -510,34 +666,133 @@ Barchart: {'PASS' if compliance.get('barchart_compliance', {}).get('passes') els
 # =============================================================================
 
 def build_l6_press_release_prompt(full_data, intake_fields):
-    """Build a prompt for generating an L6 Product Review as a press release.
+    """Build a COMPLETE, self-contained production prompt for a press release.
 
-    Same data as domain site review but formatted for press release platforms
-    (Accesswire, Barchart, Globe Newswire) with platform-specific notes.
+    Formatted for press release platforms (Accesswire, Barchart, Globe Newswire)
+    with platform-specific compliance rules and advertorial structure.
     """
-    # Reuse the L6 review builder with no site config (press releases don't use site voice)
-    prompt = build_l6_review_prompt(full_data, site_config=None, intake_fields=intake_fields)
-
-    # Add platform-specific compliance notes
-    platform = intake_fields.get("platform", "")
+    product = full_data.get("product", {})
+    name = product.get("product_name", "Unknown")
     compliance = full_data.get("compliance", {})
+    platform = intake_fields.get("platform", "")
 
-    notes = "\n--- PLATFORM COMPLIANCE NOTES ---\n"
-    if "accesswire" in platform.lower() or "newswire" in platform.lower():
-        aw = compliance.get("accesswire_blocklist_check", {})
-        if not aw.get("passes"):
-            notes += f"WARNING: AccessWire blocklist FAIL — flagged terms: {aw.get('flagged_terms', [])}\n"
-            notes += "These terms must be removed or reworded for AccessWire/Newswire submission.\n"
-        else:
-            notes += "AccessWire blocklist: PASS — no flagged terms detected.\n"
-    elif "barchart" in platform.lower():
+    # Build intake header
+    prompt = f"""═══════════════════════════════════════════════
+PRESS RELEASE CONTENT BRIEF — {name}
+═══════════════════════════════════════════════
+
+PRODUCT NAME: {name}
+OFFICIAL WEBSITE URL: {product.get('official_url', '')}
+PUBLISHING PLATFORM: {platform}
+AFFILIATE LINK: {intake_fields.get('affiliate_link', 'TRAFFIC-FIRST')}
+RELEASE TYPE: {intake_fields.get('release_type', 'Single Product')}
+YMYL CATEGORY: {intake_fields.get('ymyl_category', 'Yes')}
+PREVIOUS RELEASES: {intake_fields.get('previous_releases', 'FIRST RELEASE')}
+SOURCE MATERIALS: Included inline below"""
+
+    # Optional intake fields
+    for field, key in [
+        ("COMPETITOR RELEASE", "competitor_release"),
+        ("EDITOR-LOCKED TITLE", "editor_title"),
+        ("SUBTITLE", "subtitle"),
+        ("RELEASE SUMMARY (140 chars)", "release_summary"),
+        ("RELEASE TAGS", "release_tags"),
+    ]:
+        val = intake_fields.get(key, "")
+        if val:
+            prompt += f"\n{field}: {val}"
+
+    # SERP stacking & anti-cannibalization (conditional)
+    prompt += _build_serp_stacking_section(
+        intake_fields.get("previous_releases", ""),
+        intake_fields.get("competitor_release", ""),
+    )
+
+    # Platform-specific instructions
+    prompt += f"""
+
+═══════════════════════════════════════════════
+CONTENT GENERATION INSTRUCTIONS — PRESS RELEASE
+═══════════════════════════════════════════════
+
+Write a press release / advertorial for {name} formatted for: {platform}
+
+OUTPUT FORMAT:
+- Pure HTML (no html/head/body wrapper)
+- 1000-1500 words
+- Press release structure: headline, subheadline, dateline, body, boilerplate
+- Include a suggested slug as an HTML comment: <!-- slug: your-slug-here -->
+"""
+
+    # Platform-specific compliance
+    if "barchart" in platform.lower():
         bc = compliance.get("barchart_compliance", {})
-        if not bc.get("passes"):
-            notes += f"WARNING: Barchart compliance FAIL — {bc.get('notes', '')}\n"
-        else:
-            notes += f"Barchart compliance: PASS — {bc.get('notes', '')}\n"
+        prompt += f"""
+BARCHART ADVERTORIAL RULES:
+- Compliance status: {'PASS' if bc.get('passes') else 'FAIL — review flagged items'}
+- {bc.get('notes', '')}
+- Brand-as-subject voice (third person)
+- No direct health cure/treat/prevent claims
+- Hedging throughout: "may support," "designed to help," "research suggests"
+- Include clear disclaimer at bottom
+- Advertorial disclosure at top
+"""
+    elif "accesswire" in platform.lower() or "newswire" in platform.lower():
+        aw = compliance.get("accesswire_blocklist_check", {})
+        prompt += f"""
+ACCESSWIRE/NEWSWIRE RULES:
+- Blocklist check: {'PASS' if aw.get('passes') else 'FAIL — flagged terms: ' + str(aw.get('flagged_terms', []))}
+- Do NOT use any blocklisted terms — they will cause rejection
+- Professional press release tone
+- Dateline format: CITY, STATE, Month Day, Year
+- Include company boilerplate paragraph at end
+- Forward-looking statement disclaimer required
+"""
     elif "globe" in platform.lower():
-        notes += "Globe Newswire: Format C default. Brand-as-subject voice. No direct health claims.\n"
+        prompt += """
+GLOBE NEWSWIRE RULES:
+- Format C default (professional press release)
+- Brand-as-subject voice throughout
+- No direct health claims
+- Include standard press release sections: headline, subheadline, dateline, body, about section, contact info
+- Forward-looking statement disclaimer required
+"""
 
-    prompt += notes
+    prompt += """
+PRESS RELEASE STRUCTURE:
+1. HEADLINE — Attention-grabbing but factual, no clickbait
+2. SUBHEADLINE — Expands on the headline with key angle
+3. DATELINE — City, State, Date
+4. OPENING PARAGRAPH — Newsworthy hook: what's notable about this product
+5. PRODUCT OVERVIEW — What it is, key ingredients, what it's designed to do
+6. INGREDIENT ANALYSIS — Highlight 3-5 key ingredients with evidence grades and dose-math
+7. MARKET CONTEXT — How it fits in the category, what differentiates it
+8. AVAILABILITY & PRICING — Where to buy, pricing tiers, guarantee
+9. ABOUT [BRAND] — Company boilerplate
+10. DISCLAIMERS — FDA, forward-looking statements, affiliate disclosure as applicable
+
+CONTENT QUALITY RULES:
+1. HEDGING LANGUAGE: "may help," "designed to support," "research suggests" — never definitive health claims
+2. EVIDENCE-BASED: Reference specific ingredients and research quality (Strong/Moderate/Preliminary evidence)
+3. BALANCED: Include product limitations or gaps — one-sided puff pieces get rejected and rank poorly
+4. NO BLOCKLISTED TERMS: Review the compliance data for any flagged terms and avoid them entirely
+5. CITE RESEARCH: Reference PubMed studies by PMID from the source data — do NOT fabricate citations
+6. YMYL COMPLIANCE: Health content under highest scrutiny — be conservative with claims
+7. UNIQUE ANGLE: Each press release needs a distinct hook — not a generic "new product launches" piece
+8. AFFILIATE LINK: Use the provided affiliate link for CTA. If "TRAFFIC-FIRST" — focus on brand awareness
+"""
+
+    # Append source data block
+    prompt += _build_source_data_block(full_data)
+
+    prompt += f"""
+═══════════════════════════════════════════════
+FINAL INSTRUCTIONS
+═══════════════════════════════════════════════
+
+Write the complete press release now in pure HTML. Follow ALL platform rules above.
+Ensure the content is original, balanced, evidence-graded, and compliant with
+{platform} submission requirements.
+"""
+
     return prompt

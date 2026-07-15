@@ -472,8 +472,8 @@ if "result_data" in st.session_state:
 
     # --- TAB: Export Prompt ---
     with tabs[8]:
-        st.markdown("### Export to Claude Projects")
-        st.markdown("Select a content layer, configure, and copy the prompt into Claude Projects.")
+        st.markdown("### Generate Production Prompt")
+        st.markdown("Select a content layer, configure, and copy the complete prompt into any Claude chat for content generation.")
 
         st.divider()
 
@@ -533,9 +533,18 @@ if "result_data" in st.session_state:
                 ymyl_category = st.selectbox("YMYL Category", ["Yes", "No"],
                                              index=0 if ymyl_status == "Yes" else 1, key="l6_ymyl")
             with col2:
-                previous_releases = st.text_input("Previous Release(s)", value="FIRST RELEASE",
-                                                  help="URLs of previous articles, or FIRST RELEASE", key="l6_prev")
+                previous_releases = st.text_input("Previous Release(s)",
+                                                  value="FIRST RELEASE",
+                                                  help="Paste URLs of your previous articles about this product (comma-separated). Used for anti-cannibalization.",
+                                                  key="l6_prev")
                 release_type = st.selectbox("Release Type", ["Single Product", "Multi-Product Brand Guide"], key="l6_type")
+
+            competitor_release = st.text_input(
+                "Competitor Release(s)",
+                placeholder="https://competitor-site.com/their-review-of-this-product",
+                help="Paste competitor article URLs (comma-separated). The prompt will include strategy to outrank them.",
+                key="l6_comp",
+            )
 
             with st.expander("Optional Fields"):
                 opt1, opt2 = st.columns(2)
@@ -545,7 +554,6 @@ if "result_data" in st.session_state:
                 with opt2:
                     subtitle = st.text_input("Subtitle", key="l6_subtitle")
                     release_tags = st.text_input("Release Tags (comma-separated)", key="l6_tags")
-                competitor_release = st.text_input("Competitor Release (optional)", key="l6_comp")
 
             intake_fields = {
                 "platform": "Domain Site",
@@ -572,12 +580,22 @@ if "result_data" in st.session_state:
                                                placeholder="https://hop.clickbank.net/...",
                                                key="pr_aff_link")
             with col2:
-                previous_releases = st.text_input("Previous Release(s)", value="FIRST RELEASE", key="pr_prev")
+                previous_releases = st.text_input("Previous Release(s)",
+                                                  value="FIRST RELEASE",
+                                                  help="Paste URLs of your previous articles about this product (comma-separated). Used for anti-cannibalization.",
+                                                  key="pr_prev")
                 release_type = st.selectbox("Release Type", ["Single Product", "Multi-Product Brand Guide"], key="pr_type")
 
             ymyl_status = "Yes" if compliance.get("risk_level") in ["High", "Very High", "Moderate"] else "No"
             ymyl_category = st.selectbox("YMYL Category", ["Yes", "No"],
                                          index=0 if ymyl_status == "Yes" else 1, key="pr_ymyl")
+
+            competitor_release = st.text_input(
+                "Competitor Release(s)",
+                placeholder="https://competitor-site.com/their-review-of-this-product",
+                help="Paste competitor article URLs (comma-separated). The prompt will include strategy to outrank them.",
+                key="pr_comp",
+            )
 
             with st.expander("Optional Fields"):
                 opt1, opt2 = st.columns(2)
@@ -587,7 +605,6 @@ if "result_data" in st.session_state:
                 with opt2:
                     subtitle = st.text_input("Subtitle", key="pr_subtitle")
                     release_tags = st.text_input("Release Tags (comma-separated)", key="pr_tags")
-                competitor_release = st.text_input("Competitor Release (optional)", key="pr_comp")
 
             intake_fields = {
                 "platform": pr_platform,
