@@ -289,7 +289,7 @@ def _web_search_product(name, search_type="ingredients"):
 
     # Also try the DuckDuckGo API (different from HTML search)
     try:
-        ddg_api = f"https://api.duckduckgo.com/?q={urllib.parse.quote_plus(name + ' supplement')}&format=json&no_html=1"
+        ddg_api = f"https://api.duckduckgo.com/?q={urllib.parse.quote_plus(name + ' product')}&format=json&no_html=1"
         resp = fetch_url(ddg_api, max_bytes=30000)
         if resp:
             data = json.loads(resp)
@@ -317,6 +317,9 @@ def _try_multiple_urls(url):
 
     # Try common subpages that often have ingredients/policies
     base = url.rstrip("/")
+    # Strip query params from base for subpage probing
+    if "?" in base:
+        base = base.split("?")[0].rstrip("/")
     subpages = [
         "/ingredients", "/supplement-facts", "/about",
         "/faq", "/faqs", "/refund-policy", "/return-policy",
@@ -337,14 +340,30 @@ def _try_multiple_urls(url):
 
 
 def _extract_supplement_facts_html(html):
-    """Try to extract supplement facts from raw HTML using regex patterns."""
+    """Try to extract product facts from raw HTML using regex patterns.
+
+    Handles supplements, peptides, research chemicals, devices, and other product types.
+    """
     facts_text = ""
     patterns = [
+        # Supplement patterns
         r'(?i)supplement\s*facts.*?(?:</table>|</div>|</section>)',
         r'(?i)ingredients?\s*(?:list|panel)?:?\s*[^<]*(?:<[^>]+>[^<]*){1,80}',
         r'(?i)(?:active|key|main|our)\s+ingredients?.*?(?:</ul>|</div>|</table>|</section>)',
         r'(?i)(?:what.?s\s+inside|formula|blend).*?(?:</ul>|</div>|</table>|</section>)',
         r'(?i)<(?:table|div|section)[^>]*class="[^"]*(?:ingredient|supplement|formula)[^"]*".*?</(?:table|div|section)>',
+        # Peptide / research chemical patterns
+        r'(?i)(?:product\s+)?specifications?.*?(?:</table>|</div>|</section>|</ul>)',
+        r'(?i)(?:certificate\s+of\s+analysis|COA|HPLC|purity).*?(?:</table>|</div>|</section>)',
+        r'(?i)(?:molecular\s+weight|sequence|amino\s+acid).*?(?:</table>|</div>|</section>)',
+        r'(?i)<(?:table|div|section)[^>]*class="[^"]*(?:product-details|product-info|woocommerce-product)[^"]*".*?</(?:table|div|section)>',
+        # Device / general product patterns
+        r'(?i)(?:key\s+features|specifications|tech\s+specs).*?(?:</table>|</div>|</section>|</ul>)',
+        r'(?i)(?:description|product.description|short.description).*?(?:</div>|</section>)',
+        # WooCommerce-specific
+        r'(?i)<div[^>]*class="[^"]*woocommerce-product-details__short-description[^"]*".*?</div>',
+        r'(?i)<div[^>]*class="[^"]*product-short-description[^"]*".*?</div>',
+        r'(?i)<div[^>]*id="tab-description"[^>]*>.*?</div>',
     ]
     for pat in patterns:
         matches = re.findall(pat, html, re.DOTALL)
@@ -535,14 +554,25 @@ def phase1_extract_product(url, vsl_url=None, product_name=None):
 
     # Derive product name from URL if not provided
     if not product_name and url:
-        # Try to extract from domain
         from urllib.parse import urlparse
-        domain = urlparse(url).hostname or ""
-        domain = domain.replace("www.", "")
-        name_from_url = domain.split(".")[0] if domain else ""
-        if name_from_url and len(name_from_url) > 2:
-            product_name = name_from_url.title()
-            _emit(f"  Inferred product name from URL: {product_name}")
+        parsed_url = urlparse(url)
+        domain = (parsed_url.hostname or "").replace("www.", "")
+        path = parsed_url.path.strip("/")
+
+        # Try to extract from URL path first (e.g., /product/glp-3r/ → GLP-3R)
+        path_parts = [p for p in path.split("/") if p and p not in ("product", "products", "shop", "item", "collections")]
+        if path_parts:
+            name_from_path = path_parts[-1].replace("-", " ").replace("_", " ").strip()
+            if len(name_from_path) > 2:
+                product_name = name_from_path.upper() if len(name_from_path) <= 8 else name_from_path.title()
+                _emit(f"  Inferred product name from URL path: {product_name}")
+
+        # Fallback to domain name
+        if not product_name:
+            name_from_url = domain.split(".")[0] if domain else ""
+            if name_from_url and len(name_from_url) > 2:
+                product_name = name_from_url.title()
+                _emit(f"  Inferred product name from domain: {product_name}")
 
     # Layer 3: Web search fallback if direct scrape is thin
     main_text_len = len(strip_html(all_pages.get("main", "")))
@@ -570,7 +600,8 @@ def phase1_extract_product(url, vsl_url=None, product_name=None):
 RULES:
 - Extract ONLY what is explicitly stated in the source material. Do NOT invent data.
 - Mark ALL health/efficacy claims as "verified": false
-- CRITICAL: Extract EVERY ingredient mentioned anywhere — supplement facts panels, ingredient lists, "what's inside" sections, descriptions, etc. Include ALL with their exact amounts and forms (mg, mcg, IU, etc.)
+- CRITICAL: Extract EVERY ingredient, active compound, or key component mentioned anywhere — supplement facts panels, ingredient lists, "what's inside" sections, product specifications, descriptions, etc. Include ALL with their exact amounts and forms (mg, mcg, IU, etc.)
+- For PEPTIDES or RESEARCH CHEMICALS: treat the peptide/compound itself as an ingredient. Extract purity %, molecular weight, sequence, CAS number, form (lyophilized, solution, etc.), and amount per vial/unit. Put purity in the "daily_value" field and form details in the "form" field.
 - If a proprietary blend is listed, include the total blend amount and list each ingredient (even without individual amounts)
 - For pricing: capture ALL tiers, per-unit cost, shipping costs
 - For policies: capture EXACT refund duration, conditions, contact methods
@@ -581,7 +612,7 @@ Return ONLY valid JSON with this exact structure:
 {{
     "product_name": "",
     "brand_name": "",
-    "product_type": "supplement|telehealth|device|info_product|food|topical",
+    "product_type": "supplement|peptide|research_chemical|telehealth|device|info_product|food|topical",
     "category": "weight_loss|brain_health|blood_sugar|male_enhancement|heart_health|anti_aging|sleep|joint_health|vision|dental|skin_care|immune_health|gut_health|nerve_health|respiratory|pain_relief|telehealth|financial|device|info_product",
     "official_url": "{url or ''}",
     "supplement_facts": {{
@@ -762,17 +793,20 @@ Rules:
             return ingredients
 
     # Fallback: ask Claude from training knowledge
-    prompt = f"""What are the known ingredients in the supplement product called "{product_name}"?
+    prompt = f"""What are the known ingredients, active compounds, or key components in the product called "{product_name}"?
 
-This is a dietary supplement sold online. Many of these products advertise their ingredients on their sales pages and in reviews.
+This could be a dietary supplement, peptide, research chemical, device, or other product sold online.
+For supplements: list ingredients with amounts and forms.
+For peptides: list the peptide compound(s) with purity, amount per vial, and form (lyophilized, etc).
+For devices: list key functional components or active technologies.
 
-Return ONLY a valid JSON array of ingredients:
+Return ONLY a valid JSON array:
 [
-    {{"name": "Ingredient Name", "amount": "500mg", "daily_value": "", "form": "extract"}}
+    {{"name": "Component Name", "amount": "500mg", "daily_value": "", "form": "extract"}}
 ]
 
 Rules:
-- Only include ingredients you are confident are in this specific product
+- Only include components you are confident are in this specific product
 - Include exact amounts if known
 - If you're not sure about this product, return an empty array: []
 - Do NOT invent or guess — if you don't know, return []"""
