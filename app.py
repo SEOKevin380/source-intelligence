@@ -8,10 +8,12 @@ Usage (local):
     streamlit run app.py
 """
 
+import hashlib
 import json
 import os
 import tempfile
 import streamlit as st
+import extra_streamlit_components as stx
 
 # Must be first Streamlit call
 st.set_page_config(
@@ -21,19 +23,37 @@ st.set_page_config(
 )
 
 # ============================================================================
-# AUTH GATE
+# AUTH GATE (with "Remember Me" cookie)
 # ============================================================================
+
+_AUTH_TOKEN_KEY = "si_auth_token"
+_COOKIE_MAX_AGE = 30 * 24 * 3600  # 30 days
+
+cookie_manager = stx.CookieManager(key="cookie_mgr")
+
+def _make_auth_token(password):
+    return hashlib.sha256(f"si-{password}-salt2026".encode()).hexdigest()[:32]
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
+
+# Check cookie first — auto-login if valid
+if not st.session_state.authenticated:
+    app_pw = st.secrets.get("app_password", "sourceintel2026")
+    saved_token = cookie_manager.get(_AUTH_TOKEN_KEY)
+    if saved_token and saved_token == _make_auth_token(app_pw):
+        st.session_state.authenticated = True
 
 if not st.session_state.authenticated:
     st.title("Source Intelligence Tool")
     st.markdown("Enter the team password to continue.")
     password = st.text_input("Password", type="password", key="login_pw")
+    remember = st.checkbox("Remember me on this browser", value=True)
     app_pw = st.secrets.get("app_password", "sourceintel2026")
     if password and password == app_pw:
         st.session_state.authenticated = True
+        if remember:
+            cookie_manager.set(_AUTH_TOKEN_KEY, _make_auth_token(app_pw), max_age=_COOKIE_MAX_AGE)
         st.rerun()
     elif password:
         st.error("Incorrect password.")
