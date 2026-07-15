@@ -660,6 +660,10 @@ EDITORIAL PHILOSOPHY (NON-NEGOTIABLE — APPLIES TO ALL CONTENT):
   trace back to the source materials or PubMed research provided.
 - Third-party marketing funnels (VSLs, affiliates) are not the brand's
   editorial position. Do not attribute funnel marketing claims to the brand.
+- Affiliate disclaimers MUST use passive voice. The site is not the
+  affiliate. Use "This article may contain affiliate links" or
+  "Compensation may be received through links in this article." Never
+  "We earn" or "Our affiliate links."
 """
 
     # Append source data block
@@ -1148,6 +1152,34 @@ for approval at any gate. Do not ask the operator to make decisions the
 system was built to make. Deliver the finished release.
 
 ═══════════════════════════════════════════════
+
+── RELEASE FORMAT REQUIREMENTS ──
+
+AFFILIATE DISCLAIMER — PASSIVE VOICE ONLY:
+All affiliate disclosures MUST use passive voice. The publishing platform
+is NOT the affiliate — we are. The disclaimer must never imply the
+publisher holds the affiliate relationship. Use constructions like:
+  CORRECT: "This article may contain affiliate links."
+  CORRECT: "Affiliate links may be included in this content."
+  CORRECT: "Compensation may be received through links in this article."
+  WRONG:   "We may earn a commission..." (implies publisher is affiliate)
+  WRONG:   "Our affiliate links..." (implies publisher ownership)
+  WRONG:   "We are compensated..." (implies publisher is the affiliate)
+
+STRUCTURED CONTACT FOOTER — REQUIRED ON EVERY RELEASE:
+Every release MUST end with a structured contact information block after
+the article body and disclaimers. Use the C4 data provided below. Format:
+
+  Contact:
+  [Brand/Company Name]
+  [Address]
+  [Phone]
+  [Email]
+  [Website URL]
+
+If any contact field is missing from C4, omit that line — do not
+fabricate contact information. But the footer block itself is mandatory.
+This is a press release compliance requirement, not optional.
 """
 
     # ── PRE-VERIFIED SOURCE DATA (CVD-organized) ──
