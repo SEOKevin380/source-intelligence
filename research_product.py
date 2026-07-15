@@ -306,6 +306,94 @@ def _web_search_product(name, search_type="ingredients"):
     return "\n\n".join(combined) if combined else ""
 
 
+def _extract_json_ld(html):
+    """Extract product data from JSON-LD structured data embedded in HTML."""
+    results = []
+    pattern = r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>'
+    for match in re.findall(pattern, html, re.DOTALL | re.IGNORECASE):
+        try:
+            data = json.loads(match.strip())
+            # Handle both single objects and arrays
+            items = data if isinstance(data, list) else [data]
+            for item in items:
+                if item.get("@type") in ("Product", "IndividualProduct", "Offer"):
+                    results.append(item)
+                elif item.get("@graph"):
+                    for node in item["@graph"]:
+                        if node.get("@type") in ("Product", "IndividualProduct"):
+                            results.append(node)
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return results
+
+
+def _try_woocommerce_api(url):
+    """Try to fetch product data from WooCommerce Store API (public, no auth needed).
+
+    Works for JS-rendered WooCommerce sites where direct scraping gets empty HTML.
+    """
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    base = f"{parsed.scheme}://{parsed.hostname}"
+
+    # Extract product slug from URL path
+    path = parsed.path.strip("/")
+    slug = path.split("/")[-1] if path else ""
+    if not slug:
+        return ""
+
+    # Try WooCommerce Store API (public endpoints, no auth required)
+    api_urls = [
+        f"{base}/wp-json/wc/store/v1/products?slug={slug}",
+        f"{base}/wp-json/wc/store/products?slug={slug}",
+        f"{base}/?rest_route=/wc/store/v1/products&slug={slug}",
+    ]
+
+    for api_url in api_urls:
+        resp = fetch_url(api_url, max_bytes=60000)
+        if resp and resp.strip().startswith(("[", "{")):
+            try:
+                data = json.loads(resp)
+                items = data if isinstance(data, list) else [data]
+                texts = []
+                for item in items:
+                    name = item.get("name", "")
+                    desc = strip_html(item.get("description", ""))
+                    short_desc = strip_html(item.get("short_description", ""))
+                    price = item.get("prices", {})
+                    price_str = price.get("price", "") if isinstance(price, dict) else str(price)
+
+                    text = f"PRODUCT: {name}\n"
+                    if short_desc:
+                        text += f"SHORT DESCRIPTION: {short_desc}\n"
+                    if desc:
+                        text += f"FULL DESCRIPTION: {desc}\n"
+                    if price_str:
+                        text += f"PRICE: {price_str}\n"
+
+                    # WooCommerce product attributes (often contain specs)
+                    for attr in item.get("attributes", []):
+                        attr_name = attr.get("name", "")
+                        attr_terms = ", ".join(t.get("name", str(t)) if isinstance(t, dict) else str(t) for t in attr.get("terms", attr.get("options", [])))
+                        if attr_name and attr_terms:
+                            text += f"{attr_name}: {attr_terms}\n"
+
+                    # Categories
+                    cats = [c.get("name", "") for c in item.get("categories", []) if isinstance(c, dict)]
+                    if cats:
+                        text += f"CATEGORIES: {', '.join(cats)}\n"
+
+                    texts.append(text)
+
+                if texts:
+                    _emit(f"    WooCommerce API returned product data ({len(texts[0])} chars)")
+                    return "\n\n".join(texts)
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+    return ""
+
+
 def _try_multiple_urls(url):
     """Try fetching a URL and common subpages to maximize content capture."""
     results = {}
@@ -314,6 +402,30 @@ def _try_multiple_urls(url):
     main = fetch_url(url)
     if main:
         results["main"] = main
+
+        # Extract JSON-LD product data from main page
+        json_ld = _extract_json_ld(main)
+        if json_ld:
+            ld_text = ""
+            for product in json_ld:
+                ld_text += f"\nPRODUCT (structured data): {product.get('name', '')}\n"
+                ld_text += f"Description: {product.get('description', '')}\n"
+                if product.get("offers"):
+                    offers = product["offers"] if isinstance(product["offers"], list) else [product["offers"]]
+                    for o in offers:
+                        ld_text += f"Price: {o.get('price', '')} {o.get('priceCurrency', '')}\n"
+                if product.get("sku"):
+                    ld_text += f"SKU: {product['sku']}\n"
+            if ld_text.strip():
+                results["json_ld"] = ld_text
+                _emit(f"    Found JSON-LD product data")
+
+    # Try WooCommerce API for JS-rendered pages
+    main_text_len = len(strip_html(main)) if main else 0
+    if main_text_len < 2000:
+        wc_data = _try_woocommerce_api(url)
+        if wc_data:
+            results["woocommerce_api"] = wc_data
 
     # Try common subpages that often have ingredients/policies
     base = url.rstrip("/")
@@ -539,11 +651,15 @@ def phase1_extract_product(url, vsl_url=None, product_name=None):
 
     # Build combined text for extraction
     page_texts = []
-    for key, html in all_pages.items():
-        text = strip_html(html)
-        if key == "main":
+    for key, content in all_pages.items():
+        if key in ("json_ld", "woocommerce_api"):
+            # Already clean text, not HTML
+            page_texts.append(f"{key.upper()} DATA:\n{content[:10000]}")
+        elif key == "main":
+            text = strip_html(content)
             page_texts.append(f"MAIN PRODUCT PAGE:\n{text[:20000]}")
         else:
+            text = strip_html(content)
             page_texts.append(f"SUBPAGE ({key}):\n{text[:5000]}")
 
     combined_text = "\n\n".join(page_texts)

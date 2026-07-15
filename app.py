@@ -13,7 +13,6 @@ import json
 import os
 import tempfile
 import streamlit as st
-import extra_streamlit_components as stx
 
 # Must be first Streamlit call
 st.set_page_config(
@@ -23,25 +22,20 @@ st.set_page_config(
 )
 
 # ============================================================================
-# AUTH GATE (with "Remember Me" cookie)
+# AUTH GATE (with "Remember Me" via URL token)
 # ============================================================================
 
-_AUTH_TOKEN_KEY = "si_auth_token"
-_COOKIE_MAX_AGE = 30 * 24 * 3600  # 30 days
-
-cookie_manager = stx.CookieManager(key="cookie_mgr")
-
 def _make_auth_token(password):
-    return hashlib.sha256(f"si-{password}-salt2026".encode()).hexdigest()[:32]
+    return hashlib.sha256(f"si-{password}-salt2026".encode()).hexdigest()[:16]
 
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
 
-# Check cookie first — auto-login if valid
+# Check URL token first — auto-login if valid
 if not st.session_state.authenticated:
     app_pw = st.secrets.get("app_password", "sourceintel2026")
-    saved_token = cookie_manager.get(_AUTH_TOKEN_KEY)
-    if saved_token and saved_token == _make_auth_token(app_pw):
+    url_token = st.query_params.get("t", "")
+    if url_token and url_token == _make_auth_token(app_pw):
         st.session_state.authenticated = True
 
 if not st.session_state.authenticated:
@@ -53,7 +47,7 @@ if not st.session_state.authenticated:
     if password and password == app_pw:
         st.session_state.authenticated = True
         if remember:
-            cookie_manager.set(_AUTH_TOKEN_KEY, _make_auth_token(app_pw), max_age=_COOKIE_MAX_AGE)
+            st.query_params["t"] = _make_auth_token(app_pw)
         st.rerun()
     elif password:
         st.error("Incorrect password.")
@@ -598,7 +592,8 @@ if "result_data" in st.session_state:
 
         # Display the generated prompt
         if prompt:
-            st.text_area("Copy this prompt into Claude Projects", value=prompt, height=500, key="export_prompt")
+            st.markdown("**Click the copy icon (top-right of box) to copy the full prompt:**")
+            st.code(prompt, language="text", wrap_lines=True)
 
             slug = name.lower().replace(" ", "-")
             layer_tag = layer_type.split(":")[0].strip().lower()
@@ -623,4 +618,5 @@ if "result_data" in st.session_state:
 
     # --- TAB: Raw JSON ---
     with tabs[9]:
-        st.json(data)
+        st.markdown("**Click the copy icon (top-right) to copy the full JSON:**")
+        st.code(json.dumps(data, indent=2, default=str), language="json", wrap_lines=True)
