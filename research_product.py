@@ -535,6 +535,88 @@ def _extract_supplement_facts_html(html):
     return facts_text
 
 
+def _extract_buygoods_pricing(html):
+    """Extract pricing from BuyGoods/ClickBank checkout links with data attributes.
+
+    BuyGoods pages store pricing in anchor tags like:
+    <a class="buylink kit3" data-bottles="6" data-total="294" data-full="1074"
+       data-shipping="Free" data-guarantee="60" ...>
+
+    ClickBank pages have similar patterns with data-price or inline pricing.
+    """
+    if not html:
+        return []
+
+    pricing = []
+    seen = set()
+
+    # Pattern 1: BuyGoods data-attribute buylinks
+    buylinks = re.findall(
+        r'<a[^>]*class="[^"]*buylink[^"]*"[^>]*>',
+        html, re.IGNORECASE | re.DOTALL
+    )
+    for tag in buylinks:
+        bottles = re.search(r'data-bottles="(\d+)"', tag)
+        total = re.search(r'data-total="([\d.]+)"', tag)
+        full = re.search(r'data-full="([\d.]+)"', tag)
+        shipping = re.search(r'data-shipping="([^"]*)"', tag)
+        guarantee = re.search(r'data-guarantee="(\d+)"', tag)
+        title = re.search(r'title="([^"]*)"', tag)
+        headline = re.search(r'data-headline="([^"]*)"', tag)
+
+        if total:
+            total_val = total.group(1)
+            bottles_val = bottles.group(1) if bottles else "1"
+            # Skip duplicates
+            key = f"{bottles_val}-{total_val}"
+            if key in seen:
+                continue
+            seen.add(key)
+
+            try:
+                per_unit = f"${float(total_val) / int(bottles_val):.2f}"
+            except (ValueError, ZeroDivisionError):
+                per_unit = ""
+
+            pkg_name = title.group(1) if title else f"{bottles_val} Bottles"
+            if headline:
+                pkg_name += f" ({headline.group(1)})"
+
+            pricing.append({
+                "package": pkg_name,
+                "total": total_val,
+                "original": full.group(1) if full else "",
+                "bottles": bottles_val,
+                "per_unit": per_unit,
+                "shipping": shipping.group(1) if shipping else "",
+                "guarantee": guarantee.group(1) if guarantee else "",
+            })
+
+    # Pattern 2: Generic data-price attributes (ClickBank and others)
+    if not pricing:
+        price_tags = re.findall(
+            r'<[^>]*data-price="([\d.]+)"[^>]*>',
+            html, re.IGNORECASE
+        )
+        for i, price in enumerate(price_tags):
+            key = price
+            if key not in seen:
+                seen.add(key)
+                pricing.append({
+                    "package": f"Option {i+1}",
+                    "total": price,
+                    "original": "",
+                    "bottles": "1",
+                    "per_unit": f"${price}",
+                    "shipping": "",
+                    "guarantee": "",
+                })
+
+    # Sort by bottle count
+    pricing.sort(key=lambda x: int(x.get("bottles", 0)), reverse=True)
+    return pricing
+
+
 def _extract_product_images(html, base_url):
     """Extract product-relevant images from HTML. Returns list of image dicts."""
     if not html or not base_url:
@@ -768,6 +850,16 @@ def phase1_extract_product(url, vsl_url=None, product_name=None):
                     _emit(f"    Got web search results for: {search_type}")
                 time.sleep(1)  # Respect search rate limits
 
+    # Layer 3b: Extract BuyGoods / ClickBank pricing from HTML data attributes
+    main_html = all_pages.get("main", "")
+    buygoods_pricing = _extract_buygoods_pricing(main_html)
+    if buygoods_pricing:
+        pricing_text = "\n\nEXTRACTED PRICING (from checkout links):\n"
+        for pkg in buygoods_pricing:
+            pricing_text += f"- {pkg['package']}: ${pkg['total']} (was ${pkg['original']}) — {pkg['bottles']} bottles — Shipping: {pkg['shipping']} — {pkg['guarantee']}-day guarantee\n"
+        combined_text += pricing_text
+        _emit(f"  Extracted {len(buygoods_pricing)} pricing tiers from checkout links")
+
     if not combined_text and not product_name:
         _emit("  [!] No URL content and no product name — cannot proceed")
         return None
@@ -883,6 +975,53 @@ SOURCE MATERIAL:
             product_images = _download_product_images(raw_images, OUTPUT_DIR, slug)
             _emit(f"  Downloaded {len(product_images)} product images")
     data["product_images"] = product_images
+
+    # Layer 6: Auto-OCR label images if ingredients are still empty
+    ingredient_count = len(data.get("supplement_facts", {}).get("ingredients", []))
+    if ingredient_count == 0 and product_images:
+        _emit("  [LABEL OCR] No ingredients found — scanning downloaded images for supplement facts labels...")
+        # Patterns that indicate a label/supplement facts image
+        label_patterns = re.compile(
+            r'(rotulo|label|supplement.?facts|nutrition.?facts|ingredients|'
+            r'supp.?fact|product.?label|sfp|back.?label|panel)',
+            re.IGNORECASE
+        )
+        for img in product_images:
+            local_path = img.get("local_path", "")
+            img_url = img.get("url", "")
+            alt = img.get("alt", "")
+            filename = img.get("filename", "")
+            # Check if image looks like a label
+            if label_patterns.search(img_url) or label_patterns.search(alt) or label_patterns.search(filename):
+                _emit(f"  [LABEL OCR] Found likely label image: {os.path.basename(local_path)}")
+                if local_path and os.path.exists(local_path):
+                    label_ingredients = extract_label_image(local_path)
+                    if label_ingredients:
+                        data["supplement_facts"]["ingredients"] = label_ingredients
+                        data["supplement_facts"]["_source"] = "auto_label_ocr"
+                        ingredient_count = len(label_ingredients)
+                        _emit(f"  [LABEL OCR] Extracted {ingredient_count} ingredients from label image")
+                        break
+
+        # If no label-pattern match found but still no ingredients, try ALL images
+        # (some sites use generic image names for labels)
+        if ingredient_count == 0 and len(product_images) <= 5:
+            _emit("  [LABEL OCR] No label-named images — trying all downloaded images...")
+            for img in product_images:
+                local_path = img.get("local_path", "")
+                if local_path and os.path.exists(local_path):
+                    size = img.get("size_bytes", 0)
+                    # Skip tiny images (icons) and huge images (hero banners are usually > 1MB)
+                    if size < 10000 or size > 2000000:
+                        continue
+                    _emit(f"  [LABEL OCR] Trying: {os.path.basename(local_path)} ({size // 1024}KB)")
+                    label_ingredients = extract_label_image(local_path)
+                    if label_ingredients and len(label_ingredients) >= 2:
+                        data["supplement_facts"]["ingredients"] = label_ingredients
+                        data["supplement_facts"]["_source"] = "auto_label_ocr"
+                        ingredient_count = len(label_ingredients)
+                        _emit(f"  [LABEL OCR] Extracted {ingredient_count} ingredients from image")
+                        break
 
     _emit(f"  Extracted: {data.get('product_name', 'Unknown')}")
     _emit(f"  Category: {data.get('category', 'unknown')}")
