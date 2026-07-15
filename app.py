@@ -120,13 +120,44 @@ from prompt_builders import (
 # ============================================================================
 
 st.sidebar.title("Source Intelligence")
-st.sidebar.caption("Research any product in under 3 minutes.")
 
+# ── Product inputs ──
 product_url = st.sidebar.text_input("Product URL", placeholder="https://product-website.com/")
 vsl_url = st.sidebar.text_input("VSL URL (optional)", placeholder="https://product.com/vsl-page")
 product_name = st.sidebar.text_input("Product Name (if no URL)", placeholder="GlycoReset")
 label_file = st.sidebar.file_uploader("Label Image (optional)", type=["jpg", "jpeg", "png"])
 
+# ── Release details ──
+st.sidebar.markdown("---")
+st.sidebar.markdown("**Release Details**")
+rd_affiliate = st.sidebar.text_input(
+    "Affiliate Link",
+    placeholder="https://naturalsupplementreviews.com/product",
+    key="rd_affiliate",
+)
+rd_previous = st.sidebar.text_input(
+    "Previous Release(s)",
+    value="FIRST RELEASE",
+    help="URLs of your previous articles about this product (comma-separated)",
+    key="rd_previous",
+)
+rd_competitor = st.sidebar.text_input(
+    "Competitor Release(s)",
+    placeholder="https://competitor.com/their-review",
+    key="rd_competitor",
+)
+rd_platform = st.sidebar.selectbox(
+    "Publishing Platform",
+    ["Barchart Advertorial", "Accesswire", "Newswire.com", "Globe Newswire", "Domain Site"],
+    key="rd_platform",
+)
+rd_client_title = st.sidebar.text_input(
+    "Client Locked Title (optional)",
+    placeholder="Leave blank unless client requires a specific title",
+    key="rd_client_title",
+)
+
+st.sidebar.markdown("---")
 run_button = st.sidebar.button("Run Research", type="primary", use_container_width=True)
 
 # Show previously researched products
@@ -249,44 +280,11 @@ if "result_data" in st.session_state:
     st.divider()
 
     # ====================================================================
-    # SECTION 1: RELEASE DETAILS — The inputs the team fills in
+    # SECTION 1: GENERATED PROMPT — The output
     # ====================================================================
 
-    st.markdown("### Release Details")
-    st.caption("Fill these in before generating your prompt.")
-
-    rd_col1, rd_col2 = st.columns(2)
-    with rd_col1:
-        rd_affiliate = st.text_input(
-            "Affiliate Link",
-            placeholder="https://hop.clickbank.net/?affiliate=XXX&vendor=product",
-            key="rd_affiliate",
-        )
-        rd_previous = st.text_input(
-            "Previous Release(s)",
-            value="FIRST RELEASE",
-            help="URLs of your previous articles about this product (comma-separated)",
-            key="rd_previous",
-        )
-        rd_platform = st.selectbox(
-            "Publishing Platform",
-            ["Barchart Advertorial", "Accesswire", "Newswire.com", "Globe Newswire", "Domain Site"],
-            key="rd_platform",
-        )
-    with rd_col2:
-        rd_competitor = st.text_input(
-            "Competitor Release(s)",
-            placeholder="https://competitor.com/their-review",
-            help="Competitor article URLs (comma-separated)",
-            key="rd_competitor",
-        )
-        rd_client_title = st.text_input(
-            "Client Locked Title (optional)",
-            placeholder="Leave blank unless client requires a specific title",
-            key="rd_client_title",
-        )
-        # Determine if this is a domain site or press release flow
-        is_domain = rd_platform == "Domain Site"
+    # Determine flow from sidebar platform selector
+    is_domain = rd_platform == "Domain Site"
 
     # Site selector (only for domain site flow)
     site_config = None
@@ -310,12 +308,6 @@ if "result_data" in st.session_state:
         "publishing_platform": rd_platform,
         "client_locked_title": rd_client_title or "",
     }
-
-    st.divider()
-
-    # ====================================================================
-    # SECTION 2: GENERATED PROMPT — The output
-    # ====================================================================
 
     st.markdown("### Generated Prompt")
 
