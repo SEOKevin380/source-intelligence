@@ -662,37 +662,299 @@ review by a Google Quality Rater evaluating E-E-A-T for YMYL health content.
 
 
 # =============================================================================
-# L6: PRESS RELEASE PROMPT
+# PRESS RELEASE: MBK v3.10 VA BRIEF SUBMISSION
 # =============================================================================
 
-def build_l6_press_release_prompt(full_data, intake_fields):
-    """Build a COMPLETE, self-contained production prompt for a press release.
+def _build_cvd_source_block(full_data):
+    """Build pre-verified source data organized by CVD-5 verification categories.
 
-    Formatted for press release platforms (Accesswire, Barchart, Globe Newswire)
-    with platform-specific compliance rules and advertorial structure.
+    This maps Source Intelligence research directly to the MBK production system's
+    verification framework so Phase 0.0/0.1 can use pre-verified data instead of
+    re-fetching everything. The production system's own SERP analysis, archetype
+    selection, keyword mapping, and angle differentiation run fresh in real-time.
     """
+    from datetime import date
+
     product = full_data.get("product", {})
     name = product.get("product_name", "Unknown")
     compliance = full_data.get("compliance", {})
-    platform = intake_fields.get("platform", "")
+    safety = full_data.get("safety", {})
+    ingredient_research = full_data.get("ingredient_research", {})
+    pricing = product.get("pricing", [])
+    claims = product.get("claims", [])
+    rp = product.get("refund_policy", {})
+    sf = product.get("supplement_facts", {})
+    ingredients = sf.get("ingredients", [])
+    ingredient_kb = _load_ingredient_kb()
+    today = date.today().strftime("%B %d, %Y")
 
-    # Build intake header
-    prompt = f"""═══════════════════════════════════════════════
-PRESS RELEASE CONTENT BRIEF — {name}
+    # Determine C1 source type
+    c1_source = sf.get("_source", "live page extraction")
+    if c1_source == "auto_label_ocr":
+        c1_source = "label image OCR (auto-detected on product page)"
+    elif c1_source == "label_upload":
+        c1_source = "uploaded label image OCR"
+
+    block = f"""
+═══════════════════════════════════════════════
+SOURCE INTELLIGENCE — PRE-VERIFIED DATA
 ═══════════════════════════════════════════════
 
-PRODUCT NAME: {name}
+Research Date: {today}
+Source Tool: MBK Source Intelligence Tool
+Data Sources: Live page fetch + PubMed API + Claude vision OCR
+Official URL: {product.get('official_url', '')}
+
+This submission includes pre-verified research data organized by CVD-5
+verification categories. Use as your verified-facts inventory for Phase 0.1.
+Re-fetch policy pages (refund, shipping, ToS, contact) for currency confirmation.
+All SEO strategy, archetype selection, and angle differentiation should be
+determined by your own real-time SERP analysis — this data feeds facts only.
+
+"""
+
+    # ── C1: SUPPLEMENT FACTS ──
+    if ingredients:
+        block += f"C1 — SUPPLEMENT FACTS [CLEARED]\n"
+        block += f"Source: {c1_source}\n"
+        if sf.get("serving_size"):
+            block += f"Serving Size: {sf['serving_size']}\n"
+        if sf.get("servings_per_container"):
+            block += f"Servings Per Container: {sf['servings_per_container']}\n"
+        if sf.get("proprietary_blend"):
+            block += f"PROPRIETARY BLEND — Total: {sf.get('proprietary_blend_total', 'Not disclosed')}\n"
+        block += "\n"
+        for ing in ingredients:
+            line = f"  {ing.get('name', '')}"
+            if ing.get("amount"):
+                line += f" — {ing['amount']}"
+            if ing.get("daily_value"):
+                line += f" ({ing['daily_value']} DV)"
+            if ing.get("form"):
+                line += f" [Form: {ing['form']}]"
+            block += line + "\n"
+    else:
+        block += "C1 — SUPPLEMENT FACTS [NOT CLEARED]\n"
+        block += "No ingredients extracted. Invoke CVD-6 ingredient gap protocol or request label.\n"
+
+    # ── C2: PRICING ──
+    block += "\n"
+    if pricing:
+        block += "C2 — PRICING [CLEARED]\n"
+        # Determine pricing source
+        pricing_source = "live page extraction"
+        if any(p.get("_source") == "buygoods" for p in pricing):
+            pricing_source = "BuyGoods checkout link data attributes"
+        block += f"Source: {pricing_source}\n\n"
+        for p in pricing:
+            line = f"  {p.get('package', '')}: "
+            if p.get('price'):
+                line += f"${p['price']}" if not str(p['price']).startswith('$') else str(p['price'])
+            if p.get('per_unit'):
+                per = p['per_unit']
+                line += f" ({per}/unit)" if not str(per).startswith('$') else f" (${per}/unit)"
+            if p.get('shipping'):
+                line += f" — Shipping: {p['shipping']}"
+            block += line + "\n"
+    else:
+        block += "C2 — PRICING [NOT CLEARED]\n"
+        block += "No pricing extracted. Verify from live checkout page.\n"
+
+    # ── C3: GUARANTEE / REFUND ──
+    block += "\n"
+    if rp.get("duration_days"):
+        block += "C3 — GUARANTEE / REFUND TERMS [CLEARED]\n"
+        block += f"Source: live page extraction\n"
+        block += f"Duration: {rp['duration_days']}-day money-back guarantee\n"
+        if rp.get("conditions"):
+            block += f"Conditions: {rp['conditions']}\n"
+        if rp.get("verbatim"):
+            block += f"Verbatim: \"{rp['verbatim']}\"\n"
+    else:
+        block += "C3 — GUARANTEE / REFUND TERMS [NOT CLEARED]\n"
+        block += "Not extracted. Re-fetch refund/guarantee policy page.\n"
+
+    # ── C4: CONTACT INFORMATION ──
+    block += "\n"
+    company = product.get("company", {})
+    has_contact = bool(company and any(company.values()))
+    if has_contact:
+        block += "C4 — CONTACT INFORMATION [CLEARED]\n"
+        block += f"Source: live page extraction\n"
+        for k, v in company.items():
+            if v:
+                block += f"  {k}: {v}\n"
+    else:
+        block += "C4 — CONTACT INFORMATION [PARTIAL]\n"
+        block += f"  Brand: {product.get('brand_name', name)}\n"
+        block += f"  Website: {product.get('official_url', '')}\n"
+        block += "Re-fetch contact page for phone, email, address.\n"
+
+    # ── C5: LEGAL / CORPORATE ENTITY ──
+    block += "\n"
+    block += "C5 — LEGAL / CORPORATE ENTITY [PARTIAL]\n"
+    block += f"  Operating entity: {product.get('brand_name', name)}\n"
+    block += "Re-fetch ToS for complete entity names, copyright holder, retailer disclosure.\n"
+
+    # ── C7: CLINICAL CITATIONS / RESEARCH ──
+    block += "\n"
+    if ingredient_research:
+        total_studies = sum(len(d.get("studies", [])) for d in ingredient_research.values())
+        block += f"C7 — CLINICAL CITATIONS / RESEARCH [CLEARED — {total_studies} studies across {len(ingredient_research)} ingredients]\n"
+        block += "Source: PubMed API queries + ingredient knowledge base\n"
+        block += "Note: Ingredient-level research, not finished-product clinical trials.\n\n"
+        for ing_name, ing_data in ingredient_research.items():
+            enriched = _get_enriched_ingredient(ing_name, ingredient_research, ingredient_kb)
+            block += f"  {ing_name}\n"
+            block += f"    Evidence Grade: {enriched['evidence_grade']}\n"
+            if enriched.get("product_dose"):
+                block += f"    Product Dose: {enriched['product_dose']}\n"
+            if enriched.get("clinical_dose_range"):
+                block += f"    Clinical Dose Range: {enriched['clinical_dose_range']}\n"
+            for s in enriched["studies"][:8]:
+                tier = s.get("quality_tier", "standard").upper()
+                block += f"    [{tier}] PMID:{s.get('pmid', '')} — {s.get('title', '')} ({s.get('journal', '')}, {s.get('year', '')})\n"
+            block += "\n"
+    else:
+        block += "C7 — CLINICAL CITATIONS / RESEARCH [NOT CLEARED]\n"
+        block += "No PubMed research available.\n"
+
+    # ── C6: DRUG INTERACTIONS ──
+    block += "\n"
+    has_safety = False
+    safety_lines = []
+    for ing_name, sdata in safety.items():
+        sblock = _format_safety_block(ing_name, safety)
+        if sblock:
+            has_safety = True
+            safety_lines.append(sblock)
+    if has_safety:
+        block += f"C6 — DRUG INTERACTIONS [CLEARED]\n"
+        block += "Source: PubMed safety queries + interaction databases\n"
+        for sl in safety_lines:
+            block += sl
+    else:
+        block += "C6 — DRUG INTERACTIONS [MINIMAL]\n"
+        block += "No significant drug interactions identified in automated research.\n"
+        block += "Verify manually for high-risk ingredient combinations.\n"
+
+    # ── C10: SHIPPING ──
+    block += "\n"
+    shipping = product.get("shipping_policy", product.get("shipping", {}))
+    if shipping and any(shipping.values()):
+        block += "C10 — SHIPPING / DELIVERY [CLEARED]\n"
+        block += "Source: live page extraction\n"
+        for k, v in shipping.items():
+            if v:
+                block += f"  {k.replace('_', ' ').title()}: {v}\n"
+    else:
+        block += "C10 — SHIPPING / DELIVERY [NOT CLEARED]\n"
+        block += "Not extracted. Re-fetch shipping policy page.\n"
+
+    # ── C15: PRODUCT CATEGORY / POSITIONING ──
+    block += "\n"
+    block += "C15 — PRODUCT CATEGORY / POSITIONING [CLEARED]\n"
+    block += f"  Product Type: {product.get('product_type', 'supplement')}\n"
+    block += f"  Category: {product.get('category', 'Unknown')}\n"
+    # Flag potential label-vs-copy discrepancies
+    if sf.get("_source") == "auto_label_ocr" and claims:
+        block += "  NOTE: Ingredients sourced from label OCR — verify against sales page claims for C15 Path C analysis.\n"
+
+    # ── C19: SERVING SIZE / SUPPLY DURATION ──
+    block += "\n"
+    if sf.get("serving_size") or sf.get("servings_per_container"):
+        block += "C19 — SERVING SIZE / SUPPLY DURATION [CLEARED]\n"
+        if sf.get("serving_size"):
+            block += f"  Serving Size: {sf['serving_size']}\n"
+        if sf.get("servings_per_container"):
+            block += f"  Servings Per Container: {sf['servings_per_container']}\n"
+    else:
+        block += "C19 — SERVING SIZE / SUPPLY DURATION [NOT CLEARED]\n"
+        block += "Not extracted. Source from label or brand page before writing.\n"
+
+    # ── COMPLIANCE PRE-CHECK ──
+    block += "\n"
+    block += "═══ COMPLIANCE PRE-CHECK ═══\n"
+    aw = compliance.get("accesswire_blocklist_check", {})
+    bc = compliance.get("barchart_compliance", {})
+    block += f"R12 Blocklist (ACW/Barchart): {'PASS' if aw.get('passes') else 'FAIL — ' + str(aw.get('flagged_terms', []))}\n"
+    block += f"Barchart B1-B4 Overlay: {'PASS' if bc.get('passes') else 'REVIEW — ' + str(bc.get('notes', ''))}\n"
+    block += f"Risk Level: {compliance.get('risk_level', 'Unknown')}\n"
+
+    # Flagged claims
+    flagged = compliance.get("claim_audit", [])
+    if flagged:
+        block += f"Flagged Claims ({len(flagged)}):\n"
+        for item in flagged:
+            block += f"  FLAGGED: \"{item.get('claim', '')}\"\n"
+            for issue in item.get("issues", []):
+                block += f"    Issue: {issue}\n"
+            block += f"    Safe Alternative: \"{item.get('safe_alternative', '')}\"\n"
+
+    # Required disclaimers
+    req_disclaimers = compliance.get("required_disclaimers", [])
+    if req_disclaimers:
+        block += "Required Disclaimers:\n"
+        for d in req_disclaimers:
+            block += f"  - {d}\n"
+
+    # ── MARKETING CLAIMS (verbatim, for R18/L2 scaffolding) ──
+    block += "\n"
+    block += "═══ MARKETING CLAIMS (VERBATIM — CVD-1 SOURCE: LIVE URL FETCH) ═══\n"
+    for c in claims:
+        if isinstance(c, dict):
+            block += f"- [{c.get('source', 'unknown')}] \"{c.get('claim', '')}\"\n"
+    if not claims:
+        block += "No marketing claims captured from product page.\n"
+
+    # ── TESTIMONIALS (reference only) ──
+    testimonials = product.get("testimonials", [])
+    if testimonials:
+        block += f"\n═══ TESTIMONIALS ({len(testimonials)} — C9 reference, not independently verified) ═══\n"
+        for t in testimonials:
+            if isinstance(t, dict) and t.get("text"):
+                block += f"- {t.get('name', 'Anonymous')} ({t.get('location', '')}): \"{t['text'][:300]}\"\n"
+
+    block += "\n═══════════════════════════════════════════════\n"
+    return block
+
+
+def build_l6_press_release_prompt(full_data, intake_fields):
+    """Build an MBK v3.10 production submission for press release platforms.
+
+    Generates a complete intake submission with pre-verified source intelligence
+    that maps directly to the MBK production system's CVD-5 verification
+    categories. Paste directly into the platform project (Barchart, ACW,
+    Newswire, Globe) — the system runs the full pipeline autonomously:
+    real-time SERP analysis, archetype selection, angle differentiation,
+    drafting, gate check, and delivery in ONE pass.
+
+    The submission includes:
+    1. MBK v3.10 intake header (exact field-for-field match)
+    2. Pre-verified source data organized by CVD-5 verification categories
+    3. Standing authorization for autonomous CVD-8 collision handling + archetype flex
+    No production rules or article-writing instructions — the project has those.
+    SEO strategy is determined in real-time by the production system, never pre-baked.
+    """
+    product = full_data.get("product", {})
+    name = product.get("product_name", "Unknown")
+    platform = intake_fields.get("platform", "")
+    previous = intake_fields.get("previous_releases", "FIRST RELEASE")
+    competitor = intake_fields.get("competitor_release", "")
+
+    # ── MBK v3.10 INTAKE HEADER ──
+    prompt = f"""PRODUCT NAME: {name}
 OFFICIAL WEBSITE URL: {product.get('official_url', '')}
 PUBLISHING PLATFORM: {platform}
 AFFILIATE LINK: {intake_fields.get('affiliate_link', 'TRAFFIC-FIRST')}
 RELEASE TYPE: {intake_fields.get('release_type', 'Single Product')}
 YMYL CATEGORY: {intake_fields.get('ymyl_category', 'Yes')}
-PREVIOUS RELEASES: {intake_fields.get('previous_releases', 'FIRST RELEASE')}
-SOURCE MATERIALS: Included inline below"""
+PREVIOUS RELEASES: {previous}"""
 
     # Optional intake fields
+    if competitor:
+        prompt += f"\nCOMPETITOR RELEASE: {competitor}"
     for field, key in [
-        ("COMPETITOR RELEASE", "competitor_release"),
         ("EDITOR-LOCKED TITLE", "editor_title"),
         ("SUBTITLE", "subtitle"),
         ("RELEASE SUMMARY (140 chars)", "release_summary"),
@@ -702,97 +964,54 @@ SOURCE MATERIALS: Included inline below"""
         if val:
             prompt += f"\n{field}: {val}"
 
-    # SERP stacking & anti-cannibalization (conditional)
-    prompt += _build_serp_stacking_section(
-        intake_fields.get("previous_releases", ""),
-        intake_fields.get("competitor_release", ""),
-    )
+    prompt += f"\nSOURCE MATERIALS: Pre-verified research data included below"
 
-    # Platform-specific instructions
-    prompt += f"""
-
-═══════════════════════════════════════════════
-CONTENT GENERATION INSTRUCTIONS — PRESS RELEASE
-═══════════════════════════════════════════════
-
-Write a press release / advertorial for {name} formatted for: {platform}
-
-OUTPUT FORMAT:
-- Pure HTML (no html/head/body wrapper)
-- 1000-1500 words
-- Press release structure: headline, subheadline, dateline, body, boilerplate
-- Include a suggested slug as an HTML comment: <!-- slug: your-slug-here -->
-"""
-
-    # Platform-specific compliance
-    if "barchart" in platform.lower():
-        bc = compliance.get("barchart_compliance", {})
+    # ── CVD-8 PRE-AUTHORIZATION (when previous releases exist) ──
+    has_prev = previous and previous.strip().upper() != "FIRST RELEASE"
+    if has_prev or competitor:
         prompt += f"""
-BARCHART ADVERTORIAL RULES:
-- Compliance status: {'PASS' if bc.get('passes') else 'FAIL — review flagged items'}
-- {bc.get('notes', '')}
-- Brand-as-subject voice (third person)
-- No direct health cure/treat/prevent claims
-- Hedging throughout: "may support," "designed to help," "research suggests"
-- Include clear disclaimer at bottom
-- Advertorial disclosure at top
+
+═══════════════════════════════════════════════
+CVD-8 / CVD-9 — STANDING PRODUCTION AUTHORIZATION
+═══════════════════════════════════════════════
 """
-    elif "accesswire" in platform.lower() or "newswire" in platform.lower():
-        aw = compliance.get("accesswire_blocklist_check", {})
+    if has_prev:
         prompt += f"""
-ACCESSWIRE/NEWSWIRE RULES:
-- Blocklist check: {'PASS' if aw.get('passes') else 'FAIL — flagged terms: ' + str(aw.get('flagged_terms', []))}
-- Do NOT use any blocklisted terms — they will cause rejection
-- Professional press release tone
-- Dateline format: CITY, STATE, Month Day, Year
-- Include company boilerplate paragraph at end
-- Forward-looking statement disclaimer required
-"""
-    elif "globe" in platform.lower():
-        prompt += """
-GLOBE NEWSWIRE RULES:
-- Format C default (professional press release)
-- Brand-as-subject voice throughout
-- No direct health claims
-- Include standard press release sections: headline, subheadline, dateline, body, about section, contact info
-- Forward-looking statement disclaimer required
-"""
+Previous release coverage exists for this product:
+{previous}
 
-    prompt += """
-PRESS RELEASE STRUCTURE:
-1. HEADLINE — Attention-grabbing but factual, no clickbait
-2. SUBHEADLINE — Expands on the headline with key angle
-3. DATELINE — City, State, Date
-4. OPENING PARAGRAPH — Newsworthy hook: what's notable about this product
-5. PRODUCT OVERVIEW — What it is, key ingredients, what it's designed to do
-6. INGREDIENT ANALYSIS — Highlight 3-5 key ingredients with evidence grades and dose-math
-7. MARKET CONTEXT — How it fits in the category, what differentiates it
-8. AVAILABILITY & PRICING — Where to buy, pricing tiers, guarantee
-9. ABOUT [BRAND] — Company boilerplate
-10. DISCLAIMERS — FDA, forward-looking statements, affiliate disclosure as applicable
+STANDING AUTHORIZATION FROM KEVIN — RUN THE FULL PIPELINE, NO STOPS:
 
-CONTENT QUALITY RULES:
-1. HEDGING LANGUAGE: "may help," "designed to support," "research suggests" — never definitive health claims
-2. EVIDENCE-BASED: Reference specific ingredients and research quality (Strong/Moderate/Preliminary evidence)
-3. BALANCED: Include product limitations or gaps — one-sided puff pieces get rejected and rank poorly
-4. NO BLOCKLISTED TERMS: Review the compliance data for any flagged terms and avoid them entirely
-5. CITE RESEARCH: Reference PubMed studies by PMID from the source data — do NOT fabricate citations
-6. YMYL COMPLIANCE: Health content under highest scrutiny — be conservative with claims
-7. UNIQUE ANGLE: Each press release needs a distinct hook — not a generic "new product launches" piece
-8. AFFILIATE LINK: Use the provided affiliate link for CTA. If "TRAFFIC-FIRST" — focus on brand awareness
+1. COLLISION HANDLING: If CVD-8 collision is detected, DO NOT stop for
+   confirmation. Fetch and read the prior release(s), identify what angles,
+   archetypes, and keyword clusters they own, then select the strongest
+   available differentiated position that creates a genuine SERP stack.
+
+2. ARCHETYPE FLEX: If the initial archetype selection collides or is suboptimal
+   after SERP analysis, pivot to whatever archetype produces the strongest
+   differentiated coverage. A2 verification-first, B4 long-tail complaints,
+   A6 lander-match, ingredients deep-dive, safety angle — whatever the live
+   SERP data says will dominate. The archetype serves the SERP opportunity,
+   not the other way around. Flex until you find the one that wins.
+
+3. AUTONOMOUS EXECUTION: Run Phase 0 through delivery in ONE pass. Document
+   every collision, pivot, and angle decision in the QA report — but do not
+   pause for approval at any point. The QA report is the accountability
+   mechanism, not pre-approval.
+
+4. CROSS-LINK: Per R9, fetch and read prior release before writing anchor
+   text. Hard rule on link-is-endorsement still applies — no linking to
+   content that asserts claims this article corrects.
+"""
+    if competitor:
+        prompt += f"""
+Competitor release(s) — use in Phase 0.2 SERP gap analysis:
+{competitor}
+Feed these into your real-time competitive analysis. Beat them with better
+research, unique findings, and genuine information gain from the source data below.
 """
 
-    # Append source data block
-    prompt += _build_source_data_block(full_data)
-
-    prompt += f"""
-═══════════════════════════════════════════════
-FINAL INSTRUCTIONS
-═══════════════════════════════════════════════
-
-Write the complete press release now in pure HTML. Follow ALL platform rules above.
-Ensure the content is original, balanced, evidence-graded, and compliant with
-{platform} submission requirements.
-"""
+    # ── PRE-VERIFIED SOURCE DATA (CVD-organized) ──
+    prompt += _build_cvd_source_block(full_data)
 
     return prompt

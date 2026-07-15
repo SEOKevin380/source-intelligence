@@ -510,14 +510,14 @@ if "result_data" in st.session_state:
     # --- TAB: Export Prompt ---
     with tabs[8]:
         st.markdown("### Generate Production Prompt")
-        st.markdown("Select a content layer, configure, and copy the complete prompt into any Claude chat for content generation.")
+        st.markdown("Select output type. **Domain Site** = self-contained writing prompt. **Press Release** = MBK production submission (paste into Barchart/ACW/Globe project — system runs the full pipeline autonomously).")
 
         st.divider()
 
         # Layer type selector
         layer_type = st.selectbox("Content Layer", [
             "L6: Product Review (Domain Site)",
-            "L6: Product Review (Press Release)",
+            "L6: Press Release (MBK Production)",
             "L1: Ingredient Profile",
             "L3: Safety & Interactions Guide",
         ], key="layer_type")
@@ -527,9 +527,9 @@ if "result_data" in st.session_state:
         safety = data.get("safety", {})
         ingredients_list = product.get("supplement_facts", {}).get("ingredients", [])
 
-        # Site selector (for L1, L3, and L6 domain)
+        # Site selector (for L1, L3, and L6 domain — not press releases)
         site_config = None
-        if "Press Release" not in layer_type:
+        if "Press Release" not in layer_type and "MBK" not in layer_type:
             site_names = get_site_names()
             site_display = [s[1] for s in site_names]
             site_keys = [s[0] for s in site_names]
@@ -592,8 +592,8 @@ if "result_data" in st.session_state:
             }
             prompt = build_l6_review_prompt(data, site_config, intake_fields)
 
-        # === L6: Product Review (Press Release) ===
-        elif "Press Release" in layer_type:
+        # === L6: Press Release (MBK Production) ===
+        elif "Press Release" in layer_type or "MBK" in layer_type:
             rd = data.get("release_details", {})
 
             col1, col2 = st.columns(2)
