@@ -784,12 +784,37 @@ def _discover_linked_pages(html, base_url):
     return discovered[:15]  # Cap to prevent runaway crawling
 
 
-def _try_multiple_urls(url):
+def _try_multiple_urls(url, browser_session=None):
     """Try fetching a URL and common subpages to maximize content capture."""
     results = {}
+    site_needs_browser = False
 
     # Try main URL
     main = fetch_url(url)
+
+    # If content looks like a JS shell or missing pricing, retry with browser
+    if browser_session and browser_session.available:
+        try:
+            from browser_fetch import is_content_thin
+            reason = ""
+            if is_content_thin(main):
+                reason = "thin"
+            elif main and not re.search(r'\$\d+|data-(?:price|total|bottles)|"price"\s*:', main, re.IGNORECASE):
+                # Page has content but zero pricing — common on BuyGoods/funnel pages
+                if len(strip_html(main)) < 15000:
+                    reason = "no-pricing"
+
+            if reason:
+                msg = "Content thin" if reason == "thin" else "No pricing in static HTML"
+                _emit(f"    {msg} — retrying with browser rendering...")
+                rendered = browser_session.fetch(url)
+                if rendered and len(strip_html(rendered)) > len(strip_html(main)):
+                    main = rendered
+                    site_needs_browser = True
+                    _emit(f"    Browser recovered {len(strip_html(main)):,} chars of visible text")
+        except ImportError:
+            pass
+
     if main:
         results["main"] = main
 
@@ -894,7 +919,10 @@ def _try_multiple_urls(url):
             seen_urls.add(sub_url)
             stderr_capture = io.StringIO()
             with contextlib.redirect_stdout(stderr_capture):
-                content = fetch_url(sub_url, max_bytes=30000)
+                if site_needs_browser and browser_session and browser_session.available:
+                    content = browser_session.fetch(sub_url, max_bytes=30000)
+                else:
+                    content = fetch_url(sub_url, max_bytes=30000)
             if content and len(content) > 500:
                 results[sub] = content
                 _emit(f"    Found subpage: {sub} ({len(content):,} bytes)")
@@ -914,7 +942,10 @@ def _try_multiple_urls(url):
                 import io, contextlib
                 stderr_capture = io.StringIO()
                 with contextlib.redirect_stdout(stderr_capture):
-                    content = fetch_url(disc_url, max_bytes=30000)
+                    if site_needs_browser and browser_session and browser_session.available:
+                        content = browser_session.fetch(disc_url, max_bytes=30000)
+                    else:
+                        content = fetch_url(disc_url, max_bytes=30000)
                 if content and len(content) > 500:
                     key = f"discovered_{disc_path.strip('/').replace('/', '_')}"
                     results[key] = content
@@ -1205,7 +1236,7 @@ def _download_product_images(images, output_dir, slug, max_images=10):
     return saved
 
 
-def phase1_extract_product(url, vsl_url=None, product_name=None):
+def phase1_extract_product(url, vsl_url=None, product_name=None, browser_session=None):
     """Scrape product page and extract structured data via Claude.
 
     Multi-layer extraction strategy:
@@ -1223,7 +1254,7 @@ def phase1_extract_product(url, vsl_url=None, product_name=None):
     # Layer 1: Direct scrape (main URL + subpages)
     if url:
         _emit(f"  Fetching: {url}")
-        all_pages = _try_multiple_urls(url)
+        all_pages = _try_multiple_urls(url, browser_session=browser_session)
         main_size = len(all_pages.get("main", ""))
         if main_size:
             _emit(f"  Main page: {main_size:,} bytes")
@@ -1234,6 +1265,18 @@ def phase1_extract_product(url, vsl_url=None, product_name=None):
     if vsl_url:
         _emit(f"  Fetching VSL: {vsl_url}")
         vsl_content = fetch_url(vsl_url)
+        # VSL pages are typically JS-heavy funnels — try browser if thin
+        if browser_session and browser_session.available:
+            try:
+                from browser_fetch import is_content_thin
+                if is_content_thin(vsl_content, min_text_chars=500):
+                    _emit(f"    VSL content thin — retrying with browser rendering...")
+                    rendered = browser_session.fetch(vsl_url)
+                    if rendered and len(strip_html(rendered)) > len(strip_html(vsl_content)):
+                        vsl_content = rendered
+                        _emit(f"    Browser recovered {len(strip_html(vsl_content)):,} chars from VSL")
+            except ImportError:
+                pass
         if vsl_content:
             _emit(f"  Got {len(vsl_content):,} bytes from VSL")
 
@@ -2707,65 +2750,87 @@ def research_product(url=None, vsl_url=None, product_name=None, quick=False, lab
     if quick:
         _emit(f"  Mode: QUICK (skipping keywords, reputation, competitive)")
 
-    # Phase 1: Extract product data
-    product_data = phase1_extract_product(url, vsl_url, product_name)
-
-    # If label image provided, use it to override/verify ingredients
-    if label_image and product_data:
-        label_result = extract_label_image(label_image)
-        if label_result:
-            if isinstance(label_result, dict):
-                ings = label_result["ingredients"]
-                _emit(f"  Label override: {len(ings)} verified ingredients from label image")
-                product_data["supplement_facts"]["ingredients"] = ings
-                if label_result.get("serving_size"):
-                    product_data["supplement_facts"]["serving_size"] = label_result["serving_size"]
-                if label_result.get("servings_per_container"):
-                    product_data["supplement_facts"]["servings_per_container"] = label_result["servings_per_container"]
+    # Initialize browser session for JS-rendered pages (optional)
+    browser_session = None
+    try:
+        from browser_fetch import BrowserSession, PLAYWRIGHT_AVAILABLE
+        if PLAYWRIGHT_AVAILABLE:
+            browser_session = BrowserSession()
+            browser_session.__enter__()
+            if browser_session.available:
+                _emit(f"  Browser rendering: ENABLED")
             else:
-                _emit(f"  Label override: {len(label_result)} verified ingredients from label image")
-                product_data["supplement_facts"]["ingredients"] = label_result
-            product_data["supplement_facts"]["_source"] = "label_image_verified"
-    if not product_data:
-        _emit("\n[ABORT] Could not extract product data")
-        return None
+                _emit(f"  Browser rendering: FAILED TO LAUNCH (urllib only)")
+                browser_session = None
+    except ImportError:
+        _emit(f"  Browser rendering: NOT AVAILABLE (pip install playwright)")
 
-    if vsl_url:
-        product_data["vsl_url"] = vsl_url
+    # Phase 1: Extract product data
+    try:
+        product_data = phase1_extract_product(url, vsl_url, product_name,
+                                               browser_session=browser_session)
 
-    # Phase 2: PubMed research
-    ingredient_research = phase2_pubmed_research(product_data)
+        # If label image provided, use it to override/verify ingredients
+        if label_image and product_data:
+            label_result = extract_label_image(label_image)
+            if label_result:
+                if isinstance(label_result, dict):
+                    ings = label_result["ingredients"]
+                    _emit(f"  Label override: {len(ings)} verified ingredients from label image")
+                    product_data["supplement_facts"]["ingredients"] = ings
+                    if label_result.get("serving_size"):
+                        product_data["supplement_facts"]["serving_size"] = label_result["serving_size"]
+                    if label_result.get("servings_per_container"):
+                        product_data["supplement_facts"]["servings_per_container"] = label_result["servings_per_container"]
+                else:
+                    _emit(f"  Label override: {len(label_result)} verified ingredients from label image")
+                    product_data["supplement_facts"]["ingredients"] = label_result
+                product_data["supplement_facts"]["_source"] = "label_image_verified"
+        if not product_data:
+            _emit("\n[ABORT] Could not extract product data")
+            return None
 
-    # Phase 3: Safety research
-    safety_data = phase3_safety_research(product_data, ingredient_research)
+        if vsl_url:
+            product_data["vsl_url"] = vsl_url
 
-    # Phase 4-6: Optional in quick mode
-    if quick:
-        keywords = {}
-        reputation = {}
-        competitive = {}
-        _emit("\n  [QUICK MODE] Skipping Phases 4-6")
-    else:
-        keywords = phase4_keyword_research(product_data)
-        reputation = phase5_reputation_check(product_data)
-        competitive = phase6_competitive_landscape(product_data)
+        # Phase 2: PubMed research
+        ingredient_research = phase2_pubmed_research(product_data)
 
-    # Phase 7: Compliance (always runs)
-    compliance = phase7_compliance_check(product_data)
+        # Phase 3: Safety research
+        safety_data = phase3_safety_research(product_data, ingredient_research)
 
-    # Phase 8: Output
-    json_path, doc_path, doc_text, full_data = phase8_output(
-        product_data, ingredient_research, safety_data,
-        keywords, reputation, competitive, compliance
-    )
+        # Phase 4-6: Optional in quick mode
+        if quick:
+            keywords = {}
+            reputation = {}
+            competitive = {}
+            _emit("\n  [QUICK MODE] Skipping Phases 4-6")
+        else:
+            keywords = phase4_keyword_research(product_data)
+            reputation = phase5_reputation_check(product_data)
+            competitive = phase6_competitive_landscape(product_data)
 
-    elapsed = time.time() - start
-    _emit(f"  Total time: {elapsed:.1f} seconds")
+        # Phase 7: Compliance (always runs)
+        compliance = phase7_compliance_check(product_data)
 
-    # Reset callback
-    _progress_callback = None
+        # Phase 8: Output
+        json_path, doc_path, doc_text, full_data = phase8_output(
+            product_data, ingredient_research, safety_data,
+            keywords, reputation, competitive, compliance
+        )
 
-    return json_path, doc_path, doc_text, full_data
+        elapsed = time.time() - start
+        _emit(f"  Total time: {elapsed:.1f} seconds")
+
+        # Reset callback
+        _progress_callback = None
+
+        return json_path, doc_path, doc_text, full_data
+
+    finally:
+        # Always clean up browser session
+        if browser_session:
+            browser_session.__exit__(None, None, None)
 
 
 def main():

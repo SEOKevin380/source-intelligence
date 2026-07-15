@@ -121,6 +121,16 @@ from prompt_builders import (
 
 st.sidebar.title("Source Intelligence")
 
+# Browser rendering status
+try:
+    from browser_fetch import PLAYWRIGHT_AVAILABLE
+    if PLAYWRIGHT_AVAILABLE:
+        st.sidebar.caption("Browser rendering: Enabled")
+    else:
+        st.sidebar.caption("Browser rendering: Disabled (urllib only)")
+except ImportError:
+    st.sidebar.caption("Browser rendering: Not installed")
+
 product_url = st.sidebar.text_input("Product URL", placeholder="https://product-website.com/")
 product_name = st.sidebar.text_input("Product Name", placeholder="Memovance PRO")
 vsl_url = st.sidebar.text_input("VSL URL (optional)", placeholder="https://product.com/vsl-page")
