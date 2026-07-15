@@ -50,6 +50,67 @@ def _emit(message, level="info"):
 
 
 # ============================================================================
+# INGREDIENT KB COMPOUNDING
+# ============================================================================
+
+def _compute_evidence_grade(studies):
+    """Compute evidence grade from a list of studies."""
+    gold_count = sum(1 for s in studies if s.get("quality_tier") == "gold")
+    silver_count = sum(1 for s in studies if s.get("quality_tier") == "silver")
+    if gold_count >= 3:
+        return "Strong"
+    elif gold_count >= 1 or silver_count >= 3:
+        return "Moderate"
+    elif silver_count >= 1:
+        return "Preliminary"
+    elif studies:
+        return "Traditional"
+    return "Insufficient"
+
+
+def merge_ingredient_research(existing, new_entry):
+    """Merge new research into an existing ingredient KB entry.
+
+    Deduplicates by PMID. Upgrades evidence grade if new studies warrant it.
+    Merges safety data additively (new interactions/side effects added, not overwritten).
+    """
+    # Merge studies — dedup by PMID
+    existing_pmids = {s.get("pmid") for s in existing.get("studies", []) if s.get("pmid")}
+    for study in new_entry.get("studies", []):
+        pmid = study.get("pmid")
+        if pmid and pmid not in existing_pmids:
+            existing.setdefault("studies", []).append(study)
+            existing_pmids.add(pmid)
+
+    # Recompute evidence grade from merged study set
+    existing["evidence_grade"] = _compute_evidence_grade(existing.get("studies", []))
+
+    # Merge safety data additively
+    for field in ["side_effects", "contraindications"]:
+        existing_items = set(existing.get(field, []))
+        for item in new_entry.get(field, []):
+            if item and item not in existing_items:
+                existing.setdefault(field, []).append(item)
+
+    # Merge drug interactions (dedup by drug_class + interaction)
+    existing_interactions = {
+        (d.get("drug_class", ""), d.get("interaction", ""))
+        for d in existing.get("drug_interactions", [])
+    }
+    for di in new_entry.get("drug_interactions", []):
+        key = (di.get("drug_class", ""), di.get("interaction", ""))
+        if key not in existing_interactions:
+            existing.setdefault("drug_interactions", []).append(di)
+
+    # Update clinical dose range if new data provides one and existing doesn't
+    if new_entry.get("clinical_dose_range") and not existing.get("clinical_dose_range"):
+        existing["clinical_dose_range"] = new_entry["clinical_dose_range"]
+
+    existing["last_updated"] = datetime.now().strftime("%Y-%m-%d")
+    return existing
+
+
+# ============================================================================
 # UTILITIES
 # ============================================================================
 
@@ -909,10 +970,20 @@ def phase2_pubmed_research(product_data):
     for name, dose in ingredient_names:
         key = name.lower().strip()
 
-        # Check cache first
-        if key in ingredient_db and ingredient_db[key].get("studies"):
-            _emit(f"  [CACHE] {name}: {len(ingredient_db[key]['studies'])} studies")
-            research[name] = ingredient_db[key].copy()
+        # Check cache — use if fresh and has enough studies
+        cached = ingredient_db.get(key, {})
+        cache_date = cached.get("last_updated", "")
+        is_fresh = False
+        if cache_date:
+            try:
+                days_old = (datetime.now() - datetime.strptime(cache_date, "%Y-%m-%d")).days
+                is_fresh = days_old < 30
+            except ValueError:
+                pass
+
+        if cached.get("studies") and is_fresh and len(cached["studies"]) >= 5:
+            _emit(f"  [CACHE] {name}: {len(cached['studies'])} studies (fresh)")
+            research[name] = cached.copy()
             research[name]["product_dose"] = dose
             continue
 
@@ -923,12 +994,18 @@ def phase2_pubmed_research(product_data):
         pmids = pubmed_search(name)
         if not pmids:
             _emit(f"    No results for '{name}'")
-            research[name] = {
-                "product_dose": dose,
-                "clinical_dose_range": "",
-                "evidence_grade": "Insufficient",
-                "studies": [],
-            }
+            if cached.get("studies"):
+                # Use stale cache rather than nothing
+                _emit(f"    Using cached data ({len(cached['studies'])} studies)")
+                research[name] = cached.copy()
+                research[name]["product_dose"] = dose
+            else:
+                research[name] = {
+                    "product_dose": dose,
+                    "clinical_dose_range": "",
+                    "evidence_grade": "Insufficient",
+                    "studies": [],
+                }
             continue
 
         time.sleep(PUBMED_DELAY)
@@ -937,20 +1014,7 @@ def phase2_pubmed_research(product_data):
         studies = pubmed_fetch_abstracts(pmids)
         tagged = [tag_study_relevance(s) for s in studies]
 
-        # Determine evidence grade
-        gold_count = sum(1 for s in tagged if s.get("quality_tier") == "gold")
-        silver_count = sum(1 for s in tagged if s.get("quality_tier") == "silver")
-
-        if gold_count >= 3:
-            grade = "Strong"
-        elif gold_count >= 1 or silver_count >= 3:
-            grade = "Moderate"
-        elif silver_count >= 1:
-            grade = "Preliminary"
-        elif tagged:
-            grade = "Traditional"
-        else:
-            grade = "Insufficient"
+        grade = _compute_evidence_grade(tagged)
 
         entry = {
             "product_dose": dose,
@@ -960,13 +1024,21 @@ def phase2_pubmed_research(product_data):
             "last_updated": datetime.now().strftime("%Y-%m-%d"),
         }
 
-        research[name] = entry
-
-        # Cache in ingredient_db (without product_dose which is product-specific)
-        cache_entry = {k: v for k, v in entry.items() if k != "product_dose"}
-        ingredient_db[key] = cache_entry
-
-        _emit(f"    Found {len(tagged)} studies (grade: {grade})")
+        # Merge with existing cache instead of overwriting (compounding KB)
+        if cached.get("studies"):
+            cache_entry = {k: v for k, v in cached.items()}
+            merge_ingredient_research(cache_entry, entry)
+            ingredient_db[key] = cache_entry
+            # Use merged data for this product too
+            research[name] = cache_entry.copy()
+            research[name]["product_dose"] = dose
+            _emit(f"    Merged: {len(cache_entry['studies'])} total studies (grade: {cache_entry['evidence_grade']})")
+        else:
+            research[name] = entry
+            # Cache in ingredient_db (without product_dose which is product-specific)
+            cache_entry = {k: v for k, v in entry.items() if k != "product_dose"}
+            ingredient_db[key] = cache_entry
+            _emit(f"    Found {len(tagged)} studies (grade: {grade})")
 
     # Save updated cache
     save_ingredient_db(ingredient_db)
@@ -999,13 +1071,19 @@ def phase3_safety_research(product_data, ingredient_research):
         key = name.lower().strip()
         clean_name = re.sub(r'\s*\(.*?\)\s*', '', name).strip()
 
-        # Check cache for safety data
-        if key in ingredient_db and ingredient_db[key].get("side_effects"):
+        # Check cache for safety data — use if it has meaningful content
+        cached_safety = ingredient_db.get(key, {})
+        has_cached_safety = (
+            cached_safety.get("side_effects")
+            or cached_safety.get("drug_interactions")
+            or cached_safety.get("contraindications")
+        )
+        if has_cached_safety:
             _emit(f"  [CACHE] {name}: safety data cached")
             safety_data[name] = {
-                "side_effects": ingredient_db[key].get("side_effects", []),
-                "drug_interactions": ingredient_db[key].get("drug_interactions", []),
-                "contraindications": ingredient_db[key].get("contraindications", []),
+                "side_effects": cached_safety.get("side_effects", []),
+                "drug_interactions": cached_safety.get("drug_interactions", []),
+                "contraindications": cached_safety.get("contraindications", []),
             }
             continue
 
@@ -1054,17 +1132,15 @@ Extract ONLY what the studies support. If no data, use empty arrays."""
                         "drug_interactions": parsed.get("drug_interactions", []),
                         "contraindications": parsed.get("contraindications", []),
                     }
-                    # Update ingredient_db cache
+                    # Merge safety data into ingredient_db cache
                     if key not in ingredient_db:
                         ingredient_db[key] = {}
-                    ingredient_db[key]["side_effects"] = parsed.get("side_effects", [])
-                    ingredient_db[key]["drug_interactions"] = parsed.get("drug_interactions", [])
-                    ingredient_db[key]["contraindications"] = parsed.get("contraindications", [])
-                    if parsed.get("clinical_dose_range"):
-                        ingredient_db[key]["clinical_dose_range"] = parsed["clinical_dose_range"]
-                        # Also update ingredient_research if present
-                        if name in (ingredient_research or {}):
-                            ingredient_research[name]["clinical_dose_range"] = parsed["clinical_dose_range"]
+                    merge_ingredient_research(ingredient_db[key], {
+                        "side_effects": parsed.get("side_effects", []),
+                        "drug_interactions": parsed.get("drug_interactions", []),
+                        "contraindications": parsed.get("contraindications", []),
+                        "clinical_dose_range": parsed.get("clinical_dose_range", ""),
+                    })
 
                     _emit(f"    {len(parsed.get('side_effects', []))} side effects, {len(parsed.get('drug_interactions', []))} interactions")
                     continue
