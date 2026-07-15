@@ -121,15 +121,10 @@ from prompt_builders import (
 
 st.sidebar.title("Source Intelligence")
 
-# ── Product inputs ──
 product_url = st.sidebar.text_input("Product URL", placeholder="https://product-website.com/")
+product_name = st.sidebar.text_input("Product Name", placeholder="Memovance PRO")
 vsl_url = st.sidebar.text_input("VSL URL (optional)", placeholder="https://product.com/vsl-page")
-product_name = st.sidebar.text_input("Product Name (if no URL)", placeholder="GlycoReset")
-label_file = st.sidebar.file_uploader("Label Image (optional)", type=["jpg", "jpeg", "png"])
-
-# ── Release details ──
-st.sidebar.markdown("---")
-st.sidebar.markdown("**Release Details**")
+label_file = None  # kept for API compatibility
 rd_affiliate = st.sidebar.text_input(
     "Affiliate Link",
     placeholder="https://naturalsupplementreviews.com/product",
