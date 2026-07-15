@@ -437,20 +437,32 @@ def _try_multiple_urls(url):
     if wc_data:
         results["woocommerce_api"] = wc_data
 
-    # Try common subpages that often have ingredients/policies
-    base = url.rstrip("/")
-    # Strip query params from base for subpage probing
-    if "?" in base:
-        base = base.split("?")[0].rstrip("/")
-    subpages = [
-        "/ingredients", "/supplement-facts", "/about",
-        "/faq", "/faqs", "/refund-policy", "/return-policy",
-        "/terms", "/contact", "/shipping",
+    # Try subpages for product info and site-wide policies
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    site_root = f"{parsed.scheme}://{parsed.hostname}"
+    product_base = url.split("?")[0].rstrip("/")
+
+    # Product-relative subpages (append to product URL)
+    product_subpages = ["/ingredients", "/supplement-facts", "/faq"]
+
+    # Site-root subpages (append to domain root — policies, contact, about)
+    site_subpages = [
+        "/about", "/about-us", "/contact", "/contact-us",
+        "/shipping-policy", "/shipping", "/delivery",
+        "/refund-policy", "/return-policy", "/returns",
+        "/terms", "/terms-of-service", "/terms-and-conditions",
+        "/privacy-policy", "/faq", "/faqs",
+        "/warranty", "/guarantee",
     ]
+
     import io, contextlib
-    for sub in subpages:
+    seen_urls = set()
+    for sub, base in [(s, product_base) for s in product_subpages] + [(s, site_root) for s in site_subpages]:
         sub_url = base + sub
-        # Suppress expected 404 errors from probing
+        if sub_url in seen_urls:
+            continue
+        seen_urls.add(sub_url)
         stderr_capture = io.StringIO()
         with contextlib.redirect_stdout(stderr_capture):
             content = fetch_url(sub_url, max_bytes=30000)

@@ -187,12 +187,25 @@ if "result_data" in st.session_state:
 
     st.markdown(f"## {name} — Source Intelligence Report")
 
-    # Download buttons
+    # Quick Copy bar — most-used action front and center
+    json_str = json.dumps(data, indent=2, default=str)
+    with st.expander("**Copy Source Data** — click to expand, then use the copy icon (top-right of code block)", expanded=False):
+        copy_tab1, copy_tab2 = st.tabs(["Full JSON", "Markdown Report"])
+        with copy_tab1:
+            st.code(json_str, language="json", wrap_lines=True)
+        with copy_tab2:
+            report_md = st.session_state.get("result_report", "")
+            if report_md:
+                st.code(report_md, language="markdown", wrap_lines=True)
+            else:
+                st.info("No markdown report available.")
+
+    # Download buttons (secondary)
     col1, col2 = st.columns(2)
     with col1:
         st.download_button(
             "Download JSON",
-            data=json.dumps(data, indent=2, default=str),
+            data=json_str,
             file_name=f"{name.lower().replace(' ', '-')}_source.json",
             mime="application/json",
         )
