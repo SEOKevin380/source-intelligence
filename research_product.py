@@ -1303,6 +1303,96 @@ def _download_product_images(images, output_dir, slug, max_images=10):
     return saved
 
 
+def _validate_product_category(data):
+    """Cross-check the auto-detected category against actual ingredients.
+
+    Claude sometimes miscategorizes products based on marketing text rather
+    than the actual ingredient panel. This function overrides the category
+    when the ingredients clearly indicate a different category.
+    """
+    ingredients = data.get("supplement_facts", {}).get("ingredients", [])
+    if not ingredients:
+        return
+
+    # Normalize ingredient names for matching
+    ing_names = {ing.get("name", "").lower().strip() for ing in ingredients}
+    ing_text = " ".join(ing_names)
+    current_cat = data.get("category", "")
+
+    # Category indicator ingredients — if 3+ match, override category
+    category_indicators = {
+        "male_enhancement": {
+            "keywords": [
+                "tribulus", "maca", "horny goat weed", "epimedium",
+                "muira puama", "catuaba", "tongkat ali", "l-arginine",
+                "l-citrulline", "fenugreek", "yohimbe", "saw palmetto",
+                "boron", "zinc", "d-aspartic acid", "fadogia",
+            ],
+            "min_matches": 3,
+        },
+        "brain_health": {
+            "keywords": [
+                "bacopa", "lion's mane", "huperzine", "phosphatidylserine",
+                "alpha-gpc", "ginkgo", "vinpocetine", "citicoline",
+                "noopept", "aniracetam", "piracetam", "dmae",
+            ],
+            "min_matches": 3,
+        },
+        "weight_loss": {
+            "keywords": [
+                "garcinia", "glucomannan", "conjugated linoleic",
+                "green coffee", "raspberry ketone", "forskolin",
+                "orlistat", "chitosan", "hydroxycitric",
+            ],
+            "min_matches": 2,
+        },
+        "blood_sugar": {
+            "keywords": [
+                "berberine", "bitter melon", "gymnema", "chromium picolinate",
+                "banaba", "cinnamon", "alpha lipoic acid", "vanadium",
+            ],
+            "min_matches": 2,
+        },
+        "joint_health": {
+            "keywords": [
+                "glucosamine", "chondroitin", "msm", "boswellia",
+                "hyaluronic acid", "collagen type ii", "turmeric",
+                "curcumin",
+            ],
+            "min_matches": 2,
+        },
+        "nerve_health": {
+            "keywords": [
+                "alpha lipoic acid", "benfotiamine", "acetyl-l-carnitine",
+                "b12", "methylcobalamin", "passionflower", "skullcap",
+            ],
+            "min_matches": 2,
+        },
+    }
+
+    best_match = None
+    best_count = 0
+
+    for cat, config in category_indicators.items():
+        match_count = sum(
+            1 for kw in config["keywords"]
+            if kw in ing_text
+        )
+        if match_count >= config["min_matches"] and match_count > best_count:
+            best_match = cat
+            best_count = match_count
+
+    if best_match and best_match != current_cat:
+        _emit(f"  [C15] Category override: {current_cat} → {best_match} "
+              f"(based on {best_count} matching ingredients)")
+        data["category"] = best_match
+        data["_category_override"] = {
+            "original": current_cat,
+            "corrected": best_match,
+            "reason": f"{best_count} ingredients match {best_match} profile",
+        }
+
+
 def phase1_extract_product(url, vsl_url=None, product_name=None, browser_session=None):
     """Scrape product page and extract structured data via Claude.
 
@@ -1584,6 +1674,9 @@ SOURCE MATERIAL:
                 _emit(f"  [DSLD] Match found but no ingredient data")
             else:
                 _emit(f"  [DSLD] No match in DSLD database")
+
+    # Layer 5c: Category validation — cross-check category vs actual ingredients
+    _validate_product_category(data)
 
     # Image extraction — grab product images for reference
     product_images = []

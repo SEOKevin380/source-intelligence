@@ -877,6 +877,15 @@ determined by your own real-time SERP analysis — this data feeds facts only.
     block += "C15 — PRODUCT CATEGORY / POSITIONING [CLEARED]\n"
     block += f"  Product Type: {product.get('product_type', 'supplement')}\n"
     block += f"  Category: {product.get('category', 'Unknown')}\n"
+    # Show category override if it happened
+    cat_override = product.get("_category_override")
+    if cat_override:
+        block += f"  Category Override: {cat_override['original']} → {cat_override['corrected']}\n"
+        block += f"  Override Reason: {cat_override['reason']}\n"
+        block += "  NOTE: The Source Intelligence Tool detected a mismatch between the\n"
+        block += "  auto-detected category and the actual ingredient profile. The category\n"
+        block += "  has been corrected based on ingredient analysis. Handle any remaining\n"
+        block += "  label-vs-marketing discrepancy editorially per C15 protocol.\n"
     # Flag potential label-vs-copy discrepancies
     if sf.get("_source") == "auto_label_ocr" and claims:
         block += "  NOTE: Ingredients sourced from label OCR — verify against sales page claims for C15 Path C analysis.\n"
