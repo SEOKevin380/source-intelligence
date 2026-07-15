@@ -185,7 +185,7 @@ if "result_data" in st.session_state:
             )
 
     # Tabbed results
-    tabs = st.tabs(["Overview", "Ingredients", "Research", "Safety", "Compliance", "Claims", "Raw JSON"])
+    tabs = st.tabs(["Overview", "Ingredients", "Research", "Safety", "Compliance", "Claims", "Images", "Raw JSON"])
 
     # --- TAB: Overview ---
     with tabs[0]:
@@ -354,6 +354,23 @@ if "result_data" in st.session_state:
         else:
             st.info("No marketing claims captured.")
 
-    # --- TAB: Raw JSON ---
+    # --- TAB: Images ---
     with tabs[6]:
+        images = product.get("product_images", [])
+        if images:
+            st.markdown(f"**{len(images)} product images extracted** (reference only — create original images from these)")
+            cols = st.columns(3)
+            for i, img in enumerate(images):
+                with cols[i % 3]:
+                    local_path = img.get("local_path", "")
+                    if local_path and os.path.exists(local_path):
+                        st.image(local_path, caption=img.get("alt", f"Image {i+1}"), use_container_width=True)
+                    else:
+                        st.markdown(f"[Image {i+1}]({img.get('url', '')})")
+                    st.caption(f"{img.get('width', '?')}x{img.get('height', '?')} | {img.get('size_bytes', 0)//1024}KB")
+        else:
+            st.info("No product images extracted.")
+
+    # --- TAB: Raw JSON ---
+    with tabs[7]:
         st.json(data)

@@ -294,6 +294,130 @@ def _extract_supplement_facts_html(html):
     return facts_text
 
 
+def _extract_product_images(html, base_url):
+    """Extract product-relevant images from HTML. Returns list of image dicts."""
+    if not html or not base_url:
+        return []
+
+    from urllib.parse import urljoin, urlparse
+
+    # Find all img tags
+    img_tags = re.findall(r'<img[^>]+>', html, re.IGNORECASE)
+    images = []
+    seen_urls = set()
+
+    # Skip patterns — icons, tracking pixels, tiny images, social media buttons
+    skip_patterns = re.compile(
+        r'(favicon|icon|logo-small|pixel|tracking|spacer|spinner|loader|'
+        r'facebook|twitter|instagram|pinterest|youtube|linkedin|'
+        r'payment|visa|mastercard|amex|paypal|badge|seal|'
+        r'arrow|chevron|caret|close|menu|hamburger|'
+        r'1x1|blank\.gif|data:image)',
+        re.IGNORECASE
+    )
+
+    for tag in img_tags:
+        # Extract src
+        src_match = re.search(r'src=["\']([^"\']+)["\']', tag)
+        if not src_match:
+            continue
+        src = src_match.group(1).strip()
+
+        # Skip data URIs, tiny base64, tracking pixels
+        if src.startswith('data:') and len(src) < 500:
+            continue
+
+        # Make absolute URL
+        img_url = urljoin(base_url, src)
+
+        # Skip duplicates
+        if img_url in seen_urls:
+            continue
+        seen_urls.add(img_url)
+
+        # Skip non-image URLs
+        parsed = urlparse(img_url)
+        path_lower = parsed.path.lower()
+        if not any(path_lower.endswith(ext) for ext in ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.avif']):
+            # Allow if no extension (could be CDN URL with query params)
+            if '.' in path_lower.split('/')[-1] and not any(path_lower.endswith(ext) for ext in ['.php', '.html']):
+                continue
+
+        # Skip known non-product patterns
+        if skip_patterns.search(img_url) or skip_patterns.search(tag):
+            continue
+
+        # Extract alt text and dimensions
+        alt_match = re.search(r'alt=["\']([^"\']*)["\']', tag)
+        alt = alt_match.group(1) if alt_match else ""
+
+        width_match = re.search(r'width=["\']?(\d+)', tag)
+        height_match = re.search(r'height=["\']?(\d+)', tag)
+        width = int(width_match.group(1)) if width_match else None
+        height = int(height_match.group(1)) if height_match else None
+
+        # Skip tiny images (icons, badges)
+        if width and width < 80:
+            continue
+        if height and height < 80:
+            continue
+
+        images.append({
+            "url": img_url,
+            "alt": alt,
+            "width": width,
+            "height": height,
+        })
+
+    return images
+
+
+def _download_product_images(images, output_dir, slug, max_images=10):
+    """Download product images to output directory. Returns list of saved paths."""
+    if not images:
+        return []
+
+    img_dir = os.path.join(output_dir, f"{slug}_images")
+    os.makedirs(img_dir, exist_ok=True)
+    saved = []
+
+    for i, img in enumerate(images[:max_images]):
+        try:
+            url = img["url"]
+            # Determine file extension
+            from urllib.parse import urlparse
+            path = urlparse(url).path.lower()
+            ext = ".jpg"
+            for e in [".png", ".webp", ".jpeg", ".gif", ".avif"]:
+                if e in path:
+                    ext = e
+                    break
+
+            filename = f"{slug}_img_{i+1:02d}{ext}"
+            filepath = os.path.join(img_dir, filename)
+
+            # Download
+            raw = b""
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, timeout=15, context=ctx) as resp:
+                raw = resp.read()[:5_000_000]  # 5MB max per image
+
+            if len(raw) > 1000:  # Skip if too small (probably broken)
+                with open(filepath, "wb") as f:
+                    f.write(raw)
+                img["local_path"] = filepath
+                img["filename"] = filename
+                img["size_bytes"] = len(raw)
+                saved.append(img)
+        except Exception:
+            continue
+
+    return saved
+
+
 def phase1_extract_product(url, vsl_url=None, product_name=None):
     """Scrape product page and extract structured data via Claude.
 
@@ -475,11 +599,24 @@ SOURCE MATERIAL:
             ingredient_count = len(enrichment)
             _emit(f"  [ENRICHMENT] Found {ingredient_count} ingredients via targeted search")
 
+    # Image extraction — grab product images for reference
+    product_images = []
+    main_html = all_pages.get("main", "")
+    if main_html and url:
+        _emit("  Extracting product images...")
+        raw_images = _extract_product_images(main_html, url)
+        if raw_images:
+            slug = slugify(data.get("product_name", "product"))
+            product_images = _download_product_images(raw_images, OUTPUT_DIR, slug)
+            _emit(f"  Downloaded {len(product_images)} product images")
+    data["product_images"] = product_images
+
     _emit(f"  Extracted: {data.get('product_name', 'Unknown')}")
     _emit(f"  Category: {data.get('category', 'unknown')}")
     _emit(f"  Ingredients found: {ingredient_count}")
     _emit(f"  Pricing tiers: {len(data.get('pricing', []))}")
     _emit(f"  Claims captured: {len(data.get('claims', []))}")
+    _emit(f"  Images saved: {len(product_images)}")
 
     return data
 
