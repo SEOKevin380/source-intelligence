@@ -304,6 +304,93 @@ own subtitle if the SUBTITLE field is empty.
 
 ---
 
+## PRODUCTION QUALITY RULES (LEARNED FROM LIVE RELEASES)
+
+These rules prevent recurring issues identified across production cycles.
+
+### Internal Language — Never in Articles
+
+The submission uses internal terminology (C1, C2, CVD-5, label OCR,
+Category-4, Phase 0.1, source-intelligence, pre-verified) to help you
+understand data provenance. This language is for YOUR consumption only.
+It must NEVER appear in the final article.
+
+Do not include in any article output:
+  - "pre-verified label data" or "pre-verified research"
+  - "source-intelligence process" or "Source Intelligence Tool"
+  - "label OCR" or "auto-detected on product page"
+  - "Category-4 client-confirmed data"
+  - "CVD-5" or any "CVD-X" classification codes
+  - "C1," "C2," "C15," or any verification category labels
+  - "Phase 0" or "Phase 0.1"
+  - "MBK" or "MBK v3.10"
+
+Reader-facing sourcing language should say things like:
+  "per the disclosed Supplement Facts panel"
+  "per the official product page"
+  "per pricing confirmed for this article"
+  "per the brand's published policy"
+
+### Affiliate CTA Wording
+
+When the AFFILIATE LINK is an intermediary domain (not the product's
+official domain), never call it the "official order page" or "verified
+order page." Use neutral language:
+
+CORRECT:
+  "View the current [Product] offer through the affiliate link"
+  "Check current package options"
+  "Compare the current offer with this review"
+  "Confirm today's pricing"
+
+WRONG:
+  "[Product]'s Official Order Page"
+  "Visit the Verified Order Page"
+  "Get answers from the official order page"
+
+### BuyGoods Terminology
+
+When BuyGoods appears in the product's disclosures, it is the RETAILER,
+not a "checkout processor." The official site typically says "BuyGoods
+Inc. is the retailer of products on this site." Use:
+
+CORRECT: "Retailer: BuyGoods Inc., as identified in the official
+site's own disclosure"
+
+WRONG: "BuyGoods (checkout processor)"
+
+### California Proposition 65
+
+Do NOT include a Proposition 65 notice unless a product-specific
+warning was actually found on the label or product page. Writing
+"This product may contain chemicals known to the State of California..."
+when no warning was found is internally contradictory and creates
+unnecessary legal risk. Absence of a warning is not a basis to invent
+one.
+
+### Serving Size / Use Directions Consistency
+
+If C19 is marked [CLEARED] with specific serving data, use it and
+attribute it to the label. If C19 is [NOT CLEARED], do NOT mix
+confirmed and unconfirmed serving details. Either:
+  - State all serving details with clear attribution ("per the label
+    supplied for this review"), OR
+  - State that serving details could not be independently confirmed
+    and direct the reader to follow the physical label
+
+Never say "serving size not confirmed" in one section while stating
+"one capsule daily" in another section of the same article.
+
+### "Fully Disclosed" — Use Carefully
+
+Do not describe a Supplement Facts panel as "fully disclosed" unless
+every required element has been verified (ingredients, amounts, serving
+size, servings per container). If serving size wasn't confirmed, say
+"a quantified Supplement Facts panel that lists individual ingredient
+amounts" instead of "fully disclosed."
+
+---
+
 ## EDITORIAL PHILOSOPHY
 
 These principles apply to every release produced from Source Intelligence

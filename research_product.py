@@ -195,19 +195,26 @@ def extract_label_image(image_path):
 
     prompt = """Extract the complete Supplement Facts from this product label image.
 
-Return ONLY a valid JSON array with EVERY ingredient listed:
-[
-    {"name": "Ingredient Name", "amount": "500mg", "daily_value": "100%", "form": "as extract"}
-]
+Return ONLY a valid JSON object with this structure:
+{
+    "serving_size": "1 capsule",
+    "servings_per_container": "30",
+    "ingredients": [
+        {"name": "Ingredient Name", "amount": "500mg", "daily_value": "100%", "form": "as extract"}
+    ]
+}
 
 Rules:
+- Extract the Serving Size line (e.g., "1 Capsule", "2 Tablets", "1 Scoop (5g)")
+- Extract the Servings Per Container line (e.g., "30", "60", "90")
 - Include EVERY ingredient visible on the label
 - Capture exact amounts (mg, mcg, IU, etc.)
 - Capture daily value percentages
 - Capture the form if specified (e.g., "as Chromium Picolinate")
 - Include proprietary blend ingredients even without individual amounts
 - Capture "Other Ingredients" separately at the end with amount=""
-- Be precise — this is a legal document"""
+- Be precise — this is a legal document
+- If serving size or servings per container is not visible, use "" for that field"""
 
     response = call_claude(prompt, max_tokens=3000, images=[image_path])
     if not response:
@@ -216,6 +223,29 @@ Rules:
     try:
         clean = re.sub(r'```json\s*', '', response)
         clean = re.sub(r'```\s*$', '', clean)
+
+        # Try parsing as a dict first (new format with serving info)
+        obj_match = re.search(r'\{[\s\S]*\}', clean)
+        if obj_match:
+            parsed = json.loads(obj_match.group())
+            if isinstance(parsed, dict) and "ingredients" in parsed:
+                ingredients = parsed["ingredients"]
+                if isinstance(ingredients, list):
+                    for ing in ingredients:
+                        ing["source"] = "label_image"
+                        ing["verified"] = True
+                    _emit(f"  Extracted {len(ingredients)} ingredients from label image")
+                    if parsed.get("serving_size"):
+                        _emit(f"  Serving Size: {parsed['serving_size']}")
+                    if parsed.get("servings_per_container"):
+                        _emit(f"  Servings Per Container: {parsed['servings_per_container']}")
+                    return {
+                        "ingredients": ingredients,
+                        "serving_size": parsed.get("serving_size", ""),
+                        "servings_per_container": parsed.get("servings_per_container", ""),
+                    }
+
+        # Fallback: try parsing as array (old format, ingredients only)
         arr_match = re.search(r'\[[\s\S]*\]', clean)
         if arr_match:
             ingredients = json.loads(arr_match.group())
@@ -995,11 +1025,19 @@ SOURCE MATERIAL:
             if label_patterns.search(img_url) or label_patterns.search(alt) or label_patterns.search(filename):
                 _emit(f"  [LABEL OCR] Found likely label image: {os.path.basename(local_path)}")
                 if local_path and os.path.exists(local_path):
-                    label_ingredients = extract_label_image(local_path)
-                    if label_ingredients:
-                        data["supplement_facts"]["ingredients"] = label_ingredients
+                    label_result = extract_label_image(local_path)
+                    if label_result:
+                        # Handle both dict (new) and list (old) return formats
+                        if isinstance(label_result, dict):
+                            data["supplement_facts"]["ingredients"] = label_result["ingredients"]
+                            if label_result.get("serving_size"):
+                                data["supplement_facts"]["serving_size"] = label_result["serving_size"]
+                            if label_result.get("servings_per_container"):
+                                data["supplement_facts"]["servings_per_container"] = label_result["servings_per_container"]
+                        else:
+                            data["supplement_facts"]["ingredients"] = label_result
                         data["supplement_facts"]["_source"] = "auto_label_ocr"
-                        ingredient_count = len(label_ingredients)
+                        ingredient_count = len(data["supplement_facts"]["ingredients"])
                         _emit(f"  [LABEL OCR] Extracted {ingredient_count} ingredients from label image")
                         break
 
@@ -1015,13 +1053,20 @@ SOURCE MATERIAL:
                     if size < 10000 or size > 2000000:
                         continue
                     _emit(f"  [LABEL OCR] Trying: {os.path.basename(local_path)} ({size // 1024}KB)")
-                    label_ingredients = extract_label_image(local_path)
-                    if label_ingredients and len(label_ingredients) >= 2:
-                        data["supplement_facts"]["ingredients"] = label_ingredients
-                        data["supplement_facts"]["_source"] = "auto_label_ocr"
-                        ingredient_count = len(label_ingredients)
-                        _emit(f"  [LABEL OCR] Extracted {ingredient_count} ingredients from image")
-                        break
+                    label_result = extract_label_image(local_path)
+                    if label_result:
+                        ings = label_result["ingredients"] if isinstance(label_result, dict) else label_result
+                        if len(ings) >= 2:
+                            data["supplement_facts"]["ingredients"] = ings
+                            if isinstance(label_result, dict):
+                                if label_result.get("serving_size"):
+                                    data["supplement_facts"]["serving_size"] = label_result["serving_size"]
+                                if label_result.get("servings_per_container"):
+                                    data["supplement_facts"]["servings_per_container"] = label_result["servings_per_container"]
+                            data["supplement_facts"]["_source"] = "auto_label_ocr"
+                            ingredient_count = len(ings)
+                            _emit(f"  [LABEL OCR] Extracted {ingredient_count} ingredients from image")
+                            break
 
     _emit(f"  Extracted: {data.get('product_name', 'Unknown')}")
     _emit(f"  Category: {data.get('category', 'unknown')}")
@@ -2113,10 +2158,19 @@ def research_product(url=None, vsl_url=None, product_name=None, quick=False, lab
 
     # If label image provided, use it to override/verify ingredients
     if label_image and product_data:
-        label_ingredients = extract_label_image(label_image)
-        if label_ingredients:
-            _emit(f"  Label override: {len(label_ingredients)} verified ingredients from label image")
-            product_data["supplement_facts"]["ingredients"] = label_ingredients
+        label_result = extract_label_image(label_image)
+        if label_result:
+            if isinstance(label_result, dict):
+                ings = label_result["ingredients"]
+                _emit(f"  Label override: {len(ings)} verified ingredients from label image")
+                product_data["supplement_facts"]["ingredients"] = ings
+                if label_result.get("serving_size"):
+                    product_data["supplement_facts"]["serving_size"] = label_result["serving_size"]
+                if label_result.get("servings_per_container"):
+                    product_data["supplement_facts"]["servings_per_container"] = label_result["servings_per_container"]
+            else:
+                _emit(f"  Label override: {len(label_result)} verified ingredients from label image")
+                product_data["supplement_facts"]["ingredients"] = label_result
             product_data["supplement_facts"]["_source"] = "label_image_verified"
     if not product_data:
         _emit("\n[ABORT] Could not extract product data")
