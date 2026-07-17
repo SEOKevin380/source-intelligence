@@ -1682,7 +1682,11 @@ SOURCE MATERIAL:
                     # No ingredients from any source — use DSLD as primary
                     data["supplement_facts"]["ingredients"] = dsld_ingredients
                     data["supplement_facts"]["_source"] = "dsld_verified"
+                    data["supplement_facts"]["_dsld_match_name"] = dsld_data.get("dsld_product_name", "")
+                    data["supplement_facts"]["_dsld_match_brand"] = dsld_data.get("dsld_brand", "")
+                    data["supplement_facts"]["_dsld_id"] = dsld_data.get("dsld_id", "")
                     _emit(f"  [DSLD] Using DSLD as PRIMARY ingredient source ({len(dsld_ingredients)} ingredients)")
+                    _emit(f"  [DSLD] Matched DSLD product: {dsld_data.get('dsld_product_name', '')} by {dsld_data.get('dsld_brand', '')}")
                 else:
                     # We have ingredients already — store DSLD as cross-reference
                     data["dsld_cross_reference"] = dsld_data
