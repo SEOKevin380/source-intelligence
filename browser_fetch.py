@@ -147,7 +147,7 @@ class BrowserSession:
         """True if browser context was created successfully."""
         return self._context is not None
 
-    def fetch(self, url, max_bytes=60000, wait_until='networkidle',
+    def fetch(self, url, max_bytes=120000, wait_until='networkidle',
               timeout_ms=25000):
         """Fetch a URL using a real browser. Returns HTML string or empty string."""
         if not self.available:
@@ -164,6 +164,10 @@ class BrowserSession:
 
             # Extra wait for late-loading JS content
             page.wait_for_timeout(2000)
+
+            # Scroll to bottom to trigger lazy-loaded content (ingredients,
+            # pricing, testimonials often sit below VSL videos)
+            self._scroll_to_bottom(page)
 
             # Try to expand common accordion/tab patterns
             self._expand_hidden_content(page)
@@ -218,6 +222,45 @@ class BrowserSession:
             route.abort()
         else:
             route.continue_()
+
+    @staticmethod
+    def _scroll_to_bottom(page):
+        """Incrementally scroll the page to trigger lazy-loaded content.
+
+        Many landing pages (especially BuyGoods/ClickBank) load ingredients,
+        pricing tables, and testimonials only when scrolled into view. This
+        scrolls in steps (like a human) to trigger intersection observers
+        and lazy-load handlers.
+        """
+        try:
+            page.evaluate("""
+                async () => {
+                    const delay = ms => new Promise(r => setTimeout(r, ms));
+                    const height = () => document.body.scrollHeight;
+                    let prev = 0;
+                    let curr = height();
+                    // Scroll in 600px steps, pause for lazy loaders
+                    for (let y = 0; y < curr; y += 600) {
+                        window.scrollTo(0, y);
+                        await delay(150);
+                        curr = height();  // page may grow as content loads
+                    }
+                    // Final scroll to absolute bottom
+                    window.scrollTo(0, height());
+                    await delay(500);
+                    // If page grew, do one more pass
+                    if (height() > curr) {
+                        window.scrollTo(0, height());
+                        await delay(500);
+                    }
+                    // Scroll back to top (some pages hide nav on scroll-down)
+                    window.scrollTo(0, 0);
+                }
+            """)
+            # Wait for any final content to render after scrolling
+            page.wait_for_timeout(1000)
+        except Exception:
+            pass  # Non-critical — don't fail the fetch
 
     @staticmethod
     def _expand_hidden_content(page):

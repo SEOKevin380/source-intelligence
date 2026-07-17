@@ -860,8 +860,8 @@ def _try_multiple_urls(url, browser_session=None):
     results = {}
     site_needs_browser = False
 
-    # Try main URL
-    main = fetch_url(url)
+    # Try main URL (120KB — landing pages with VSLs can be very long)
+    main = fetch_url(url, max_bytes=120000)
 
     # If URL path is a funnel slug (/pv, /v4, /checkout, etc.), also fetch root domain
     # — checkout funnels often have zero product info, while root may have a sales page
@@ -871,7 +871,7 @@ def _try_multiple_urls(url, browser_session=None):
     if path and funnel_patterns.match(path):
         root_url = f"{parsed_url.scheme}://{parsed_url.netloc}/"
         _emit(f"    Funnel page detected ({path}) — also checking root domain")
-        root_html = fetch_url(root_url, max_bytes=60000)
+        root_html = fetch_url(root_url, max_bytes=120000)
         if root_html and len(strip_html(root_html)) > len(strip_html(main or "")):
             _emit(f"    Root domain has more content ({len(strip_html(root_html)):,} chars)")
             results["root_page"] = root_html
@@ -1468,7 +1468,7 @@ def phase1_extract_product(url, vsl_url=None, product_name=None, browser_session
 
     if vsl_url:
         _emit(f"  Fetching VSL: {vsl_url}")
-        vsl_content = fetch_url(vsl_url)
+        vsl_content = fetch_url(vsl_url, max_bytes=120000)
         # VSL pages are typically JS-heavy funnels — try browser if thin
         if browser_session and browser_session.available:
             try:
@@ -1490,6 +1490,13 @@ def phase1_extract_product(url, vsl_url=None, product_name=None, browser_session
         sf = _extract_supplement_facts_html(page_html)
         if sf:
             supplement_facts_raw += sf
+    # Also check VSL page for supplement facts — many landing pages list
+    # ingredients below the video, not on the main product page
+    if vsl_content:
+        vsl_sf = _extract_supplement_facts_html(vsl_content)
+        if vsl_sf and vsl_sf not in supplement_facts_raw:
+            supplement_facts_raw += vsl_sf
+            _emit(f"  Found supplement facts in VSL page")
 
     # Build combined text for extraction
     # Priority order: structured API data > WP API pages > main page HTML > raw subpages
@@ -1524,7 +1531,12 @@ def phase1_extract_product(url, vsl_url=None, product_name=None, browser_session
     if supplement_facts_raw:
         combined_text += f"\n\nEXTRACTED SUPPLEMENT FACTS:\n{supplement_facts_raw}"
     if vsl_content:
-        combined_text += f"\n\nVIDEO SALES LETTER PAGE:\n{strip_html(vsl_content)[:8000]}"
+        vsl_text = strip_html(vsl_content)
+        # VSL pages often contain the FULL landing page below the video:
+        # ingredients, pricing tiers, testimonials, guarantee, FAQs.
+        # Give it generous space — this is primary source material.
+        vsl_cap = 20000 if len(vsl_text) > 8000 else 8000
+        combined_text += f"\n\nVIDEO SALES LETTER PAGE:\n{vsl_text[:vsl_cap]}"
 
     # Derive product name from URL if not provided
     if not product_name and url:
@@ -1564,6 +1576,11 @@ def phase1_extract_product(url, vsl_url=None, product_name=None, browser_session
     # Layer 3b: Extract BuyGoods / ClickBank pricing from HTML data attributes
     main_html = all_pages.get("main", "")
     buygoods_pricing = _extract_buygoods_pricing(main_html)
+    # Also check VSL page for pricing (often has buy buttons below the video)
+    if not buygoods_pricing and vsl_content:
+        buygoods_pricing = _extract_buygoods_pricing(vsl_content)
+        if buygoods_pricing:
+            _emit(f"  Found pricing in VSL page")
     if buygoods_pricing:
         pricing_text = "\n\nEXTRACTED PRICING (from checkout links):\n"
         for pkg in buygoods_pricing:
