@@ -2499,8 +2499,27 @@ def phase7_compliance_check(product_data):
                 "safe_alternative": safe_alt,
             })
 
-    # AccessWire blocklist check
-    all_text = json.dumps(product_data).lower()
+    # AccessWire blocklist check — only scan fields that would appear in a press release,
+    # NOT raw scraped testimonials/reviews which often contain flagged words in user quotes
+    pr_fields = []
+    for key in ["product_name", "description", "tagline", "manufacturer_claims"]:
+        val = product_data.get(key)
+        if isinstance(val, str):
+            pr_fields.append(val)
+        elif isinstance(val, list):
+            pr_fields.extend(str(v) for v in val)
+    for ing in product_data.get("ingredients", []):
+        if isinstance(ing, dict):
+            pr_fields.append(ing.get("name", ""))
+            pr_fields.append(ing.get("description", ""))
+        elif isinstance(ing, str):
+            pr_fields.append(ing)
+    for claim in product_data.get("claims", []):
+        if isinstance(claim, dict):
+            pr_fields.append(claim.get("text", ""))
+        elif isinstance(claim, str):
+            pr_fields.append(claim)
+    all_text = " ".join(pr_fields).lower()
     flagged_terms = [term for term in ACCESSWIRE_BLOCKLIST if term in all_text]
 
     # Required disclaimers
@@ -2525,8 +2544,8 @@ def phase7_compliance_check(product_data):
             "flagged_terms": flagged_terms,
         },
         "barchart_compliance": {
-            "passes": category != "male_enhancement",
-            "notes": "Male enhancement products restricted on Barchart" if category == "male_enhancement" else "Category allowed",
+            "passes": category not in ("male_enhancement",),
+            "notes": "Male enhancement — manual review recommended (you've published this category before)" if category == "male_enhancement" else "Category allowed",
         },
     }
 
@@ -2807,7 +2826,8 @@ def format_source_document(product_data, ingredient_research, safety_data, keywo
         lines.append(f"- AccessWire: {'PASS' if aw.get('passes') else 'FAIL — ' + ', '.join(aw.get('flagged_terms', []))}")
 
         bc = compliance.get("barchart_compliance", {})
-        lines.append(f"- Barchart: {'PASS' if bc.get('passes') else 'FAIL'} — {bc.get('notes', '')}")
+        bc_status = "PASS" if bc.get("passes") else "REVIEW"
+        lines.append(f"- Barchart: {bc_status} — {bc.get('notes', '')}")
 
         audit = compliance.get("claim_audit", [])
         if audit:

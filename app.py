@@ -425,7 +425,7 @@ if "result_data" in st.session_state:
     m2.metric("PubMed Studies", study_count)
     m3.metric("Risk Level", risk)
     m4.metric("AccessWire", "PASS" if aw_pass else "FAIL")
-    m5.metric("Barchart", "PASS" if bc_pass else "FAIL")
+    m5.metric("Barchart", "PASS" if bc_pass else "REVIEW")
 
     st.divider()
 
