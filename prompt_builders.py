@@ -331,6 +331,10 @@ Risk Level: {compliance.get('risk_level', 'Unknown')}
 AccessWire: {'PASS' if compliance.get('accesswire_blocklist_check', {}).get('passes') else 'FAIL'}
 Barchart: {'PASS' if compliance.get('barchart_compliance', {}).get('passes') else 'FAIL'}
 
+NEVER STOP — ALWAYS WRITE AROUND: If any claims are blocked or flagged,
+silently exclude them and write using the remaining clean material.
+Do not stop, ask, or request review. There is always enough to work with.
+
 --- SUPPLEMENT FACTS ---
 """
     if sf.get("proprietary_blend"):
@@ -411,18 +415,29 @@ Barchart: {'PASS' if compliance.get('barchart_compliance', {}).get('passes') els
         block += f"Name: {product.get('brand_name', name)}\n"
         block += f"Website: {product.get('official_url', '')}\n"
 
-    # Marketing claims
+    # Marketing claims — with inline blocking tags
     block += "\n--- MARKETING CLAIMS (VERBATIM — UNVERIFIED, DO NOT REPUBLISH AS FACT) ---\n"
+    cvd9_claims = compliance.get("cvd9_blocked_claims", [])
+    bl_claims = compliance.get("accesswire_blocklist_check", {}).get("blocked_claims", [])
+    cvd9_set = {item.get("claim", "").lower() for item in cvd9_claims}
+    bl_set = {item.get("claim", "").lower() for item in bl_claims}
     for c in claims:
         if isinstance(c, dict):
-            block += f"- [{c.get('source', 'unknown')}] \"{c.get('claim', '')}\" (Verified: False)\n"
+            claim_text = c.get("claim", "")
+            claim_lower = claim_text.lower()
+            if claim_lower in cvd9_set:
+                block += f"- [CVD-9 BLOCKED] \"{claim_text}\" ← EXCLUDE (disease-reversal)\n"
+            elif claim_lower in bl_set:
+                block += f"- [BLOCKLIST BLOCKED] \"{claim_text}\" ← EXCLUDE (banned terms)\n"
+            else:
+                block += f"- [{c.get('source', 'unknown')}] \"{claim_text}\" (Verified: False)\n"
     if not claims:
         block += "No marketing claims captured\n"
 
-    # Compliance flags
+    # Compliance flags — flagged claims CAN be used with hedging
     flagged = compliance.get("claim_audit", [])
     if flagged:
-        block += f"\n--- COMPLIANCE FLAGS ({len(flagged)} flagged claims) ---\n"
+        block += f"\n--- COMPLIANCE FLAGS ({len(flagged)} flagged claims — USE WITH HEDGING, DO NOT EXCLUDE) ---\n"
         for item in flagged:
             block += f"FLAGGED: \"{item.get('claim', '')}\"\n"
             for issue in item.get("issues", []):
@@ -732,6 +747,19 @@ Re-fetch policy pages (refund, shipping, ToS, contact) for currency confirmation
 All SEO strategy, archetype selection, and angle differentiation should be
 determined by your own real-time SERP analysis — this data feeds facts only.
 
+⚠️ UNIVERSAL DIRECTIVE — NEVER STOP, ALWAYS WRITE AROUND:
+This data may contain blocked claims (CVD-9 disease-reversal, banned terms,
+compliance flags). When you encounter ANY blocked or flagged content:
+  1. DO NOT stop processing or ask whether to proceed.
+  2. DO NOT request human review or approval.
+  3. Silently exclude blocked claims and write around them.
+  4. Use the remaining clean claims, ingredient research, and PubMed data
+     as your buildable material — there is always enough to write with.
+  5. If a compliance field shows [NOT CLEARED] or [PARTIAL], work with
+     what IS available and note gaps naturally — do not halt.
+  6. Flagged claims (not blocked) can be used WITH hedging language applied.
+  7. The article must be publishable using only the safe, verified material.
+
 """
 
     # ── C1: SUPPLEMENT FACTS ──
@@ -755,8 +783,8 @@ determined by your own real-time SERP analysis — this data feeds facts only.
                 line += f" [Form: {ing['form']}]"
             block += line + "\n"
     else:
-        block += "C1 — SUPPLEMENT FACTS [NOT CLEARED]\n"
-        block += "No ingredients extracted. Invoke CVD-6 ingredient gap protocol or request label.\n"
+        block += "C1 — SUPPLEMENT FACTS [NOT CLEARED — work with product name and any available claims]\n"
+        block += "No ingredients extracted. Re-fetch from product page or label. Do NOT stop — write with available claims and product info.\n"
 
     # ── C2: PRICING ──
     block += "\n"
@@ -778,7 +806,7 @@ determined by your own real-time SERP analysis — this data feeds facts only.
                 line += f" — Shipping: {p['shipping']}"
             block += line + "\n"
     else:
-        block += "C2 — PRICING [NOT CLEARED]\n"
+        block += "C2 — PRICING [NOT CLEARED — verify from live checkout page, do not stop]\n"
         block += "No pricing extracted. Verify from live checkout page.\n"
 
     # ── C3: GUARANTEE / REFUND ──
@@ -792,7 +820,7 @@ determined by your own real-time SERP analysis — this data feeds facts only.
         if rp.get("verbatim"):
             block += f"Verbatim: \"{rp['verbatim']}\"\n"
     else:
-        block += "C3 — GUARANTEE / REFUND TERMS [NOT CLEARED]\n"
+        block += "C3 — GUARANTEE / REFUND TERMS [NOT CLEARED — re-fetch from site, do not stop]\n"
         block += "Not extracted. Re-fetch refund/guarantee policy page.\n"
 
     # ── C4: CONTACT INFORMATION ──
@@ -837,7 +865,7 @@ determined by your own real-time SERP analysis — this data feeds facts only.
                 block += f"    [{tier}] PMID:{s.get('pmid', '')} — {s.get('title', '')} ({s.get('journal', '')}, {s.get('year', '')})\n"
             block += "\n"
     else:
-        block += "C7 — CLINICAL CITATIONS / RESEARCH [NOT CLEARED]\n"
+        block += "C7 — CLINICAL CITATIONS / RESEARCH [NOT CLEARED — write with available claims, do not stop]\n"
         block += "No PubMed research available.\n"
 
     # ── C6: DRUG INTERACTIONS ──
@@ -869,7 +897,7 @@ determined by your own real-time SERP analysis — this data feeds facts only.
             if v:
                 block += f"  {k.replace('_', ' ').title()}: {v}\n"
     else:
-        block += "C10 — SHIPPING / DELIVERY [NOT CLEARED]\n"
+        block += "C10 — SHIPPING / DELIVERY [NOT CLEARED — re-fetch from site, do not stop]\n"
         block += "Not extracted. Re-fetch shipping policy page.\n"
 
     # ── C15: PRODUCT CATEGORY / POSITIONING ──
@@ -899,17 +927,23 @@ determined by your own real-time SERP analysis — this data feeds facts only.
         if sf.get("servings_per_container"):
             block += f"  Servings Per Container: {sf['servings_per_container']}\n"
     else:
-        block += "C19 — SERVING SIZE / SUPPLY DURATION [NOT CLEARED]\n"
-        block += "Not extracted. Source from label or brand page before writing.\n"
+        block += "C19 — SERVING SIZE / SUPPLY DURATION [NOT CLEARED — source from label or brand page, do not stop]\n"
+        block += "Not extracted. Re-fetch from product page. Write with available data.\n"
 
     # ── COMPLIANCE PRE-CHECK ──
     block += "\n"
     block += "═══ COMPLIANCE PRE-CHECK ═══\n"
     aw = compliance.get("accesswire_blocklist_check", {})
     bc = compliance.get("barchart_compliance", {})
-    block += f"R12 Blocklist (ACW/Barchart): {'PASS' if aw.get('passes') else 'FAIL — ' + str(aw.get('flagged_terms', []))}\n"
-    block += f"Barchart B1-B4 Overlay: {'PASS' if bc.get('passes') else 'REVIEW — ' + str(bc.get('notes', ''))}\n"
-    block += f"Risk Level: {compliance.get('risk_level', 'Unknown')}\n"
+    if aw.get('passes'):
+        block += "R12 Blocklist (ACW/Barchart): PASS\n"
+    else:
+        block += f"R12 Blocklist (ACW/Barchart): FAIL — terms found: {aw.get('flagged_terms', [])} — avoid these terms entirely in output, write around them\n"
+    if bc.get('passes'):
+        block += "Barchart B1-B4 Overlay: PASS\n"
+    else:
+        block += f"Barchart B1-B4 Overlay: REVIEW — {bc.get('notes', '')} — proceed with compliant language, do not stop\n"
+    block += f"Risk Level: {compliance.get('risk_level', 'Unknown')} — use appropriate hedging, do not stop\n"
 
     # Blocklist-blocked claims (contain banned terms — must be excluded entirely)
     bl_blocked = aw.get("blocked_claims", [])
@@ -936,15 +970,15 @@ determined by your own real-time SERP analysis — this data feeds facts only.
             block += f"  BLOCKED: \"{item.get('claim', '')}\"\n"
             block += f"    Trigger: '{item.get('verb', '')}' + '{item.get('disease', '')}'\n"
 
-    # Flagged claims (can be hedged/softened)
+    # Flagged claims — these CAN be used, just apply the hedging
     flagged = compliance.get("claim_audit", [])
     if flagged:
-        block += f"Flagged Claims ({len(flagged)}) — USE WITH HEDGING:\n"
+        block += f"\nFlagged Claims ({len(flagged)}) — USABLE WITH HEDGING (do NOT exclude, apply safe alternative):\n"
         for item in flagged:
-            block += f"  FLAGGED: \"{item.get('claim', '')}\"\n"
+            block += f"  ORIGINAL: \"{item.get('claim', '')}\"\n"
             for issue in item.get("issues", []):
                 block += f"    Issue: {issue}\n"
-            block += f"    Safe Alternative: \"{item.get('safe_alternative', '')}\"\n"
+            block += f"    ➜ USE INSTEAD: \"{item.get('safe_alternative', '')}\"\n"
 
     # Required disclaimers
     req_disclaimers = compliance.get("required_disclaimers", [])
