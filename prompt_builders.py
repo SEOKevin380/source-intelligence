@@ -747,6 +747,12 @@ review (disease-reversal language, banned advertorial terms) have already been
 removed — only publishable claims are included. Claims marked with hedging
 suggestions should use the softened version provided.
 
+Workflow: This is a complete data submission. Run Phase 0 verification, then
+proceed directly through all phases to finished draft output. Do not pause
+for confirmation between phases — the operator is a VA who cannot answer
+mid-process questions. If data conflicts are found, document them in the
+Material Limitations section and continue drafting with the best available data.
+
 """
 
     # ── C1: SUPPLEMENT FACTS ──
