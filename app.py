@@ -222,10 +222,7 @@ if run_button:
         try:
             resp = requests.get(label_url.strip(), timeout=15,
                                 headers={"User-Agent": "Mozilla/5.0"})
-            if resp.status_code == 200 and len(resp.content) > 5000:
-                # Determine extension from Content-Type header first (handles S3/CDN
-                # URLs with no file extension), then fall back to URL path
-                ext = ".png"
+            if resp.status_code == 200:
                 ct = resp.headers.get("Content-Type", "").lower()
                 ct_map = {
                     "image/jpeg": ".jpg", "image/jpg": ".jpg",
@@ -233,19 +230,113 @@ if run_button:
                     "image/gif": ".gif",
                 }
                 if ct in ct_map:
+                    # Direct image URL — save it
                     ext = ct_map[ct]
+                    if len(resp.content) > 1000:
+                        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
+                        tmp.write(resp.content)
+                        tmp.close()
+                        label_path = tmp.name
+                        st.sidebar.success(f"Label image downloaded ({len(resp.content)//1024}KB)")
+                    else:
+                        st.sidebar.warning("Label image too small (< 1KB) — may not be valid")
+                elif "text/html" in ct:
+                    # HTML page (could be React SPA with label data) — render with browser
+                    st.sidebar.info("Label URL is a webpage — rendering with browser...")
+                    try:
+                        from playwright.sync_api import sync_playwright
+                        from browser_fetch import PLAYWRIGHT_AVAILABLE
+                        if PLAYWRIGHT_AVAILABLE:
+                            pw = sync_playwright().start()
+                            browser = pw.chromium.launch(headless=True, args=['--no-sandbox'])
+                            ctx = browser.new_context(
+                                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+                                viewport={'width': 1280, 'height': 800},
+                            )
+                            page = ctx.new_page()
+                            page.goto(label_url.strip(), wait_until='networkidle', timeout=25000)
+                            page.wait_for_timeout(3000)
+
+                            # Check if page has supplement facts TEXT (many label pages render text, not images)
+                            page_text = page.inner_text('body')
+                            has_supp_facts = any(kw in page_text.lower() for kw in
+                                                  ['supplement facts', 'serving size', 'amount per serving'])
+
+                            if has_supp_facts and len(page_text) > 100:
+                                # Page has supplement facts as text — save as text file for Claude extraction
+                                # We'll pass this through the label_image path but the research engine
+                                # can also use it as supplementary text. Take a screenshot for OCR.
+                                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+                                page.screenshot(path=tmp.name, full_page=True)
+                                label_path = tmp.name
+                                st.sidebar.success(f"Label page rendered — supplement facts found ({len(page_text)} chars)")
+                                # Also store the raw text for direct use in extraction
+                                st.session_state['_label_page_text'] = page_text
+                            else:
+                                # No supplement facts text — look for label images
+                                img_urls = page.evaluate("""() => {
+                                    const imgs = document.querySelectorAll('img');
+                                    return Array.from(imgs).map(img => ({
+                                        src: img.src,
+                                        alt: img.alt || '',
+                                        width: img.naturalWidth || img.width,
+                                        height: img.naturalHeight || img.height
+                                    })).filter(i => i.src && (i.width > 200 || i.height > 200));
+                                }""")
+                                label_img = None
+                                for img in img_urls:
+                                    itext = (img.get('alt', '') + ' ' + img.get('src', '')).lower()
+                                    if any(kw in itext for kw in ['label', 'supplement', 'facts', 'ingredient']):
+                                        label_img = img['src']
+                                        break
+                                if not label_img and img_urls:
+                                    img_urls.sort(key=lambda x: (x.get('width', 0) * x.get('height', 0)), reverse=True)
+                                    label_img = img_urls[0]['src']
+
+                                if label_img:
+                                    img_resp = requests.get(label_img, timeout=15,
+                                                            headers={"User-Agent": "Mozilla/5.0"})
+                                    if img_resp.status_code == 200 and len(img_resp.content) > 1000:
+                                        img_ct = img_resp.headers.get("Content-Type", "").lower()
+                                        ext = ct_map.get(img_ct, ".png")
+                                        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
+                                        tmp.write(img_resp.content)
+                                        tmp.close()
+                                        label_path = tmp.name
+                                        st.sidebar.success(f"Label image extracted from page ({len(img_resp.content)//1024}KB)")
+                                    else:
+                                        st.sidebar.warning("Found image on page but couldn't download it")
+                                else:
+                                    # Last resort — screenshot the whole page
+                                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+                                    page.screenshot(path=tmp.name, full_page=True)
+                                    label_path = tmp.name
+                                    st.sidebar.success("Took screenshot of label page for OCR")
+                            page.close()
+                            ctx.close()
+                            browser.close()
+                            pw.stop()
+                        else:
+                            st.sidebar.warning("Label URL is HTML (not an image). Install Playwright for browser rendering, or provide a direct image URL (.png/.jpg)")
+                    except Exception as e:
+                        st.sidebar.warning(f"Browser rendering of label page failed: {e}")
                 else:
-                    for e in [".jpg", ".jpeg", ".png", ".webp"]:
-                        if e in label_url.lower():
-                            ext = e
-                            break
-                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
-                tmp.write(resp.content)
-                tmp.close()
-                label_path = tmp.name
-                st.sidebar.success(f"Label image downloaded ({len(resp.content)//1024}KB)")
+                    # Unknown content type — try saving as image anyway
+                    if len(resp.content) > 1000:
+                        ext = ".png"
+                        for e in [".jpg", ".jpeg", ".png", ".webp"]:
+                            if e in label_url.lower():
+                                ext = e
+                                break
+                        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
+                        tmp.write(resp.content)
+                        tmp.close()
+                        label_path = tmp.name
+                        st.sidebar.success(f"Label downloaded ({len(resp.content)//1024}KB, type: {ct})")
+                    else:
+                        st.sidebar.warning(f"Could not download label image (content-type: {ct}, size: {len(resp.content)} bytes)")
             else:
-                st.sidebar.warning(f"Could not download label image (status {resp.status_code})")
+                st.sidebar.warning(f"Could not download label image (HTTP {resp.status_code})")
         except Exception as e:
             st.sidebar.warning(f"Label download failed: {e}")
     elif label_file:

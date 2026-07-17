@@ -24,8 +24,9 @@ PLAYWRIGHT_AVAILABLE = False
 try:
     from playwright.sync_api import sync_playwright
     PLAYWRIGHT_AVAILABLE = True
-except ImportError:
-    pass
+except Exception as _pw_err:
+    import sys
+    print(f"[browser_fetch] Playwright import failed: {type(_pw_err).__name__}: {_pw_err}", file=sys.stderr)
 
 
 # ============================================================================

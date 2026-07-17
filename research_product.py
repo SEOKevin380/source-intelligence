@@ -802,7 +802,7 @@ def _discover_linked_pages(html, base_url):
 
     # Patterns for useful subpages
     link_patterns = re.compile(
-        r'(?:ingredient|supplement.?fact|formula|what.?s.?inside|'
+        r'(?:ingredient|supplement.?fact|formula|what.?s.?inside|label|'
         r'how.?it.?works|science|research|clinical|lab.?test|'
         r'faq|frequently.?asked|question|'
         r'refund|return|guarantee|money.?back|'
@@ -1006,7 +1006,7 @@ def _try_multiple_urls(url, browser_session=None):
 
     # Fallback: try direct HTML fetch for sites without WP API
     if wp_api_found == 0:
-        product_subpages = ["/ingredients", "/supplement-facts"]
+        product_subpages = ["/ingredients", "/supplement-facts", "/label"]
         site_subpages = [
             "/about", "/about-us", "/contact", "/contact-us",
             "/shipping-policy", "/shipping", "/delivery",
