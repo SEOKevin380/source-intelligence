@@ -349,38 +349,68 @@ def print_phase(num, name):
 # ============================================================================
 
 def _web_search_product(name, search_type="ingredients"):
-    """Get product info by fetching known review/info sites directly."""
+    """Get product info via DuckDuckGo HTML search + direct URL fetching."""
     combined = []
 
-    # Strategy: fetch product info from known review sites that are scrapeable
-    slug = slugify(name)
-    name_lower = name.lower().replace(" ", "")
+    # Strategy 1: DuckDuckGo HTML search (returns actual search result snippets)
+    queries = {
+        "ingredients": f"{name} ingredients full list supplement facts",
+        "pricing": f"{name} price cost how much buy",
+        "reviews": f"{name} reviews complaints",
+    }
+    query = queries.get(search_type, f"{name} {search_type}")
 
-    # Try common review/info site URL patterns
-    review_urls = []
-    if search_type == "ingredients":
-        review_urls = [
-            f"https://www.supplementcritique.com/{slug}-review/",
-            f"https://www.healthline.com/nutrition/{slug}",
-            f"https://www.supplementcritique.com/{slug}-reviews/",
-        ]
-    elif search_type == "pricing":
-        review_urls = [
-            f"https://www.supplementcritique.com/{slug}-review/",
-        ]
-    elif search_type == "reviews":
-        review_urls = [
-            f"https://www.trustpilot.com/review/{name_lower}.com",
-        ]
+    try:
+        search_url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote_plus(query)}"
+        html = fetch_url(search_url, max_bytes=60000)
+        if html:
+            # Extract result snippets from DuckDuckGo HTML results
+            snippets = re.findall(
+                r'class="result__snippet"[^>]*>(.*?)</a',
+                html, re.DOTALL | re.IGNORECASE
+            )
+            # Also grab result titles for context
+            titles = re.findall(
+                r'class="result__a"[^>]*>(.*?)</a',
+                html, re.DOTALL | re.IGNORECASE
+            )
+            for i, snippet in enumerate(snippets[:8]):
+                clean = strip_html(snippet).strip()
+                title = strip_html(titles[i]).strip() if i < len(titles) else ""
+                if clean and len(clean) > 30:
+                    combined.append(f"{title}: {clean}" if title else clean)
 
-    for review_url in review_urls:
-        html = fetch_url(review_url, max_bytes=30000)
-        if html and len(html) > 1000:
-            text = strip_html(html)
-            if len(text) > 200:
-                combined.append(text[:4000])
+            # Extract actual destination URLs from DuckDuckGo redirect links
+            # DDG wraps links as //duckduckgo.com/l/?uddg=ENCODED_URL&rut=...
+            uddg_urls = re.findall(r'uddg=([^&"]+)', html)
+            result_urls = []
+            for u in uddg_urls:
+                decoded = urllib.parse.unquote(u)
+                # Also unescape HTML entities
+                decoded = decoded.replace("&amp;", "&")
+                if decoded.startswith("http"):
+                    result_urls.append(decoded)
 
-    # Strategy 3: DuckDuckGo Instant Answer API (for well-known products)
+            fetched = 0
+            for rurl in result_urls[:5]:
+                if fetched >= 2:
+                    break
+                # Skip the product's own site (we already scraped it)
+                if any(skip in rurl.lower() for skip in ['trycardioslim', 'youtube', 'facebook', 'tiktok', 'instagram']):
+                    continue
+                try:
+                    page = fetch_url(rurl, max_bytes=30000)
+                    if page and len(page) > 500:
+                        text = strip_html(page)
+                        if len(text) > 200:
+                            combined.append(text[:4000])
+                            fetched += 1
+                except Exception:
+                    pass
+    except Exception as e:
+        _emit(f"  [!] DuckDuckGo search failed: {e}")
+
+    # Strategy 2: DuckDuckGo Instant Answer API
     try:
         ddg_api = f"https://api.duckduckgo.com/?q={urllib.parse.quote_plus(name + ' product')}&format=json&no_html=1"
         resp = fetch_url(ddg_api, max_bytes=30000)
@@ -1726,12 +1756,19 @@ SOURCE MATERIAL:
     data.setdefault("pricing", [])
     data.setdefault("claims", [])
 
-    # Layer 5: Quality check — if we still got no ingredients, try one more targeted extraction
+    # Layer 5: Quality check — enrich ingredients if too few were extracted
+    # Many JS-rendered landing pages only show 3-4 "hero" ingredients in static HTML
+    # while the full list (10-20 ingredients) lives inside React/widget components
     ingredient_count = len(data.get("supplement_facts", {}).get("ingredients", []))
-    if ingredient_count == 0 and data.get("product_name") and data["product_name"] != "Unknown":
-        _emit(f"  [ENRICHMENT] No ingredients found — running targeted ingredient search...")
+    product_type = data.get("product_type", "supplement")
+    needs_enrichment = (
+        ingredient_count == 0
+        or (ingredient_count <= 5 and product_type in ("supplement", "food", "topical"))
+    )
+    if needs_enrichment and data.get("product_name") and data["product_name"] != "Unknown":
+        _emit(f"  [ENRICHMENT] Only {ingredient_count} ingredients extracted — searching for complete list...")
         enrichment = _enrich_ingredients(data["product_name"])
-        if enrichment:
+        if enrichment and len(enrichment) > ingredient_count:
             data["supplement_facts"]["ingredients"] = enrichment
             ingredient_count = len(enrichment)
             _emit(f"  [ENRICHMENT] Found {ingredient_count} ingredients via targeted search")
@@ -1786,6 +1823,48 @@ SOURCE MATERIAL:
                 _emit(f"  [DSLD] Match found but no ingredient data")
             else:
                 _emit(f"  [DSLD] No match in DSLD database")
+
+    # Layer 5d: Pricing enrichment — web search if no prices extracted
+    pricing = data.get("pricing", [])
+    has_real_prices = any(
+        p.get("price") or p.get("total") or p.get("per_unit")
+        for p in pricing
+        if isinstance(p, dict) and any(
+            "$" in str(p.get(k, "")) or (str(p.get(k, "")).replace(".", "").isdigit() and float(str(p.get(k, ""))) > 0)
+            for k in ("price", "total", "per_unit")
+        )
+    )
+    if not has_real_prices and data.get("product_name") and data["product_name"] != "Unknown":
+        _emit(f"  [ENRICHMENT] No pricing extracted — searching web for prices...")
+        price_search = _web_search_product(data["product_name"], "pricing")
+        if price_search and len(price_search) > 50:
+            prompt = f"""Extract all pricing tiers for {data['product_name']} from these search results.
+
+SEARCH RESULTS:
+{price_search[:4000]}
+
+Return ONLY valid JSON array:
+[
+    {{"package": "6 Month Supply", "price": "$294", "per_unit": "$49", "shipping": "Free"}}
+]
+
+Rules:
+- Only include prices explicitly shown in search results
+- Include package name, total price, per-unit price, and shipping if shown
+- If no prices found, return: []"""
+            resp = call_claude(prompt, max_tokens=1500)
+            if resp:
+                try:
+                    # Try to parse JSON array from response
+                    cleaned = resp.strip()
+                    if cleaned.startswith("```"):
+                        cleaned = re.sub(r"```\w*\n?", "", cleaned).strip()
+                    parsed = json.loads(cleaned)
+                    if isinstance(parsed, list) and parsed:
+                        data["pricing"] = parsed
+                        _emit(f"  [ENRICHMENT] Found {len(parsed)} pricing tiers via web search")
+                except (json.JSONDecodeError, ValueError):
+                    pass
 
     # Layer 5c: Category validation — cross-check category vs actual ingredients
     _validate_product_category(data)
