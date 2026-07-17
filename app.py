@@ -11,8 +11,19 @@ Usage (local):
 import hashlib
 import json
 import os
+import subprocess
 import tempfile
 import streamlit as st
+
+# Auto-install Playwright browsers on first run (needed for Streamlit Cloud)
+_pw_marker = os.path.join(tempfile.gettempdir(), ".playwright_installed")
+if not os.path.exists(_pw_marker):
+    try:
+        subprocess.run(["python3", "-m", "playwright", "install", "chromium"],
+                       capture_output=True, timeout=120)
+        open(_pw_marker, "w").close()
+    except Exception:
+        pass
 
 # Must be first Streamlit call
 st.set_page_config(
