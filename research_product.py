@@ -2527,8 +2527,8 @@ def phase7_compliance_check(product_data):
                 "reason": f"Disease-reversal claim: '{matched_verb}' + '{matched_disease}' — cannot be attributed or hedged, must be excluded entirely",
             })
 
-    # AccessWire blocklist check — only scan fields that would appear in a press release,
-    # NOT raw scraped testimonials/reviews which often contain flagged words in user quotes
+    # AccessWire blocklist check — scan PR-relevant fields AND individual claims
+    # to identify which specific claims contain blocked terms
     pr_fields = []
     for key in ["product_name", "description", "tagline", "manufacturer_claims"]:
         val = product_data.get(key)
@@ -2549,6 +2549,19 @@ def phase7_compliance_check(product_data):
             pr_fields.append(claim)
     all_text = " ".join(pr_fields).lower()
     flagged_terms = [term for term in ACCESSWIRE_BLOCKLIST if term in all_text]
+
+    # Identify which specific claims contain blocked terms so the prompt can tag them
+    blocklist_blocked_claims = []
+    for claim_obj in claims:
+        claim_text = claim_obj.get("claim", "") if isinstance(claim_obj, dict) else str(claim_obj)
+        claim_lower = claim_text.lower()
+        matched_terms = [term for term in ACCESSWIRE_BLOCKLIST if term in claim_lower]
+        if matched_terms:
+            blocklist_blocked_claims.append({
+                "claim": claim_text,
+                "matched_terms": matched_terms,
+                "reason": f"Contains banned terms: {', '.join(matched_terms)} — cannot appear in any publishable content",
+            })
 
     # Required disclaimers
     disclaimers = [
@@ -2571,6 +2584,7 @@ def phase7_compliance_check(product_data):
         "accesswire_blocklist_check": {
             "passes": len(flagged_terms) == 0,
             "flagged_terms": flagged_terms,
+            "blocked_claims": blocklist_blocked_claims,
         },
         "barchart_compliance": {
             "passes": category not in ("male_enhancement",),
@@ -2583,6 +2597,8 @@ def phase7_compliance_check(product_data):
     if cvd9_blocked:
         _emit(f"  CVD-9 BLOCKED: {len(cvd9_blocked)} disease-reversal claims (will be excluded from prompt)")
     _emit(f"  AccessWire blocklist: {'PASS' if not flagged_terms else f'FAIL ({len(flagged_terms)} terms)'}")
+    if blocklist_blocked_claims:
+        _emit(f"  Blocklist-blocked claims: {len(blocklist_blocked_claims)} claims contain banned terms (will be excluded from prompt)")
 
     return compliance
 

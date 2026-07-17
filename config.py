@@ -72,10 +72,12 @@ OUTPUT_DIR = os.path.join(BASE_DIR, "output")
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 
 # AccessWire blocklist terms (from MBK compliance rules)
+# ABSOLUTE BLOCKLIST — never use these terms or variants in any publishable content
 ACCESSWIRE_BLOCKLIST = [
-    "erection", "erectile", "libido", "arousal", "sexual function",
-    "stamina", "climax", "intercourse", "penetration", "impotence",
-    "premature ejaculation", "orgasm", "aphrodisiac", "virility", "potency"
+    "male enhancement", "erection", "erectile", "libido", "arousal",
+    "sex", "sexual function", "stamina", "climax", "bedroom",
+    "intercourse", "penetration", "impotence", "premature ejaculation",
+    "orgasm", "aphrodisiac", "virility", "potency", "genital",
 ]
 
 # YMYL categories and their risk levels

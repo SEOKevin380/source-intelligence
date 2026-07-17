@@ -911,6 +911,18 @@ determined by your own real-time SERP analysis — this data feeds facts only.
     block += f"Barchart B1-B4 Overlay: {'PASS' if bc.get('passes') else 'REVIEW — ' + str(bc.get('notes', ''))}\n"
     block += f"Risk Level: {compliance.get('risk_level', 'Unknown')}\n"
 
+    # Blocklist-blocked claims (contain banned terms — must be excluded entirely)
+    bl_blocked = aw.get("blocked_claims", [])
+    if bl_blocked:
+        block += f"\nBLOCKLIST-BLOCKED CLAIMS ({len(bl_blocked)}) — EXCLUDE ENTIRELY:\n"
+        block += "These claims contain explicit/banned terms from the absolute blocklist.\n"
+        block += "They CANNOT appear in any publishable content — not even paraphrased.\n"
+        block += "DO NOT stop or ask — automatically exclude these and write around them.\n"
+        block += "Use the product's other claims and ingredient research as your buildable material.\n\n"
+        for item in bl_blocked:
+            block += f"  BLOCKED: \"{item.get('claim', '')}\"\n"
+            block += f"    Banned terms found: {', '.join(item.get('matched_terms', []))}\n"
+
     # CVD-9 blocked claims (disease-reversal — must be excluded entirely)
     cvd9 = compliance.get("cvd9_blocked_claims", [])
     if cvd9:
@@ -944,13 +956,17 @@ determined by your own real-time SERP analysis — this data feeds facts only.
     # ── MARKETING CLAIMS (verbatim, for R18/L2 scaffolding) ──
     block += "\n"
     block += "═══ MARKETING CLAIMS (VERBATIM — CVD-1 SOURCE: LIVE URL FETCH) ═══\n"
-    # Build set of CVD-9 blocked claim texts for inline tagging
+    # Build sets of blocked claim texts for inline tagging
     cvd9_blocked_texts = {item.get("claim", "").lower() for item in cvd9}
+    bl_blocked_texts = {item.get("claim", "").lower() for item in bl_blocked}
     for c in claims:
         if isinstance(c, dict):
             claim_text = c.get("claim", "")
-            if claim_text.lower() in cvd9_blocked_texts:
+            claim_lower = claim_text.lower()
+            if claim_lower in cvd9_blocked_texts:
                 block += f"- [CVD-9 BLOCKED] \"{claim_text}\" ← EXCLUDE THIS CLAIM\n"
+            elif claim_lower in bl_blocked_texts:
+                block += f"- [BLOCKLIST BLOCKED] \"{claim_text}\" ← EXCLUDE THIS CLAIM (banned terms)\n"
             else:
                 block += f"- [{c.get('source', 'unknown')}] \"{claim_text}\"\n"
     if not claims:

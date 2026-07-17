@@ -845,6 +845,18 @@ else:
                 with c3:
                     st.markdown(f"**Barchart:** {'✅ PASS' if bc_pass else '⚠️ REVIEW'}")
 
+                bl_blocked = compliance_data.get("accesswire_blocklist_check", {}).get("blocked_claims", [])
+                if bl_blocked:
+                    st.markdown(f"### 🚫 Blocklist-Blocked Claims ({len(bl_blocked)})")
+                    st.warning(
+                        "These claims contain **banned terms** from the absolute blocklist. "
+                        "They are automatically excluded from the generated prompt. "
+                        "The production system will write around them using other available material."
+                    )
+                    for item in bl_blocked:
+                        st.error(f"**BLOCKED:** \"{item.get('claim', '')}\"")
+                        st.caption(f"Banned terms: *{', '.join(item.get('matched_terms', []))}*")
+
                 cvd9 = compliance_data.get("cvd9_blocked_claims", [])
                 if cvd9:
                     st.markdown(f"### ⛔ CVD-9 Blocked Claims ({len(cvd9)})")
