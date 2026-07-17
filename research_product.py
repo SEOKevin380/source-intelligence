@@ -33,6 +33,7 @@ from config import (
     INGREDIENT_DB_PATH, OUTPUT_DIR, USER_AGENT,
     ACCESSWIRE_BLOCKLIST, YMYL_CATEGORIES, CLAIM_RED_FLAGS,
     HEDGE_ALTERNATIVES, SITE_CATEGORIES, PUBMED_API_KEY,
+    CVD9_DISEASE_TERMS, CVD9_REVERSAL_VERBS,
 )
 
 # ============================================================================
@@ -2499,6 +2500,33 @@ def phase7_compliance_check(product_data):
                 "safe_alternative": safe_alt,
             })
 
+    # CVD-9: Disease-reversal claim detection
+    # Claims that combine a reversal verb with a disease/condition term cannot be
+    # attributed, hedged, or softened — they must be excluded entirely.
+    # A reader with diabetes could plausibly delay medical care based on these claims.
+    cvd9_blocked = []
+    for claim_obj in claims:
+        claim_text = claim_obj.get("claim", "") if isinstance(claim_obj, dict) else str(claim_obj)
+        claim_lower = claim_text.lower()
+        matched_verb = None
+        matched_disease = None
+        for verb in CVD9_REVERSAL_VERBS:
+            if verb in claim_lower:
+                matched_verb = verb
+                break
+        if matched_verb:
+            for disease in CVD9_DISEASE_TERMS:
+                if disease in claim_lower:
+                    matched_disease = disease
+                    break
+        if matched_verb and matched_disease:
+            cvd9_blocked.append({
+                "claim": claim_text,
+                "verb": matched_verb,
+                "disease": matched_disease,
+                "reason": f"Disease-reversal claim: '{matched_verb}' + '{matched_disease}' — cannot be attributed or hedged, must be excluded entirely",
+            })
+
     # AccessWire blocklist check — only scan fields that would appear in a press release,
     # NOT raw scraped testimonials/reviews which often contain flagged words in user quotes
     pr_fields = []
@@ -2538,6 +2566,7 @@ def phase7_compliance_check(product_data):
         "ftc_affiliate_disclosure_required": True,
         "claim_audit": claim_audit,
         "flagged_claims_count": len(claim_audit),
+        "cvd9_blocked_claims": cvd9_blocked,
         "required_disclaimers": disclaimers,
         "accesswire_blocklist_check": {
             "passes": len(flagged_terms) == 0,
@@ -2551,6 +2580,8 @@ def phase7_compliance_check(product_data):
 
     _emit(f"  Claims audited: {len(claims)}")
     _emit(f"  Flagged claims: {len(claim_audit)}")
+    if cvd9_blocked:
+        _emit(f"  CVD-9 BLOCKED: {len(cvd9_blocked)} disease-reversal claims (will be excluded from prompt)")
     _emit(f"  AccessWire blocklist: {'PASS' if not flagged_terms else f'FAIL ({len(flagged_terms)} terms)'}")
 
     return compliance

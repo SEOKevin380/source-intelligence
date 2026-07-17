@@ -124,6 +124,30 @@ HEDGE_ALTERNATIVES = {
     "FDA approved": "manufactured in an FDA-registered facility (note: dietary supplements are not FDA-approved)",
 }
 
+# CVD-9: Disease-reversal claim detection
+# When a red flag verb (cures, fixes, reverses, etc.) appears alongside a disease/condition
+# term, the claim is a CVD-9 BLOCK — cannot be attributed, hedged, or softened.
+# The production system must exclude these claims entirely and write around them.
+CVD9_DISEASE_TERMS = [
+    "diabetes", "type 2 diabetes", "type 1 diabetes", "blood pressure",
+    "hypertension", "cancer", "tumor", "heart disease", "cardiovascular disease",
+    "stroke", "alzheimer", "dementia", "parkinson", "epilepsy", "seizure",
+    "hiv", "aids", "hepatitis", "kidney disease", "liver disease",
+    "arthritis", "lupus", "multiple sclerosis", "crohn", "colitis",
+    "asthma", "copd", "pneumonia", "tuberculosis",
+    "depression", "anxiety disorder", "bipolar", "schizophrenia",
+    "obesity", "anorexia", "bulimia",
+    "glaucoma", "macular degeneration", "cataracts",
+    "infertility", "endometriosis", "fibroids",
+    "osteoporosis", "scoliosis",
+]
+CVD9_REVERSAL_VERBS = [
+    "fixes", "fix", "cures", "cure", "reverses", "reverse",
+    "eliminates", "eliminate", "eradicates", "eradicate",
+    "heals", "heal", "repairs", "repair", "restores", "restore",
+    "gets rid of", "wipes out", "destroys", "kills",
+]
+
 # Site category mappings for publishing recommendations
 SITE_CATEGORIES = {
     "pvmedcenter": {

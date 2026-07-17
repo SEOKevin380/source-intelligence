@@ -845,6 +845,18 @@ else:
                 with c3:
                     st.markdown(f"**Barchart:** {'✅ PASS' if bc_pass else '⚠️ REVIEW'}")
 
+                cvd9 = compliance_data.get("cvd9_blocked_claims", [])
+                if cvd9:
+                    st.markdown(f"### ⛔ CVD-9 Blocked Claims ({len(cvd9)})")
+                    st.warning(
+                        "These claims combine disease-reversal language with medical conditions. "
+                        "They **cannot** be attributed, hedged, or softened — they are automatically "
+                        "excluded from the generated prompt. The production system will write around them."
+                    )
+                    for item in cvd9:
+                        st.error(f"**BLOCKED:** \"{item.get('claim', '')}\"")
+                        st.caption(f"Trigger: *{item.get('verb', '')}* + *{item.get('disease', '')}* — {item.get('reason', '')}")
+
                 audit = compliance_data.get("claim_audit", [])
                 if audit:
                     st.markdown(f"### Flagged Claims ({len(audit)})")

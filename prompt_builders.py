@@ -911,10 +911,23 @@ determined by your own real-time SERP analysis — this data feeds facts only.
     block += f"Barchart B1-B4 Overlay: {'PASS' if bc.get('passes') else 'REVIEW — ' + str(bc.get('notes', ''))}\n"
     block += f"Risk Level: {compliance.get('risk_level', 'Unknown')}\n"
 
-    # Flagged claims
+    # CVD-9 blocked claims (disease-reversal — must be excluded entirely)
+    cvd9 = compliance.get("cvd9_blocked_claims", [])
+    if cvd9:
+        block += f"\nCVD-9 BLOCKED CLAIMS ({len(cvd9)}) — EXCLUDE ENTIRELY:\n"
+        block += "These claims combine disease-reversal language with specific medical conditions.\n"
+        block += "They CANNOT be attributed, hedged, softened, or used as title/hook material.\n"
+        block += "A reader could plausibly delay actual medical care based on these claims.\n"
+        block += "DO NOT stop or ask — automatically exclude these and write around them.\n"
+        block += "The remaining claims and ingredient research provide strong buildable material.\n\n"
+        for item in cvd9:
+            block += f"  BLOCKED: \"{item.get('claim', '')}\"\n"
+            block += f"    Trigger: '{item.get('verb', '')}' + '{item.get('disease', '')}'\n"
+
+    # Flagged claims (can be hedged/softened)
     flagged = compliance.get("claim_audit", [])
     if flagged:
-        block += f"Flagged Claims ({len(flagged)}):\n"
+        block += f"Flagged Claims ({len(flagged)}) — USE WITH HEDGING:\n"
         for item in flagged:
             block += f"  FLAGGED: \"{item.get('claim', '')}\"\n"
             for issue in item.get("issues", []):
@@ -931,9 +944,15 @@ determined by your own real-time SERP analysis — this data feeds facts only.
     # ── MARKETING CLAIMS (verbatim, for R18/L2 scaffolding) ──
     block += "\n"
     block += "═══ MARKETING CLAIMS (VERBATIM — CVD-1 SOURCE: LIVE URL FETCH) ═══\n"
+    # Build set of CVD-9 blocked claim texts for inline tagging
+    cvd9_blocked_texts = {item.get("claim", "").lower() for item in cvd9}
     for c in claims:
         if isinstance(c, dict):
-            block += f"- [{c.get('source', 'unknown')}] \"{c.get('claim', '')}\"\n"
+            claim_text = c.get("claim", "")
+            if claim_text.lower() in cvd9_blocked_texts:
+                block += f"- [CVD-9 BLOCKED] \"{claim_text}\" ← EXCLUDE THIS CLAIM\n"
+            else:
+                block += f"- [{c.get('source', 'unknown')}] \"{claim_text}\"\n"
     if not claims:
         block += "No marketing claims captured from product page.\n"
 
