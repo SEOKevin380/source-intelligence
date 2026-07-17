@@ -1221,6 +1221,49 @@ def _extract_buygoods_pricing(html):
                     "guarantee": guarantee,
                 })
 
+    # Pattern 4: Month/unit supply with per-unit and total pricing
+    # e.g., "2 Month Supply $79 Per Unit Total: $158" or "6 Month Supply $49 each $294 total"
+    if not pricing:
+        text = strip_html(html) if html else ""
+        supply_blocks = re.finditer(
+            r'(\d+)\s*(?:Month|Months|Unit|Units|Box|Boxes|Bag|Bags|Pouch|Pouches)\s*(?:Supply|Pack)?'
+            r'[^$]*?\$\s*([\d,.]+)'
+            r'(?:[^$]*?\$\s*([\d,.]+))?',
+            text, re.IGNORECASE
+        )
+        for match in supply_blocks:
+            qty = match.group(1)
+            price1 = match.group(2).replace(",", "")
+            price2 = match.group(3).replace(",", "") if match.group(3) else ""
+            # Figure out which is per-unit and which is total
+            try:
+                p1 = float(price1)
+                p2 = float(price2) if price2 else 0
+                if p2 > p1:
+                    per_unit, total = price1, price2
+                elif p1 > p2 and p2 > 0:
+                    per_unit, total = price2, price1
+                else:
+                    per_unit, total = price1, str(p1 * int(qty))
+            except (ValueError, ZeroDivisionError):
+                per_unit, total = price1, price2 or price1
+
+            key = f"{qty}-{total}"
+            if key not in seen:
+                seen.add(key)
+                # Check for free shipping nearby
+                context = text[max(0, match.start()-50):match.end()+100].upper()
+                ship = "Free" if "FREE" in context and "SHIPPING" in context else ""
+                pricing.append({
+                    "package": f"{qty} Month Supply",
+                    "total": total,
+                    "original": "",
+                    "bottles": qty,
+                    "per_unit": f"${per_unit}",
+                    "shipping": ship,
+                    "guarantee": "",
+                })
+
     # Sort by bottle count
     pricing.sort(key=lambda x: int(x.get("bottles", 0)), reverse=True)
     return pricing
@@ -1514,10 +1557,11 @@ def phase1_extract_product(url, vsl_url=None, product_name=None, browser_session
         if key.startswith("wp_page_"):
             page_texts.append(f"=== SITE PAGE: {key.replace('wp_page_', '').upper()} ===\n{content[:6000]}")
 
-    # 3. Main page HTML — cap aggressively if we have structured data
+    # 3. Main page HTML — generous cap to capture full landing pages
+    #    (ingredients, pricing, testimonials often sit deep on long pages)
     if "main" in all_pages:
         text = strip_html(all_pages["main"])
-        main_cap = 5000 if (has_structured or has_wp_pages) else 15000
+        main_cap = 5000 if (has_structured or has_wp_pages) else 40000
         page_texts.append(f"MAIN PRODUCT PAGE:\n{text[:main_cap]}")
 
     # 4. Raw HTML subpages (only if no WP API pages — these are often JS-rendered garbage)
