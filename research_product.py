@@ -564,7 +564,7 @@ def _query_dsld(product_name, brand_name=""):
                 best_hit = hit
                 break
 
-            # Strip generic supplement words to find the unique brand/product words
+            # Strip generic supplement/product words to isolate brand-specific terms
             generic_words = {"supplement", "support", "formula", "pro", "plus",
                              "max", "ultra", "advanced", "daily", "natural",
                              "premium", "gummies", "capsules", "tablets", "powder",
@@ -572,15 +572,24 @@ def _query_dsld(product_name, brand_name=""):
                              "brain", "joint", "weight", "loss", "eye", "skin",
                              "hair", "bone", "heart", "immune", "gut", "sleep",
                              "energy", "mood", "focus", "memory", "vision",
-                             "review", "reviews", "the", "and", "for", "with"}
+                             "review", "reviews", "the", "and", "for", "with",
+                             # Common product-type and marketing words
+                             "tea", "coffee", "drink", "shake", "bar", "drops",
+                             "slim", "thin", "lean", "fat", "burn", "burner",
+                             "green", "red", "gold", "silver", "black", "white",
+                             "super", "mega", "extra", "complete", "total",
+                             "original", "pure", "organic", "herbal", "vital",
+                             "essential", "basic", "mens", "womens", "men", "women"}
             # The product's UNIQUE name words (brand-specific, not generic)
             unique_query = query_words - generic_words
             unique_hit = hit_words - generic_words
 
-            # If the query has unique words, at least one must appear in the hit
+            # Require MAJORITY of query's unique words to appear in the hit
+            # "Cardio Slim Tea" unique = {"cardio"}, hit "Green Tea Slim" unique = {} → no match
             if unique_query:
                 unique_overlap = unique_query & unique_hit
-                if unique_overlap:
+                overlap_ratio = len(unique_overlap) / len(unique_query)
+                if overlap_ratio >= 0.5 and len(unique_overlap) >= 1:
                     best_hit = hit
                     break
             else:
