@@ -757,6 +757,15 @@ for confirmation between phases — the operator is a VA who cannot answer
 mid-process questions. If data conflicts are found, document them in the
 Material Limitations section and continue drafting with the best available data.
 
+CRITICAL — WRITE WITH AVAILABLE FACTS: Some CVD categories below may show
+"NO DATA" — this means the information was not available at research time,
+NOT that you should halt or refuse to draft. Write the release using every
+fact that IS available. Never fabricate missing data. Never halt on missing
+categories. If ingredients are unavailable, write from the product's
+positioning, pricing, guarantee, and available claims. If pricing is missing,
+omit pricing references. Note gaps in Material Limitations and move on.
+First-to-market releases often have incomplete source data — that is normal.
+
 """
 
     # Platform-specific guidance appended to the header
@@ -819,8 +828,9 @@ Material Limitations section and continue drafting with the best available data.
                 line += f" [Form: {ing['form']}]"
             block += line + "\n"
     else:
-        block += "C1 — SUPPLEMENT FACTS [NOT CLEARED]\n"
-        block += "No ingredients extracted. Re-fetch from product page or label image.\n"
+        block += "C1 — SUPPLEMENT FACTS [NO DATA]\n"
+        block += "No ingredients extracted from available sources. Do not fabricate.\n"
+        block += "Write from product positioning and available claims instead.\n"
 
     # ── C2: PRICING ──
     block += "\n"
@@ -843,8 +853,8 @@ Material Limitations section and continue drafting with the best available data.
                 line += f" — Shipping: {p['shipping']}"
             block += line + "\n"
     else:
-        block += "C2 — PRICING [NOT CLEARED]\n"
-        block += "No pricing extracted. Verify from live checkout page.\n"
+        block += "C2 — PRICING [NO DATA]\n"
+        block += "No pricing extracted. Omit pricing references from draft.\n"
 
     # ── C3: GUARANTEE / REFUND ──
     block += "\n"
@@ -857,8 +867,8 @@ Material Limitations section and continue drafting with the best available data.
         if rp.get("verbatim"):
             block += f"Verbatim: \"{rp['verbatim']}\"\n"
     else:
-        block += "C3 — GUARANTEE / REFUND TERMS [NOT CLEARED]\n"
-        block += "Not extracted. Re-fetch refund/guarantee policy page.\n"
+        block += "C3 — GUARANTEE / REFUND TERMS [NO DATA]\n"
+        block += "Not extracted. Omit guarantee claims from draft.\n"
 
     # ── C4: CONTACT INFORMATION ──
     block += "\n"
@@ -874,13 +884,13 @@ Material Limitations section and continue drafting with the best available data.
         block += "C4 — CONTACT INFORMATION [PARTIAL]\n"
         block += f"  Brand: {product.get('brand_name', name)}\n"
         block += f"  Website: {product.get('official_url', '')}\n"
-        block += "Re-fetch contact page for phone, email, address.\n"
+        block += "Limited contact info available. Use what is provided.\n"
 
     # ── C5: LEGAL / CORPORATE ENTITY ──
     block += "\n"
     block += "C5 — LEGAL / CORPORATE ENTITY [PARTIAL]\n"
     block += f"  Operating entity: {product.get('brand_name', name)}\n"
-    block += "Re-fetch ToS for complete entity names, copyright holder, retailer disclosure.\n"
+    block += "Use brand name only. Do not fabricate corporate entity details.\n"
 
     # ── C7: CLINICAL CITATIONS / RESEARCH ──
     block += "\n"
@@ -902,8 +912,9 @@ Material Limitations section and continue drafting with the best available data.
                 block += f"    [{tier}] PMID:{s.get('pmid', '')} — {s.get('title', '')} ({s.get('journal', '')}, {s.get('year', '')})\n"
             block += "\n"
     else:
-        block += "C7 — CLINICAL CITATIONS / RESEARCH [NOT CLEARED]\n"
-        block += "No PubMed research available.\n"
+        block += "C7 — CLINICAL CITATIONS / RESEARCH [NO DATA]\n"
+        block += "No PubMed research available. Write from product claims and positioning.\n"
+        block += "Do not cite studies that were not provided.\n"
 
     # ── C6: DRUG INTERACTIONS ──
     block += "\n"
@@ -934,8 +945,8 @@ Material Limitations section and continue drafting with the best available data.
             if v:
                 block += f"  {k.replace('_', ' ').title()}: {v}\n"
     else:
-        block += "C10 — SHIPPING / DELIVERY [NOT CLEARED]\n"
-        block += "Not extracted. Re-fetch shipping policy page.\n"
+        block += "C10 — SHIPPING / DELIVERY [NO DATA]\n"
+        block += "Not extracted. Omit shipping details or direct reader to official site.\n"
 
     # ── C15: PRODUCT CATEGORY / POSITIONING ──
     block += "\n"
@@ -964,8 +975,8 @@ Material Limitations section and continue drafting with the best available data.
         if sf.get("servings_per_container"):
             block += f"  Servings Per Container: {sf['servings_per_container']}\n"
     else:
-        block += "C19 — SERVING SIZE / SUPPLY DURATION [NOT CLEARED]\n"
-        block += "Not extracted. Source from label or brand page.\n"
+        block += "C19 — SERVING SIZE / SUPPLY DURATION [NO DATA]\n"
+        block += "Not extracted. Omit serving size claims from draft.\n"
 
     # ── COMPLIANCE PRE-CHECK (platform-aware) ──
     block += "\n"
