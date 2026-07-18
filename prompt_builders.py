@@ -702,9 +702,10 @@ def _build_cvd_source_block(full_data, platform=""):
     """Build pre-verified source data organized by CVD-5 verification categories.
 
     This maps Source Intelligence research directly to the MBK production system's
-    verification framework so Phase 0.0/0.1 can use pre-verified data instead of
-    re-fetching everything. The production system's own SERP analysis, archetype
-    selection, keyword mapping, and angle differentiation run fresh in real-time.
+    verification framework. The data replaces Phase 0.0/0.1 entirely — the production
+    system must NOT re-fetch or independently verify any URLs. The production system's
+    own SERP analysis, archetype selection, keyword mapping, and angle differentiation
+    run fresh in real-time.
 
     Platform-aware: adjusts compliance pre-check section based on target platform.
     """
@@ -741,30 +742,45 @@ Data Sources: Live page fetch + PubMed API + Claude vision OCR
 Official URL: {product.get('official_url', '')}
 
 This submission includes pre-verified research data organized by CVD-5
-verification categories. Use as your verified-facts inventory for Phase 0.1.
-Re-fetch policy pages (refund, shipping, ToS, contact) for currency confirmation.
-All SEO strategy, archetype selection, and angle differentiation should be
-determined by your own real-time SERP analysis — this data feeds facts only.
+verification categories. Use the data below as-is — it IS your Phase 0.0/0.1
+verified-facts inventory. Do NOT independently re-fetch, re-scrape, or
+re-verify any URLs, policy pages, brand sites, or affiliate links. The data
+below is final. All SEO strategy, archetype selection, and angle differentiation
+should be determined by your own real-time SERP analysis — this data feeds
+facts only.
 
 Marketing claims below have been pre-screened. Claims that failed compliance
 review (disease-reversal language, banned advertorial terms) have already been
 removed — only publishable claims are included. Claims marked with hedging
 suggestions should use the softened version provided.
 
-Workflow: This is a complete data submission. Run Phase 0 verification, then
-proceed directly through all phases to finished draft output. Do not pause
-for confirmation between phases — the operator is a VA who cannot answer
-mid-process questions. If data conflicts are found, document them in the
-Material Limitations section and continue drafting with the best available data.
+WORKFLOW — MANDATORY, NO EXCEPTIONS:
+1. Accept ALL data below as pre-verified. Do NOT run your own Phase 0.0
+   page fetches. Do NOT visit the product URL, brand site, or affiliate link
+   to independently verify. The Source Intelligence Tool already did this.
+2. Skip Phase 0.0 source-page fetch entirely. Begin at Phase 0.1 using the
+   CVD categories below as your verified-facts inventory.
+3. Proceed directly through all remaining phases to finished draft output.
+4. Do NOT pause for confirmation between phases — the operator is a VA who
+   cannot answer mid-process questions.
+5. If you notice data conflicts, gaps, or discrepancies: document them in
+   the Material Limitations section and CONTINUE DRAFTING with the best
+   available data. Never halt. Never ask for human input.
+6. Output a complete, publish-ready draft in a single response.
 
-CRITICAL — WRITE WITH AVAILABLE FACTS: Some CVD categories below may show
-"NO DATA" — this means the information was not available at research time,
-NOT that you should halt or refuse to draft. Write the release using every
-fact that IS available. Never fabricate missing data. Never halt on missing
-categories. If ingredients are unavailable, write from the product's
-positioning, pricing, guarantee, and available claims. If pricing is missing,
-omit pricing references. Note gaps in Material Limitations and move on.
-First-to-market releases often have incomplete source data — that is normal.
+CRITICAL — WRITE WITH AVAILABLE FACTS, NEVER HALT:
+Some CVD categories below may show "NO DATA" — this means the information
+was not available at research time, NOT that you should halt or refuse to
+draft. This is NORMAL for first-to-market releases where source data is
+incomplete. Write the release using every fact that IS available:
+- No ingredients? Write from product positioning, claims, and category.
+- No pricing? Omit pricing references, direct reader to official site.
+- No guarantee details? Omit guarantee claims from draft.
+- No contact info? Use brand name only.
+- No clinical research? Write from claims and positioning, not studies.
+Never fabricate missing data. Never halt on missing categories. Never ask
+the operator to "confirm" or "clarify" anything. Note gaps in Material
+Limitations and deliver the finished draft.
 
 """
 
