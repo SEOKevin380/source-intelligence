@@ -80,6 +80,86 @@ ACCESSWIRE_BLOCKLIST = [
     "orgasm", "aphrodisiac", "virility", "potency", "genital",
 ]
 
+# Globe Newswire phrase blocklist (Categories A-K from Globe v1.12)
+# These are confirmed rejection triggers — zero tolerance on Globe platform.
+# Organized by category for compliance reporting.
+GLOBE_BLOCKLIST = {
+    "A_affiliate": [
+        "affiliate link", "commission may be earned", "referral fee",
+        "this compensation does not influence", "if you register through the links",
+        "sponsored",
+    ],
+    "B_self_reference": [
+        "this article", "this overview", "this report", "in this report",
+        "at the time of this report", "this report examines",
+        "this article compiles",
+    ],
+    "C_publisher": [
+        "independent content publisher", "the publisher is not affiliated",
+        "the publisher makes no independent verification",
+        "all claims are attributed to", "publisher responsibility disclaimer",
+        "platform and legal disclaimer", "non-affiliation disclaimer",
+        "editorial position", "editorial independence",
+    ],
+    "D_observer": [
+        "according to the company", "according to the brand",
+        "according to product materials", "according to the platform",
+        "the brand states", "the company states that",
+        "the brand describes", "the company describes",
+        "as described on the official product page",
+        "per the official website", "per the supplement facts panel",
+        "is presented as", "is described as", "is positioned as",
+        "is characterized as", "is framed as", "is marketed as",
+        "is portrayed as", "drawn directly from", "sourced from",
+        "based on information from", "documented on",
+        "details confirmed at", "information available at",
+        "available sources", "the available record shows",
+        "source materials identify", "source materials show",
+    ],
+    "E_consumer_guide": [
+        "before signing up", "what to know before",
+        "what to confirm before", "for readers evaluating",
+        "this is the consumer report", "you came here first",
+    ],
+    "F_external_validation": [
+        "per third-party review", "reportedly include",
+        "at the time of this report", "this report will be updated",
+    ],
+    "G_cta": [
+        "click here", "buy now", "view the current offer",
+        "order now", "get yours today", "shop now",
+    ],
+    "H_entity_risk": [
+        # Category H: Never name operating company unless verified across ALL of
+        # ToS + footer + contact page. These phrases signal unverified entity naming.
+        # Note: H is primarily a procedural rule (omit-if-unverified), but these
+        # phrases are structural triggers when they appear in source data.
+    ],
+    "I_bare_outcome_verbs": [
+        # Category I: Bare outcome verbs stated as clinical fact.
+        # These must be rewritten to mechanism-forward phrasing.
+        "boosts collagen", "reduces inflammation", "stimulates",
+        "improves circulation", "permanent hair reduction",
+        "visible results from the first session",
+        "clinically developed", "clinically proven",
+        "dermatologist-recommended", "recommended and used by",
+    ],
+    "J_telehealth_absolutes": [
+        # Category J: Telehealth/YMYL absolute claims that need qualification.
+        "fastest-growing category", "strict quality and safety protocols",
+        "reported to improve as the body adjusts",
+        "all at no additional cost",
+        "insurance is not accepted or required",
+        "pharmacy network covering all 50 states",
+        "success stories prove",
+    ],
+    "K_urgency": [
+        "act now", "don't miss out", "limited time only",
+        "while supplies last", "hurry", "doctors hate this",
+        "shocking truth", "hidden secret",
+    ],
+}
+
 # YMYL categories and their risk levels
 YMYL_CATEGORIES = {
     "weight_loss": "High",

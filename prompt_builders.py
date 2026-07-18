@@ -330,6 +330,7 @@ Official URL: {product.get('official_url', '')}
 Risk Level: {compliance.get('risk_level', 'Unknown')}
 AccessWire: {'PASS' if compliance.get('accesswire_blocklist_check', {}).get('passes') else 'FAIL'}
 Barchart: {'PASS' if compliance.get('barchart_compliance', {}).get('passes') else 'FAIL'}
+Globe: {'PASS' if compliance.get('globe_compliance', {}).get('passes', True) else 'FAIL'}
 
 --- SUPPLEMENT FACTS ---
 """
@@ -377,7 +378,8 @@ Barchart: {'PASS' if compliance.get('barchart_compliance', {}).get('passes') els
     # Pricing
     block += "\n--- PRICING (Verified from live page) ---\n"
     for p in pricing:
-        block += f"- {p.get('package', '')}: {p.get('price', '')} ({p.get('per_unit', '')}/unit) — Shipping: {p.get('shipping', 'N/A')}\n"
+        price_val = p.get('price', '') or p.get('total', '')
+        block += f"- {p.get('package', '')}: {price_val} ({p.get('per_unit', '')}/unit) — Shipping: {p.get('shipping', 'N/A')}\n"
     if not pricing:
         block += "No pricing extracted — verify from live page\n"
 
@@ -696,13 +698,15 @@ review by a Google Quality Rater evaluating E-E-A-T for YMYL health content.
 # PRESS RELEASE: MBK v3.10 VA BRIEF SUBMISSION
 # =============================================================================
 
-def _build_cvd_source_block(full_data):
+def _build_cvd_source_block(full_data, platform=""):
     """Build pre-verified source data organized by CVD-5 verification categories.
 
     This maps Source Intelligence research directly to the MBK production system's
     verification framework so Phase 0.0/0.1 can use pre-verified data instead of
     re-fetching everything. The production system's own SERP analysis, archetype
     selection, keyword mapping, and angle differentiation run fresh in real-time.
+
+    Platform-aware: adjusts compliance pre-check section based on target platform.
     """
     from datetime import date
 
@@ -755,6 +759,35 @@ Material Limitations section and continue drafting with the best available data.
 
 """
 
+    # Platform-specific guidance appended to the header
+    is_globe_platform = "globe" in (platform or "").lower()
+    is_barchart_platform = "barchart" in (platform or "").lower()
+
+    if is_globe_platform:
+        block += """GLOBE NEWSWIRE PLATFORM NOTES:
+- Format C is the DEFAULT. No CTAs, no FAQ, no affiliate disclosure in opening.
+- Voice: Brand-as-subject (Rule 1). Every sentence has the brand as subject, never
+  as object being observed. '[Brand] is X' — never 'According to the brand, X.'
+- Claims: Mechanism-forward (Rule 2). 'is designed to support...' — never bare
+  outcome verbs like 'boosts' or 'reduces.'
+- Categories A-K phrase blocklist is in effect (see compliance pre-check below).
+- Compensation disclosure: ONE instance at end of release, exact Format C text.
+- Related Links: single outbound link at end, no CTA language.
+- The R12 sexual/performance blocklist does NOT apply to Globe.
+- Attribution like 'according to the company' or 'the brand states' is a confirmed
+  Globe rejection trigger. State facts directly.
+
+"""
+    elif is_barchart_platform:
+        block += """BARCHART PLATFORM NOTES:
+- Inherits ACW/NW R-rules with B1-B4 overlay.
+- B1: Zero schema (no Review, AggregateRating, FAQPage, etc.)
+- B2: Zero platform furniture (no sidebar, header, or nav references)
+- B3: 'Fake Testimonial Hype' title pattern is confirmed approved on Barchart.
+- B4: R12 blocklist applies in full.
+
+"""
+
     # ── C1: SUPPLEMENT FACTS ──
     if ingredients:
         block += f"C1 — SUPPLEMENT FACTS [CLEARED]\n"
@@ -800,8 +833,9 @@ Material Limitations section and continue drafting with the best available data.
         block += f"Source: {pricing_source}\n\n"
         for p in pricing:
             line = f"  {p.get('package', '')}: "
-            if p.get('price'):
-                line += f"${p['price']}" if not str(p['price']).startswith('$') else str(p['price'])
+            price_val = p.get('price', '') or p.get('total', '')
+            if price_val:
+                line += f"${price_val}" if not str(price_val).startswith('$') else str(price_val)
             if p.get('per_unit'):
                 per = p['per_unit']
                 line += f" ({per}/unit)" if not str(per).startswith('$') else f" (${per}/unit)"
@@ -933,13 +967,39 @@ Material Limitations section and continue drafting with the best available data.
         block += "C19 — SERVING SIZE / SUPPLY DURATION [NOT CLEARED]\n"
         block += "Not extracted. Source from label or brand page.\n"
 
-    # ── COMPLIANCE PRE-CHECK ──
+    # ── COMPLIANCE PRE-CHECK (platform-aware) ──
     block += "\n"
     block += "═══ COMPLIANCE PRE-CHECK ═══\n"
+    platform_lower = platform.lower() if platform else ""
+    is_globe = "globe" in platform_lower
+    is_barchart = "barchart" in platform_lower
+    is_acw = "accesswire" in platform_lower or "newswire" in platform_lower
+
     aw = compliance.get("accesswire_blocklist_check", {})
     bc = compliance.get("barchart_compliance", {})
-    block += f"R12 Blocklist (ACW/Barchart): {'PASS' if aw.get('passes') else 'FAIL — avoid these terms in output: ' + str(aw.get('flagged_terms', []))}\n"
-    block += f"Barchart B1-B4 Overlay: {'PASS' if bc.get('passes') else 'REVIEW — ' + str(bc.get('notes', ''))}\n"
+    gc = compliance.get("globe_compliance", {})
+
+    if is_globe:
+        # Globe-specific compliance
+        block += f"Globe v1.12 Phrase Blocklist: {'PASS' if gc.get('passes') else 'FAIL'}\n"
+        if not gc.get("passes"):
+            for cat, terms in gc.get("flagged_categories", {}).items():
+                cat_label = cat.split("_", 1)[-1].replace("_", " ").title() if "_" in cat else cat
+                block += f"  Category {cat.split('_')[0]}: {', '.join(terms)}\n"
+            block += "  NOTE: These terms/phrases are confirmed Globe rejection triggers.\n"
+            block += "  The production system must avoid them entirely — no rewording fixes them.\n"
+        block += "Globe Format: Format C (default — no CTAs, no FAQ, no affiliate disclosure in opening)\n"
+        block += "Globe Voice: Brand-as-subject (Rule 1) + Mechanism-forward (Rule 2)\n"
+        block += "  All attribution must be direct: '[Brand] is X' — never 'according to the brand'\n"
+        block += "  All claims use mechanism language: 'is designed to support...' — never bare outcome verbs\n"
+    elif is_barchart:
+        # Barchart inherits ACW R-rules + B1-B4 overlay
+        block += f"R12 Blocklist (ACW/Barchart): {'PASS' if aw.get('passes') else 'FAIL — avoid these terms in output: ' + str(aw.get('flagged_terms', []))}\n"
+        block += f"Barchart B1-B4 Overlay: {'PASS' if bc.get('passes') else 'REVIEW — ' + str(bc.get('notes', ''))}\n"
+    else:
+        # Accesswire / Newswire.com
+        block += f"R12 Blocklist (ACW): {'PASS' if aw.get('passes') else 'FAIL — avoid these terms in output: ' + str(aw.get('flagged_terms', []))}\n"
+
     block += f"Risk Level: {compliance.get('risk_level', 'Unknown')}\n"
 
     # Flagged claims — hedging suggestions (not blocked, just need softened language)
@@ -950,23 +1010,40 @@ Material Limitations section and continue drafting with the best available data.
             block += f"  Original: \"{item.get('claim', '')}\"\n"
             block += f"  Suggested: \"{item.get('safe_alternative', '')}\"\n"
 
-    # Required disclaimers
+    # Required disclaimers (Globe has different disclaimer rules)
     req_disclaimers = compliance.get("required_disclaimers", [])
     if req_disclaimers:
-        block += "Required Disclaimers:\n"
-        for d in req_disclaimers:
-            block += f"  - {d}\n"
+        if is_globe:
+            block += "\nDisclaimer Notes (Globe Format C):\n"
+            block += "  - Opening: regulatory/medical disclaimer ONLY (no affiliate/compensation)\n"
+            block += "  - Compensation: ONE instance at end of release, exact Format C text\n"
+            block += "  - Related Links: single outbound link, no CTA language\n"
+        else:
+            block += "Required Disclaimers:\n"
+            for d in req_disclaimers:
+                block += f"  - {d}\n"
 
     # ── MARKETING CLAIMS — blocked claims silently omitted ──
     block += "\n"
-    block += "═══ MARKETING CLAIMS (VERBATIM — SOURCE: LIVE URL FETCH) ═══\n"
+    if is_globe:
+        block += "═══ MARKETING CLAIMS (MECHANISM-FORWARD REWRITE REQUIRED FOR GLOBE) ═══\n"
+    else:
+        block += "═══ MARKETING CLAIMS (VERBATIM — SOURCE: LIVE URL FETCH) ═══\n"
+
     # Build sets of blocked claim texts to silently exclude
     cvd9 = compliance.get("cvd9_blocked_claims", [])
-    bl_blocked = aw.get("blocked_claims", [])
+    # R12 blocklist claims — only apply to ACW/Barchart, NOT Globe
+    # (per Globe v1.12: "the R12 sexual/performance blocklist belongs to the
+    # Accesswire-side system and never applies to Globe")
+    bl_blocked = aw.get("blocked_claims", []) if not is_globe else []
+    # Globe-specific blocked claims when targeting Globe
+    gl_blocked = gc.get("blocked_claims", []) if is_globe else []
     blocked_texts = set()
     for item in cvd9:
         blocked_texts.add(item.get("claim", "").lower())
     for item in bl_blocked:
+        blocked_texts.add(item.get("claim", "").lower())
+    for item in gl_blocked:
         blocked_texts.add(item.get("claim", "").lower())
     clean_count = 0
     for c in claims:
@@ -1056,6 +1133,6 @@ COMPETITOR RELEASE(S): {competitor}
 """
 
     # ── PRE-VERIFIED SOURCE DATA (CVD-organized) ──
-    prompt += _build_cvd_source_block(full_data)
+    prompt += _build_cvd_source_block(full_data, platform=platform)
 
     return prompt

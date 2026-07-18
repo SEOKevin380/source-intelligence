@@ -31,7 +31,7 @@ from config import (
     ANTHROPIC_API_KEY, PUBMED_SEARCH_URL, PUBMED_FETCH_URL,
     PUBMED_DELAY, PUBMED_MAX_RESULTS, PUBMED_MAX_INGREDIENTS,
     INGREDIENT_DB_PATH, OUTPUT_DIR, USER_AGENT,
-    ACCESSWIRE_BLOCKLIST, YMYL_CATEGORIES, CLAIM_RED_FLAGS,
+    ACCESSWIRE_BLOCKLIST, GLOBE_BLOCKLIST, YMYL_CATEGORIES, CLAIM_RED_FLAGS,
     HEDGE_ALTERNATIVES, SITE_CATEGORIES, PUBMED_API_KEY,
     CVD9_DISEASE_TERMS, CVD9_REVERSAL_VERBS,
 )
@@ -2689,7 +2689,7 @@ def phase7_compliance_check(product_data):
             pr_fields.append(val)
         elif isinstance(val, list):
             pr_fields.extend(str(v) for v in val)
-    for ing in product_data.get("ingredients", []):
+    for ing in product_data.get("supplement_facts", {}).get("ingredients", []):
         if isinstance(ing, dict):
             pr_fields.append(ing.get("name", ""))
             pr_fields.append(ing.get("description", ""))
@@ -2697,7 +2697,7 @@ def phase7_compliance_check(product_data):
             pr_fields.append(ing)
     for claim in product_data.get("claims", []):
         if isinstance(claim, dict):
-            pr_fields.append(claim.get("text", ""))
+            pr_fields.append(claim.get("claim", claim.get("text", "")))
         elif isinstance(claim, str):
             pr_fields.append(claim)
     all_text = " ".join(pr_fields).lower()
@@ -2725,6 +2725,33 @@ def phase7_compliance_check(product_data):
     if product_data.get("pricing"):
         disclaimers.append("Affiliate disclosure: This article may contain affiliate links.")
 
+    # Globe Newswire blocklist check — scan claims and product fields against
+    # Globe's Categories A-K phrase blocklist (zero tolerance on Globe platform)
+    globe_flagged_categories = {}
+    globe_flagged_terms = []
+    globe_blocked_claims = []
+    for cat_key, cat_terms in GLOBE_BLOCKLIST.items():
+        for term in cat_terms:
+            term_lower = term.lower()
+            if term_lower in all_text:
+                globe_flagged_terms.append(term)
+                globe_flagged_categories.setdefault(cat_key, []).append(term)
+    # Check individual claims for Globe blocklist terms
+    for claim_obj in claims:
+        claim_text = claim_obj.get("claim", "") if isinstance(claim_obj, dict) else str(claim_obj)
+        claim_lower = claim_text.lower()
+        matched = []
+        for cat_key, cat_terms in GLOBE_BLOCKLIST.items():
+            for term in cat_terms:
+                if term.lower() in claim_lower:
+                    matched.append(f"{cat_key}: {term}")
+        if matched:
+            globe_blocked_claims.append({
+                "claim": claim_text,
+                "matched_terms": matched,
+                "reason": f"Globe blocklist: {', '.join(matched)}",
+            })
+
     compliance = {
         "ymyl_category": f"Health - {category.replace('_', ' ').title()}",
         "risk_level": risk_level,
@@ -2743,6 +2770,15 @@ def phase7_compliance_check(product_data):
             "passes": category not in ("male_enhancement",),
             "notes": "Male enhancement — manual review recommended (you've published this category before)" if category == "male_enhancement" else "Category allowed",
         },
+        "globe_compliance": {
+            "passes": len(globe_flagged_terms) == 0 and len(globe_blocked_claims) == 0,
+            "flagged_terms": globe_flagged_terms,
+            "flagged_categories": globe_flagged_categories,
+            "blocked_claims": globe_blocked_claims,
+            "notes": "Globe v1.12 Categories A-K phrase blocklist" + (
+                f" — {len(globe_blocked_claims)} claims auto-excluded from Globe prompt" if globe_blocked_claims else ""
+            ),
+        },
     }
 
     _emit(f"  Claims audited: {len(claims)}")
@@ -2752,6 +2788,7 @@ def phase7_compliance_check(product_data):
     _emit(f"  AccessWire blocklist: {'PASS' if not flagged_terms else f'FAIL ({len(flagged_terms)} terms)'}")
     if blocklist_blocked_claims:
         _emit(f"  Blocklist-blocked claims: {len(blocklist_blocked_claims)} claims contain banned terms (will be excluded from prompt)")
+    _emit(f"  Globe blocklist: {'PASS' if not globe_flagged_terms else f'FAIL ({len(globe_flagged_terms)} terms across {len(globe_flagged_categories)} categories)'}")
 
     return compliance
 
@@ -2902,7 +2939,11 @@ def format_source_document(product_data, ingredient_research, safety_data, keywo
         lines.append("| Package | Price | Per Unit | Shipping |")
         lines.append("|---------|-------|----------|----------|")
         for p in pricing:
-            lines.append(f"| {p.get('package', '')} | {p.get('price', '')} | {p.get('per_unit', '')} | {p.get('shipping', '')} |")
+            # BuyGoods extraction uses 'total' key; Claude extraction uses 'price' — check both
+            price_val = p.get('price', '') or p.get('total', '')
+            if price_val and not str(price_val).startswith('$'):
+                price_val = f"${price_val}"
+            lines.append(f"| {p.get('package', '')} | {price_val} | {p.get('per_unit', '')} | {p.get('shipping', '')} |")
         lines.append("")
 
     rp = product_data.get("refund_policy", {})
@@ -3028,6 +3069,13 @@ def format_source_document(product_data, ingredient_research, safety_data, keywo
         bc = compliance.get("barchart_compliance", {})
         bc_status = "PASS" if bc.get("passes") else "REVIEW"
         lines.append(f"- Barchart: {bc_status} — {bc.get('notes', '')}")
+
+        gc = compliance.get("globe_compliance", {})
+        gc_status = "PASS" if gc.get("passes") else "FAIL"
+        lines.append(f"- Globe Newswire: {gc_status}")
+        if not gc.get("passes") and gc.get("flagged_categories"):
+            for cat, terms in gc.get("flagged_categories", {}).items():
+                lines.append(f"  - {cat}: {', '.join(terms)}")
 
         audit = compliance.get("claim_audit", [])
         if audit:

@@ -92,6 +92,22 @@ st.markdown("""
 # AUTH GATE (with "Remember Me" via URL token)
 # ============================================================================
 
+def _get_secret(key):
+    """Get a secret from Streamlit secrets or environment variables."""
+    try:
+        if hasattr(st, "secrets") and key in st.secrets:
+            return st.secrets[key]
+    except Exception:
+        pass
+    # Also check legacy key name for backward compatibility
+    if key == "SI_APP_PASSWORD":
+        try:
+            if hasattr(st, "secrets") and "app_password" in st.secrets:
+                return st.secrets["app_password"]
+        except Exception:
+            pass
+    return os.environ.get(key, "")
+
 def _make_auth_token(password):
     return hashlib.sha256(f"si-{password}-salt2026".encode()).hexdigest()[:16]
 
@@ -100,18 +116,21 @@ if "authenticated" not in st.session_state:
 
 # Check URL token first — auto-login if valid
 if not st.session_state.authenticated:
-    app_pw = st.secrets.get("app_password", "sourceintel2026")
+    app_pw = _get_secret("SI_APP_PASSWORD")
     url_token = st.query_params.get("t", "")
-    if url_token and url_token == _make_auth_token(app_pw):
+    if app_pw and url_token and url_token == _make_auth_token(app_pw):
         st.session_state.authenticated = True
 
 if not st.session_state.authenticated:
     st.title("Source Intelligence Tool")
+    app_pw = _get_secret("SI_APP_PASSWORD")
+    if not app_pw:
+        st.error("No app password configured. Set `SI_APP_PASSWORD` in Streamlit secrets or environment.")
+        st.stop()
     st.markdown("Enter the team password to continue.")
     password = st.text_input("Password", type="password", key="login_pw")
     remember = st.checkbox("Remember me on this browser", value=True)
-    app_pw = st.secrets.get("app_password", "sourceintel2026")
-    if password and password == app_pw:
+    if password and app_pw and password == app_pw:
         st.session_state.authenticated = True
         if remember:
             st.query_params["t"] = _make_auth_token(app_pw)
@@ -119,6 +138,21 @@ if not st.session_state.authenticated:
     elif password:
         st.error("Incorrect password.")
     st.stop()
+
+
+def _build_form_values_from_result(data):
+    """Build form_values dict from a loaded result's data for the results phase."""
+    product = data.get("product", {})
+    return {
+        "product_url": product.get("official_url", ""),
+        "product_name": product.get("product_name", "Unknown"),
+        "rd_affiliate": "",
+        "rd_platform": "Barchart Advertorial",
+        "rd_previous": "FIRST RELEASE",
+        "rd_competitor": "",
+        "rd_client_title": "",
+        "rd_notes": "",
+    }
 
 
 # ============================================================================
@@ -180,11 +214,14 @@ if existing:
             json_path = os.path.join(OUTPUT_DIR, fname)
             md_path = json_path.replace("_source.json", "_source_report.md")
             with open(json_path) as f:
-                st.session_state.result_data = json.load(f)
+                loaded_data = json.load(f)
+            st.session_state.result_data = loaded_data
             if os.path.exists(md_path):
                 with open(md_path) as f:
                     st.session_state.result_report = f.read()
             st.session_state.result_json_path = json_path
+            # Populate form_values from loaded report so results phase has context
+            st.session_state.form_values = _build_form_values_from_result(loaded_data)
             st.session_state.show_form = False
             st.rerun()
 else:
@@ -565,12 +602,25 @@ else:
     aw_pass = compliance_data.get("accesswire_blocklist_check", {}).get("passes", False)
     bc_pass = compliance_data.get("barchart_compliance", {}).get("passes", False)
 
+    gc_pass = compliance_data.get("globe_compliance", {}).get("passes", False)
+
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Ingredients", ing_count)
     m2.metric("PubMed Studies", study_count)
     m3.metric("Risk Level", risk)
-    m4.metric("AccessWire", "PASS" if aw_pass else "FAIL")
-    m5.metric("Barchart", "PASS" if bc_pass else "REVIEW")
+
+    # Platform-aware compliance metrics
+    is_globe_platform = "globe" in rd_platform.lower()
+    is_barchart_platform = "barchart" in rd_platform.lower()
+    if is_globe_platform:
+        m4.metric("Globe", "PASS" if gc_pass else "FAIL")
+        m5.metric("R12 (ACW)", "PASS" if aw_pass else "FAIL")
+    elif is_barchart_platform:
+        m4.metric("R12 (ACW)", "PASS" if aw_pass else "FAIL")
+        m5.metric("Barchart", "PASS" if bc_pass else "REVIEW")
+    else:
+        m4.metric("AccessWire", "PASS" if aw_pass else "FAIL")
+        m5.metric("Barchart", "PASS" if bc_pass else "REVIEW")
 
     st.divider()
 
@@ -615,7 +665,12 @@ else:
         ], key="layer_type")
     else:
         layer_type = "L6: MBK Production"
-        st.caption(f"Platform: **{rd_platform}** — MBK production submission (paste into Claude project, system runs autonomously)")
+        if is_globe_platform:
+            st.caption(f"Platform: **{rd_platform}** — Globe v1.12 Format C submission (brand-as-subject voice, paste into Globe project)")
+        elif is_barchart_platform:
+            st.caption(f"Platform: **{rd_platform}** — Barchart v2.4 submission (ACW rules + B1-B4 overlay, paste into Barchart project)")
+        else:
+            st.caption(f"Platform: **{rd_platform}** — ACW/NW v2.16 submission (paste into platform project, system runs autonomously)")
 
     # Build the prompt based on selection
     prompt = ""
@@ -836,7 +891,7 @@ else:
         # --- Compliance ---
         with detail_tabs[4]:
             if compliance_data:
-                c1, c2, c3 = st.columns(3)
+                c1, c2, c3, c4 = st.columns(4)
                 with c1:
                     color = {"High": "🔴", "Very High": "🔴", "Moderate": "🟡", "Low": "🟢"}.get(risk, "⚫")
                     st.markdown(f"**Risk Level:** {color} {risk}")
@@ -844,6 +899,20 @@ else:
                     st.markdown(f"**AccessWire:** {'✅ PASS' if aw_pass else '❌ FAIL'}")
                 with c3:
                     st.markdown(f"**Barchart:** {'✅ PASS' if bc_pass else '⚠️ REVIEW'}")
+                with c4:
+                    st.markdown(f"**Globe:** {'✅ PASS' if gc_pass else '❌ FAIL'}")
+
+                # Globe-specific compliance detail
+                gc_data = compliance_data.get("globe_compliance", {})
+                if not gc_data.get("passes") and gc_data.get("flagged_categories"):
+                    st.markdown(f"### Globe Phrase Blocklist Flags")
+                    st.warning(
+                        "These terms/phrases are confirmed Globe rejection triggers (Categories A-K). "
+                        "The production system must avoid them entirely when targeting Globe Newswire."
+                    )
+                    for cat, terms in gc_data.get("flagged_categories", {}).items():
+                        cat_label = cat.split("_", 1)[-1].replace("_", " ").title() if "_" in cat else cat
+                        st.error(f"**Category {cat.split('_')[0]}** ({cat_label}): {', '.join(terms)}")
 
                 bl_blocked = compliance_data.get("accesswire_blocklist_check", {}).get("blocked_claims", [])
                 if bl_blocked:
