@@ -2634,16 +2634,19 @@ def phase7_compliance_check(product_data):
 
         claim_lower = claim_text.lower()
         for flag in CLAIM_RED_FLAGS:
-            if flag.lower() in claim_lower:
+            # Use word boundary matching to avoid partial-word false positives
+            # (e.g., "treated" in "5,000 men treated" is NOT a disease-treatment claim)
+            flag_pattern = re.compile(r'\b' + re.escape(flag.lower()) + r'\b', re.IGNORECASE)
+            if flag_pattern.search(claim_lower):
                 issues.append(f"Contains '{flag}' — must hedge for YMYL compliance")
                 # Try to find a hedge replacement (match stems: "reverse"/"reverses", etc.)
                 for original, replacement in HEDGE_ALTERNATIVES.items():
                     orig_lower = original.lower()
-                    # Match exact or stem (e.g., "reverse" matches "reverses")
-                    if orig_lower in claim_lower or orig_lower.rstrip("s") in claim_lower:
-                        # Find the actual word in the claim to replace
-                        pattern = re.compile(re.escape(orig_lower.rstrip("s")) + r'e?s?', re.IGNORECASE)
-                        safe_alt = pattern.sub(replacement, claim_text)
+                    # Use word boundary regex for replacement to avoid partial-word garbling
+                    stem = orig_lower.rstrip("s")
+                    word_pattern = re.compile(r'\b' + re.escape(stem) + r'(?:e?s?)?\b', re.IGNORECASE)
+                    if word_pattern.search(claim_lower):
+                        safe_alt = word_pattern.sub(replacement, claim_text)
                         break
 
         if issues:

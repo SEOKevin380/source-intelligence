@@ -749,46 +749,42 @@ Source Tool: MBK Source Intelligence Tool
 Data Sources: Live page fetch + PubMed API + Claude vision OCR
 Official URL: {product.get('official_url', '')}
 
-This submission includes pre-verified research data organized by CVD-5
-verification categories. Use the data below as-is — it IS your Phase 0.0/0.1
-verified-facts inventory. Do NOT independently re-fetch, re-scrape, or
-re-verify any URLs, policy pages, brand sites, or affiliate links. The data
-below is final. All SEO strategy, archetype selection, and angle differentiation
-should be determined by your own real-time SERP analysis — this data feeds
-facts only.
+PHASE 0.0 STATUS: COMPLETED EXTERNALLY
+The Source Intelligence Tool has already performed live page fetches on the
+official URL, policy pages, and affiliate link — satisfying CVD-1 live-source
+requirements. The verified data is organized below by CVD-5 categories.
+Re-fetching these URLs is unnecessary and would duplicate completed work.
+All SEO strategy, archetype selection, and angle differentiation should be
+determined by your own real-time SERP analysis — this data feeds facts only.
 
 Marketing claims below have been pre-screened. Claims that failed compliance
-review (disease-reversal language, banned advertorial terms) have already been
-removed — only publishable claims are included. Claims marked with hedging
-suggestions should use the softened version provided.
+review (CVD-9 disease-reversal language, R12 banned terms, Globe A-K phrases)
+have already been removed — only publishable claims are included. Claims
+marked with hedging suggestions should use the softened version provided.
 
-WORKFLOW — MANDATORY, NO EXCEPTIONS:
-1. Accept ALL data below as pre-verified. Do NOT run your own Phase 0.0
-   page fetches. Do NOT visit the product URL, brand site, or affiliate link
-   to independently verify. The Source Intelligence Tool already did this.
-2. Skip Phase 0.0 source-page fetch entirely. Begin at Phase 0.1 using the
-   CVD categories below as your verified-facts inventory.
-3. Proceed directly through all remaining phases to finished draft output.
-4. Do NOT pause for confirmation between phases — the operator is a VA who
+WORKFLOW:
+1. Phase 0.0 (source-page fetch) is complete — use the CVD categories below
+   as your verified-facts inventory for Phase 0.1.
+2. Proceed through all remaining phases to finished draft output.
+3. Do NOT pause for confirmation between phases — the operator is a VA who
    cannot answer mid-process questions.
-5. If you notice data conflicts, gaps, or discrepancies: document them in
-   the Material Limitations section and CONTINUE DRAFTING with the best
-   available data. Never halt. Never ask for human input.
-6. Output a complete, publish-ready draft in a single response.
+4. If you notice data conflicts, gaps, or discrepancies: document them in
+   the Material Limitations section and continue drafting with the best
+   available data.
+5. Output a complete, publish-ready draft in a single response.
 
-CRITICAL — WRITE WITH AVAILABLE FACTS, NEVER HALT:
+HANDLING INCOMPLETE DATA:
 Some CVD categories below may show "NO DATA" — this means the information
-was not available at research time, NOT that you should halt or refuse to
-draft. This is NORMAL for first-to-market releases where source data is
-incomplete. Write the release using every fact that IS available:
+was not available at research time. This is normal for first-to-market
+releases where source data is incomplete. Write the release using every
+fact that IS available:
 - No ingredients? Write from product positioning, claims, and category.
 - No pricing? Omit pricing references, direct reader to official site.
 - No guarantee details? Omit guarantee claims from draft.
 - No contact info? Use brand name only.
 - No clinical research? Write from claims and positioning, not studies.
-Never fabricate missing data. Never halt on missing categories. Never ask
-the operator to "confirm" or "clarify" anything. Note gaps in Material
-Limitations and deliver the finished draft.
+Never fabricate missing data. Note gaps in Material Limitations and
+deliver the finished draft.
 
 """
 
@@ -818,6 +814,19 @@ Limitations and deliver the finished draft.
 - B2: Zero platform furniture (no sidebar, header, or nav references)
 - B3: 'Fake Testimonial Hype' title pattern is confirmed approved on Barchart.
 - B4: R12 blocklist applies in full.
+
+"""
+
+    # Telehealth/prescription product context — changes the safety calculus
+    product_type = product.get("product_type", "supplement")
+    if product_type == "telehealth":
+        block += """PRODUCT TYPE: TELEHEALTH / PRESCRIPTION
+This is a prescription product dispensed under licensed physician supervision,
+NOT an unregulated over-the-counter supplement. The prescribing physician makes
+dosing and combination decisions for each patient individually. Content should
+reflect this distinction — the article covers the telehealth program and its
+offerings, not self-medication advice. Drug interaction data in C6 below is
+provided for reader awareness, not as a contraindication for the product itself.
 
 """
 
