@@ -2752,6 +2752,14 @@ def phase7_compliance_check(product_data):
                 "reason": f"Globe blocklist: {', '.join(matched)}",
             })
 
+    # Remove CVD-9 blocked claims from the hedging audit — these are DROP not HEDGE.
+    # A claim like "Reverses Type 2 Diabetes" should be excluded entirely, not softened.
+    cvd9_blocked_texts = {item["claim"].lower() for item in cvd9_blocked}
+    claim_audit = [
+        item for item in claim_audit
+        if item["claim"].lower() not in cvd9_blocked_texts
+    ]
+
     compliance = {
         "ymyl_category": f"Health - {category.replace('_', ' ').title()}",
         "risk_level": risk_level,

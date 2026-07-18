@@ -433,6 +433,14 @@ Globe: {'PASS' if compliance.get('globe_compliance', {}).get('passes', True) els
     if not claims or clean_count == 0:
         block += "No marketing claims available. Build from ingredient research.\n"
 
+    # CVD-9 blocked claims — disease-reversal claims DROPPED entirely
+    if cvd9_claims:
+        block += f"\n--- CVD-9 BLOCKED ({len(cvd9_claims)} disease-reversal claims DROPPED) ---\n"
+        for item in cvd9_claims:
+            block += f"DROPPED: \"{item.get('claim', '')}\"\n"
+            block += f"Reason: {item.get('reason', '')}\n"
+        block += "Do NOT reintroduce, soften, or attribute these claims.\n"
+
     # Hedging suggestions for claims that need softened language
     flagged = compliance.get("claim_audit", [])
     if flagged:
@@ -1028,6 +1036,16 @@ Limitations and deliver the finished draft.
         block += f"R12 Blocklist (ACW): {'PASS' if aw.get('passes') else 'FAIL — avoid these terms in output: ' + str(aw.get('flagged_terms', []))}\n"
 
     block += f"Risk Level: {compliance.get('risk_level', 'Unknown')}\n"
+
+    # CVD-9 blocked claims — disease-reversal claims that were DROPPED entirely
+    cvd9 = compliance.get("cvd9_blocked_claims", [])
+    if cvd9:
+        block += f"\nCVD-9 BLOCKED ({len(cvd9)} disease-reversal claims DROPPED — not hedgeable):\n"
+        for item in cvd9:
+            block += f"  DROPPED: \"{item.get('claim', '')}\"\n"
+            block += f"  Reason: {item.get('reason', '')}\n"
+        block += "These claims have been removed from the marketing claims section below.\n"
+        block += "Do NOT reintroduce, soften, hedge, or attribute them — they are excluded.\n"
 
     # Flagged claims — hedging suggestions (not blocked, just need softened language)
     flagged = compliance.get("claim_audit", [])
