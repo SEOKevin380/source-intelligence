@@ -153,6 +153,14 @@ class BrowserSession:
         if not self.available:
             return ""
 
+        # Validate URL before browser navigation (SSRF protection)
+        try:
+            from net import validate_url
+            validate_url(url)
+        except ValueError as e:
+            self._log(f"URL blocked: {e}")
+            return ""
+
         page = None
         try:
             page = self._context.new_page()
