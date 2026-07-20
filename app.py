@@ -899,6 +899,55 @@ else:
     st.divider()
 
     # ================================================================
+    # QUICK EXPORT — Always visible, zero clicks
+    # ================================================================
+    # Build a default prompt so the user can grab it immediately
+    _quick_intake = {
+        "platform": rd_platform,
+        "affiliate_link": rd_affiliate or "TRAFFIC-FIRST",
+        "previous_releases": rd_previous or "FIRST RELEASE",
+        "release_type": "Single Product",
+        "ymyl_category": "Yes" if compliance_data.get("risk_level") in ["High", "Very High", "Moderate"] else "No",
+        "competitor_release": rd_competitor or "",
+        "editor_title": rd_client_title or "",
+        "notes": rd_notes or "",
+    }
+    _quick_prompt = build_l6_press_release_prompt(data, _quick_intake)
+    _quick_slug = name.lower().replace(" ", "-")
+    _quick_json = json.dumps(data, indent=2, default=str)
+
+    st.markdown("#### Use with Claude")
+    qe_col1, qe_col2, qe_col3 = st.columns(3)
+    with qe_col1:
+        st.download_button(
+            "Download Prompt (.txt)",
+            data=_quick_prompt,
+            file_name=f"{_quick_slug}_prompt.txt",
+            mime="text/plain",
+            use_container_width=True,
+        )
+    with qe_col2:
+        st.download_button(
+            "Download Source Data (.json)",
+            data=_quick_json,
+            file_name=f"{_quick_slug}_source_data.json",
+            mime="application/json",
+            use_container_width=True,
+        )
+    with qe_col3:
+        report_md = st.session_state.get("result_report", "")
+        st.download_button(
+            "Download Report (.md)",
+            data=report_md if report_md else "No report available",
+            file_name=f"{_quick_slug}_report.md",
+            mime="text/markdown",
+            use_container_width=True,
+        )
+    st.caption("Download the prompt → upload or paste into [Claude](https://claude.ai). For persistent access, upload the .json to a Claude Project.")
+
+    st.divider()
+
+    # ================================================================
     # 4-TAB INTERFACE
     # ================================================================
 
