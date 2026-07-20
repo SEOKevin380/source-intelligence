@@ -423,19 +423,19 @@ if CRM_AVAILABLE and db:
                 ):
                     # Load product from DB
                     product_rec = db.get_product(pkey)
-                if product_rec and product_rec.get("research_data"):
-                    st.session_state.result_data = product_rec["research_data"]
-                    st.session_state.result_json_path = os.path.join(
-                        OUTPUT_DIR, f"{pkey}_source.json"
-                    )
-                    st.session_state.form_values = _build_form_values_from_result(
-                        product_rec["research_data"]
-                    )
-                    st.session_state.selected_product_key = pkey
-                    st.session_state.show_form = False
-                    st.rerun()
-                elif product_rec:
-                    st.sidebar.warning(f"No research data for {pname} — run research first")
+                    if product_rec and product_rec.get("research_data"):
+                        st.session_state.result_data = product_rec["research_data"]
+                        st.session_state.result_json_path = os.path.join(
+                            OUTPUT_DIR, f"{pkey}_source.json"
+                        )
+                        st.session_state.form_values = _build_form_values_from_result(
+                            product_rec["research_data"]
+                        )
+                        st.session_state.selected_product_key = pkey
+                        st.session_state.show_form = False
+                        st.rerun()
+                    elif product_rec:
+                        st.sidebar.warning(f"No research data for {pname} — run research first")
 
         if len(products) > 30:
             st.sidebar.caption(f"Showing 30 of {len(products)} products")
