@@ -239,11 +239,24 @@ def _validate_url(url):
     return validate_url(url)
 
 
+# Government/scientific API domains — NEVER allow TLS fallback for these.
+# They have valid certificates; fallback would enable MITM attacks.
+GOVERNMENT_API_DOMAINS = frozenset({
+    "eutils.ncbi.nlm.nih.gov",
+    "api.ods.od.nih.gov",
+    "dsld.od.nih.gov",
+    "api.fda.gov",
+    "pubmed.ncbi.nlm.nih.gov",
+})
+
+
 def fetch_url(url, max_bytes=60000, verify_tls=True):
     """Fetch a URL's content with proper headers. Returns text or empty string.
 
     Delegates to net.safe_fetch() for hardened network fetching with
     streaming reads, redirect validation, and provenance metadata.
+
+    TLS fallback is disabled for government/scientific APIs.
 
     Args:
         url: URL to fetch
@@ -254,15 +267,57 @@ def fetch_url(url, max_bytes=60000, verify_tls=True):
     from net import safe_fetch
     if not url:
         return ""
+
+    # Never allow TLS fallback for government/scientific APIs
+    parsed_host = urllib.parse.urlparse(url).hostname or ""
+    is_gov_api = parsed_host in GOVERNMENT_API_DOMAINS
+
     result = safe_fetch(
         url,
         max_bytes=max_bytes,
         verify_tls=verify_tls,
-        allow_tls_fallback=verify_tls,  # fallback only when TLS was requested
+        allow_tls_fallback=verify_tls and not is_gov_api,
     )
     if result.error:
         _emit(f"  [!] Fetch issue for {url}: {result.error}")
     return result.text
+
+
+def fetch_url_with_provenance(url, max_bytes=60000, verify_tls=True):
+    """Fetch URL and return text + provenance metadata.
+
+    Returns dict with 'text' and 'provenance' keys. Provenance includes
+    fetched_at, content_hash, tls_verified, final_url, status_code, elapsed_ms.
+    """
+    from net import safe_fetch
+    if not url:
+        return {"text": "", "provenance": {}}
+
+    parsed_host = urllib.parse.urlparse(url).hostname or ""
+    is_gov_api = parsed_host in GOVERNMENT_API_DOMAINS
+
+    result = safe_fetch(
+        url,
+        max_bytes=max_bytes,
+        verify_tls=verify_tls,
+        allow_tls_fallback=verify_tls and not is_gov_api,
+    )
+
+    provenance = {
+        "url": url,
+        "fetched_at": result.fetched_at,
+        "content_hash": result.content_hash,
+        "tls_verified": result.tls_verified,
+        "final_url": result.final_url,
+        "status_code": result.status_code,
+        "elapsed_ms": result.elapsed_ms,
+        "error": result.error or None,
+    }
+
+    if result.error:
+        _emit(f"  [!] Fetch issue for {url}: {result.error}")
+
+    return {"text": result.text, "provenance": provenance}
 
 
 def strip_html(html):
@@ -668,12 +723,13 @@ def _try_woocommerce_api(url):
 
 
 def _query_dsld(product_name, brand_name=""):
-    """Query the NIH Dietary Supplement Label Database for verified label data.
+    """Query the NIH Dietary Supplement Label Database for label records.
 
-    DSLD contains government-verified supplement facts panels. When a match is
-    found, this is the highest-quality ingredient data available — more reliable
-    than scraping or OCR. Returns dict with ingredients, serving info, contact,
-    and DSLD label ID, or empty dict if no match.
+    DSLD contains manufacturer-submitted supplement facts panels registered
+    with the NIH. When a match is found, this provides structured ingredient
+    data from the label — more reliable than scraping or OCR. Returns dict
+    with ingredients, serving info, contact, and DSLD label ID, or empty dict
+    if no match.
     """
     if not product_name:
         return {}
@@ -734,24 +790,39 @@ def _query_dsld(product_name, brand_name=""):
             unique_query = query_words - generic_words
             unique_hit = hit_words - generic_words
 
-            # Require MAJORITY of query's unique words to appear in the hit
-            # "Cardio Slim Tea" unique = {"cardio"}, hit "Green Tea Slim" unique = {} → no match
+            # Guard: overall name similarity must be reasonable
+            from difflib import SequenceMatcher
+            name_similarity = SequenceMatcher(None, query_lower, full_name).ratio()
+            if name_similarity < 0.4:
+                continue  # Names too dissimilar — skip this candidate
+
+            # Tiered matching — stricter when fewer unique words
             if unique_query:
                 unique_overlap = unique_query & unique_hit
                 overlap_ratio = len(unique_overlap) / len(unique_query)
-                if overlap_ratio >= 0.5 and len(unique_overlap) >= 1:
-                    best_hit = hit
-                    break
+
+                if len(unique_query) == 1:
+                    # Single unique word is NOT enough alone — too many false positives
+                    # e.g., "Cardio Slim Tea" → "Cardio Miracle" (both have "cardio")
+                    # Require high overall name similarity to compensate
+                    if overlap_ratio >= 1.0 and name_similarity >= 0.65:
+                        best_hit = hit
+                        break
+                elif len(unique_query) >= 2:
+                    # 2+ unique words: require most of them to match
+                    if overlap_ratio >= 0.75 and len(unique_overlap) >= 2:
+                        best_hit = hit
+                        break
             else:
                 # No unique words (e.g., "Nerve Support") — require exact match
                 if full_name == query_lower:
                     best_hit = hit
                     break
 
-            # Or if the brand matches AND there's some word overlap
+            # Brand match fallback: brand must match AND reasonable name similarity
             hit_brand = (src.get("brandName") or "").lower()
             overlap = query_words & hit_words
-            if brand_name and brand_name.lower() == hit_brand and overlap:
+            if brand_name and brand_name.lower() == hit_brand and overlap and name_similarity >= 0.4:
                 best_hit = hit
                 break
 
@@ -1965,7 +2036,7 @@ Return ONLY valid JSON with this exact structure:
             ingredient_count = len(enrichment)
             _emit(f"  [ENRICHMENT] Found {ingredient_count} ingredients via targeted search")
 
-    # Layer 5b: NIH DSLD cross-reference — government-verified label data
+    # Layer 5b: NIH DSLD cross-reference — NIH DSLD label records
     product_type = data.get("product_type", "supplement")
     if product_type in ("supplement", "food", "topical"):
         pname = data.get("product_name", product_name or "")
@@ -3336,7 +3407,7 @@ def format_source_document(product_data, ingredient_research, safety_data, keywo
         lines.append("")
 
     # Section 3: Ingredient Research
-    lines.append("## 3. INGREDIENT RESEARCH (PubMed-Verified)")
+    lines.append("## 3. INGREDIENT RESEARCH (PubMed-Sourced)")
     if ingredient_research:
         for ing_name, data in ingredient_research.items():
             lines.append(f"\n### {ing_name}")
@@ -3712,16 +3783,16 @@ def research_product(url=None, vsl_url=None, product_name=None, quick=False, lab
             if label_result:
                 if isinstance(label_result, dict):
                     ings = label_result["ingredients"]
-                    _emit(f"  Label override: {len(ings)} verified ingredients from label image")
+                    _emit(f"  Label override: {len(ings)} extracted ingredients from label image")
                     product_data["supplement_facts"]["ingredients"] = ings
                     if label_result.get("serving_size"):
                         product_data["supplement_facts"]["serving_size"] = label_result["serving_size"]
                     if label_result.get("servings_per_container"):
                         product_data["supplement_facts"]["servings_per_container"] = label_result["servings_per_container"]
                 else:
-                    _emit(f"  Label override: {len(label_result)} verified ingredients from label image")
+                    _emit(f"  Label override: {len(label_result)} extracted ingredients from label image")
                     product_data["supplement_facts"]["ingredients"] = label_result
-                product_data["supplement_facts"]["_source"] = "label_image_verified"
+                product_data["supplement_facts"]["_source"] = "label_image_extracted"
             else:
                 _emit("  [!] Label image provided but no ingredients extracted")
                 _emit("      Make sure the image URL points to a clear Supplement Facts label photo")
@@ -3897,7 +3968,7 @@ def update_research(existing_data, new_url=None, new_label_url=None, new_notes=N
                     product["supplement_facts"]["servings_per_container"] = label_result["servings_per_container"]
             else:
                 product["supplement_facts"]["ingredients"] = label_result
-            product["supplement_facts"]["_source"] = "label_image_verified"
+            product["supplement_facts"]["_source"] = "label_image_extracted"
             _emit(f"  Label OCR: {len(product['supplement_facts']['ingredients'])} ingredients extracted")
             updated = True
         else:
@@ -4004,7 +4075,7 @@ def main():
     parser.add_argument("--url", help="Product URL to research")
     parser.add_argument("--vsl", help="VSL/video sales letter URL")
     parser.add_argument("--name", help="Product name (if no URL available)")
-    parser.add_argument("--label", help="Path to supplement facts label image (JPG/PNG) — uses Claude vision to extract verified ingredients")
+    parser.add_argument("--label", help="Path to supplement facts label image (JPG/PNG) — uses Claude vision to extract ingredients")
     parser.add_argument("--csv", help="CSV file with products to research (columns: product_name,source_url)")
     parser.add_argument("--quick", action="store_true", help="Skip keyword research, reputation, competitive analysis")
     parser.add_argument("--gdrive", action="store_true", help="Upload report to Google Drive")

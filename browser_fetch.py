@@ -165,8 +165,8 @@ class BrowserSession:
         try:
             page = self._context.new_page()
 
-            # Block unnecessary resources for speed
-            page.route('**/*', self._route_handler)
+            # Block unnecessary resources + validate all outbound URLs (SSRF)
+            page.route('**/*', self._safe_route_handler)
 
             page.goto(url, wait_until=wait_until, timeout=timeout_ms)
 
@@ -223,8 +223,27 @@ class BrowserSession:
         """)
 
     @staticmethod
+    def _safe_route_handler(route):
+        """Block unnecessary resources AND validate all outbound URLs.
+
+        Every request the browser makes — including redirects, XHR, fetch() —
+        is validated against SSRF rules before being sent. This prevents
+        a malicious page from loading subresources from internal/private IPs.
+        """
+        resource_type = route.request.resource_type
+        if resource_type in ('image', 'media', 'font'):
+            route.abort()
+            return
+        try:
+            from net import validate_url
+            validate_url(route.request.url)
+            route.continue_()
+        except ValueError:
+            route.abort()
+
+    @staticmethod
     def _route_handler(route):
-        """Block unnecessary resources for faster page loads."""
+        """Block unnecessary resources for faster page loads. (Legacy, unused)"""
         resource_type = route.request.resource_type
         if resource_type in ('image', 'media', 'font'):
             route.abort()

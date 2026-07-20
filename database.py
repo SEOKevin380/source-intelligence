@@ -17,7 +17,7 @@ from typing import Optional
 _db_lock = threading.Lock()
 
 # Schema version — increment when adding migrations
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 
 def _slugify(name: str) -> str:
@@ -141,12 +141,12 @@ class ProductDatabase:
         current = self._get_schema_version()
         if current < 1:
             self._migrate_v1()
+        if current < 2:
+            self._migrate_v2()
         self._set_schema_version(CURRENT_SCHEMA_VERSION)
 
     def _migrate_v1(self):
         """V1 migration: Round 2 baseline — adds verification and CAERS columns."""
-        # These are safe to run even if columns already exist (IF NOT EXISTS
-        # isn't supported for ALTER TABLE, so we catch the error)
         for col_sql in [
             "ALTER TABLE products ADD COLUMN verification_state TEXT DEFAULT 'unverified'",
             "ALTER TABLE products ADD COLUMN caers_status TEXT DEFAULT ''",
@@ -157,21 +157,110 @@ class ProductDatabase:
                 pass  # Column already exists
         self.conn.commit()
 
-    def _execute_write(self, sql: str, params: tuple = ()):
-        """Thread-safe write operation."""
+    def _migrate_v2(self):
+        """V2 migration: Round 3 — freshness tracking, change detection, DSLD quarantine."""
+        # Add columns for hash-based freshness tracking
+        for col_sql in [
+            "ALTER TABLE products ADD COLUMN research_updated_at TEXT",
+            "ALTER TABLE products ADD COLUMN research_hash TEXT",
+        ]:
+            try:
+                self.conn.execute(col_sql)
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+
+        # Backfill research_updated_at from last_updated for researched products
+        self.conn.execute("""
+            UPDATE products
+            SET research_updated_at = last_updated
+            WHERE research_json IS NOT NULL AND research_updated_at IS NULL
+        """)
+
+        # Backfill research_hash for existing records
+        rows = self.conn.execute(
+            "SELECT id, research_json FROM products "
+            "WHERE research_json IS NOT NULL AND research_hash IS NULL"
+        ).fetchall()
+        for row in rows:
+            h = hashlib.sha256(row["research_json"].encode()).hexdigest()
+            self.conn.execute(
+                "UPDATE products SET research_hash = ? WHERE id = ?",
+                (h, row["id"])
+            )
+
+        # Quarantine known DSLD false matches
+        self._quarantine_dsld_false_matches()
+
+        self.conn.commit()
+
+    def _quarantine_dsld_false_matches(self):
+        """Clear DSLD data from products with known false DSLD matches.
+
+        Round 3 finding: "Cardio Slim Tea" matched "Cardio Miracle" and
+        "Glyco Reset Drops" matched "RnA ReSet Drops" in DSLD due to
+        overly permissive single-word matching.
+        """
+        quarantine_names = ["Cardio Slim Tea", "Glyco Reset Drops"]
+        for name in quarantine_names:
+            row = self.conn.execute(
+                "SELECT id, research_json FROM products WHERE product_name = ?",
+                (name,)
+            ).fetchone()
+            if not row or not row["research_json"]:
+                continue
+
+            try:
+                data = json.loads(row["research_json"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            # Check if DSLD data is present
+            product = data.get("product", {})
+            sf = product.get("supplement_facts", {})
+            has_dsld = sf.get("_dsld_id") or sf.get("source") == "dsld_label_record"
+            if not has_dsld:
+                continue
+
+            # Clear DSLD-specific fields
+            for key in ("_dsld_id", "_dsld_match_name", "_dsld_match_brand",
+                        "_verification_state"):
+                sf.pop(key, None)
+            if sf.get("source") == "dsld_label_record":
+                sf["source"] = "quarantined_dsld"
+                sf["ingredients"] = []  # DSLD was the ingredient source — clear it
+
+            data["product"]["supplement_facts"] = sf
+            # Remove cross-reference if present
+            data.pop("dsld_cross_reference", None)
+
+            self.conn.execute(
+                "UPDATE products SET research_json = ?, verification_state = ? WHERE id = ?",
+                (json.dumps(data), "quarantined_dsld", row["id"])
+            )
+
+    def _execute_write(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
+        """Thread-safe single write operation."""
         with _db_lock:
-            self.conn.execute(sql, params)
+            cursor = self.conn.execute(sql, params)
+            self.conn.commit()
+            return cursor
+
+    def _execute_write_batch(self, operations: list):
+        """Thread-safe batch write. operations = [(sql, params), ...]"""
+        with _db_lock:
+            for sql, params in operations:
+                self.conn.execute(sql, params)
             self.conn.commit()
 
     # ──────────────────────────────────────────────────────────────────
     # QUALITY CHECKS — Data integrity gates
     # ──────────────────────────────────────────────────────────────────
 
-    def compute_quality_score(self, research_data: dict) -> tuple:
+    def compute_completeness_score(self, research_data: dict) -> tuple:
         """
-        Compute a quality score (0-100) and flag list for research data.
-        This is the checks-and-balances system — ensures data meets
-        minimum thresholds before being considered "verified."
+        Compute a completeness score (0-100) and flag list for research data.
+        Measures data presence and coverage, NOT factual verification.
+        A high score means data fields are populated, not that facts are confirmed.
 
         Returns: (score: int, flags: list[str])
         """
@@ -233,14 +322,25 @@ class ProductDatabase:
         else:
             flags.append("WARNING: No pricing data extracted")
 
-        # PubMed research (max 15)
-        total_studies = sum(len(r.get("studies", [])) for r in ingredient_research.values())
-        if total_studies > 0:
-            score += 5
-            if total_studies >= 5:
-                score += 5
-            if total_studies >= 10:
-                score += 5
+        # PubMed research (max 15) — weight human studies more than animal/in-vitro
+        all_studies = []
+        for r in ingredient_research.values():
+            all_studies.extend(r.get("studies", []))
+        human_studies = [
+            s for s in all_studies
+            if "human_study" in s.get("relevance_tags", [])
+        ]
+        total_studies = len(all_studies)
+        human_count = len(human_studies)
+
+        if human_count >= 5:
+            score += 15  # Strong human evidence
+        elif human_count >= 2:
+            score += 10  # Some human evidence
+        elif total_studies >= 5:
+            score += 8   # Volume but no confirmed human studies
+        elif total_studies > 0:
+            score += 5   # Some evidence
         else:
             if ingredients:
                 flags.append("WARNING: No PubMed studies found despite having ingredients")
@@ -303,15 +403,15 @@ class ProductDatabase:
         # Cap at 100
         score = min(score, 100)
 
-        # Classify quality level
+        # Classify completeness level (NOT verification — score measures data presence)
         if score >= 80:
-            flags.insert(0, "QUALITY: VERIFIED — Ready for production")
+            flags.insert(0, "COMPLETENESS: FULL — Data sufficient for production")
         elif score >= 60:
-            flags.insert(0, "QUALITY: GOOD — Minor gaps, review before production")
+            flags.insert(0, "COMPLETENESS: GOOD — Minor gaps, review before production")
         elif score >= 40:
-            flags.insert(0, "QUALITY: PARTIAL — Significant gaps, manual data needed")
+            flags.insert(0, "COMPLETENESS: PARTIAL — Significant gaps, manual data needed")
         else:
-            flags.insert(0, "QUALITY: THIN — Major data gaps, re-research recommended")
+            flags.insert(0, "COMPLETENESS: THIN — Major data gaps, re-research recommended")
 
         return score, flags
 
@@ -326,13 +426,16 @@ class ProductDatabase:
 
         Detects key collisions: if product_key already exists with a DIFFERENT
         product name, appends a numeric suffix to avoid silent data merging.
+
+        Hash-based freshness: research_updated_at only changes when
+        research_json content actually changes (not on every touch).
         """
         product = research_data.get("product", {})
         now = datetime.utcnow().isoformat()
         new_name = product.get("product_name", product_key)
 
-        # Compute quality score
-        quality_score, quality_flags = self.compute_quality_score(research_data)
+        # Compute completeness score
+        quality_score, quality_flags = self.compute_completeness_score(research_data)
 
         # Count ingredients and studies
         sf = product.get("supplement_facts", {})
@@ -342,83 +445,100 @@ class ProductDatabase:
             for r in research_data.get("ingredient_research", {}).values()
         )
 
-        # Check for existing record
-        existing = self.conn.execute(
-            "SELECT id, research_version, product_name FROM products WHERE product_key = ?",
-            (product_key,)
-        ).fetchone()
-
-        # Collision detection: same key, different product name
-        if existing and existing["product_name"] and new_name:
-            existing_name_key = _slugify(existing["product_name"])
-            new_name_key = _slugify(new_name)
-            if existing_name_key != new_name_key:
-                # Collision! Different products mapped to same key.
-                # Append numeric suffix to create a distinct key.
-                import logging
-                logging.warning(
-                    f"Product key collision: '{product_key}' exists as "
-                    f"'{existing['product_name']}', new product '{new_name}'. "
-                    f"Creating distinct key."
-                )
-                suffix = 2
-                while True:
-                    candidate = f"{product_key}-{suffix}"
-                    check = self.conn.execute(
-                        "SELECT id FROM products WHERE product_key = ?",
-                        (candidate,)
-                    ).fetchone()
-                    if not check:
-                        product_key = candidate
-                        existing = None  # Force INSERT path
-                        break
-                    suffix += 1
-
         research_json = json.dumps(research_data)
+        new_hash = hashlib.sha256(research_json.encode()).hexdigest()
 
-        if existing:
-            version = (existing["research_version"] or 0) + 1
-            self.conn.execute("""
-                UPDATE products SET
-                    product_name = ?, brand = ?, product_type = ?, category = ?,
-                    product_url = ?, risk_level = ?, ingredient_count = ?,
-                    study_count = ?, research_json = ?, last_updated = ?,
-                    research_version = ?, quality_score = ?, quality_flags = ?
-                WHERE id = ?
-            """, (
-                product.get("product_name", product_key),
-                product.get("brand_name", ""),
-                product.get("product_type", "supplement"),
-                product.get("category", ""),
-                product.get("official_url", ""),
-                research_data.get("compliance", {}).get("risk_level", "Unknown"),
-                ing_count, study_count, research_json, now, version,
-                quality_score, json.dumps(quality_flags),
-                existing["id"],
-            ))
-            self.conn.commit()
-            return existing["id"]
-        else:
-            cursor = self.conn.execute("""
-                INSERT INTO products (
-                    product_key, product_name, brand, product_type, category,
-                    product_url, risk_level, ingredient_count, study_count,
-                    research_json, first_researched, last_updated,
-                    research_version, quality_score, quality_flags
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-            """, (
-                product_key,
-                product.get("product_name", product_key),
-                product.get("brand_name", ""),
-                product.get("product_type", "supplement"),
-                product.get("category", ""),
-                product.get("official_url", ""),
-                research_data.get("compliance", {}).get("risk_level", "Unknown"),
-                ing_count, study_count, research_json, now, now,
-                quality_score, json.dumps(quality_flags),
-            ))
-            self.conn.commit()
-            return cursor.lastrowid
+        # Atomic read-check-write under lock
+        with _db_lock:
+            # Check for existing record
+            existing = self.conn.execute(
+                "SELECT id, research_version, product_name, research_hash "
+                "FROM products WHERE product_key = ?",
+                (product_key,)
+            ).fetchone()
+
+            # Collision detection: same key, different product name
+            if existing and existing["product_name"] and new_name:
+                existing_name_key = _slugify(existing["product_name"])
+                new_name_key = _slugify(new_name)
+                if existing_name_key != new_name_key:
+                    import logging
+                    logging.warning(
+                        f"Product key collision: '{product_key}' exists as "
+                        f"'{existing['product_name']}', new product '{new_name}'. "
+                        f"Creating distinct key."
+                    )
+                    suffix = 2
+                    while True:
+                        candidate = f"{product_key}-{suffix}"
+                        check = self.conn.execute(
+                            "SELECT id FROM products WHERE product_key = ?",
+                            (candidate,)
+                        ).fetchone()
+                        if not check:
+                            product_key = candidate
+                            existing = None
+                            break
+                        suffix += 1
+
+            if existing:
+                version = (existing["research_version"] or 0) + 1
+                # Only update research_updated_at if content actually changed
+                old_hash = existing["research_hash"] if existing else None
+                research_changed = (old_hash is None or old_hash != new_hash)
+
+                if research_changed:
+                    self.conn.execute("""
+                        UPDATE products SET
+                            product_name = ?, brand = ?, product_type = ?, category = ?,
+                            product_url = ?, risk_level = ?, ingredient_count = ?,
+                            study_count = ?, research_json = ?, last_updated = ?,
+                            research_updated_at = ?, research_hash = ?,
+                            research_version = ?, quality_score = ?, quality_flags = ?
+                        WHERE id = ?
+                    """, (
+                        product.get("product_name", product_key),
+                        product.get("brand_name", ""),
+                        product.get("product_type", "supplement"),
+                        product.get("category", ""),
+                        product.get("official_url", ""),
+                        research_data.get("compliance", {}).get("risk_level", "Unknown"),
+                        ing_count, study_count, research_json, now, now, new_hash,
+                        version, quality_score, json.dumps(quality_flags),
+                        existing["id"],
+                    ))
+                else:
+                    # Data unchanged — update administrative timestamp only
+                    self.conn.execute("""
+                        UPDATE products SET
+                            last_updated = ?, quality_score = ?, quality_flags = ?
+                        WHERE id = ?
+                    """, (now, quality_score, json.dumps(quality_flags), existing["id"]))
+
+                self.conn.commit()
+                return existing["id"]
+            else:
+                cursor = self.conn.execute("""
+                    INSERT INTO products (
+                        product_key, product_name, brand, product_type, category,
+                        product_url, risk_level, ingredient_count, study_count,
+                        research_json, first_researched, last_updated,
+                        research_updated_at, research_hash,
+                        research_version, quality_score, quality_flags
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                """, (
+                    product_key,
+                    product.get("product_name", product_key),
+                    product.get("brand_name", ""),
+                    product.get("product_type", "supplement"),
+                    product.get("category", ""),
+                    product.get("official_url", ""),
+                    research_data.get("compliance", {}).get("risk_level", "Unknown"),
+                    ing_count, study_count, research_json, now, now, now, new_hash,
+                    quality_score, json.dumps(quality_flags),
+                ))
+                self.conn.commit()
+                return cursor.lastrowid
 
     def get_product(self, product_key: str) -> Optional[dict]:
         """Get full product record with parsed research JSON."""
@@ -491,10 +611,11 @@ class ProductDatabase:
         ).fetchone()
         if row:
             pid = row["id"]
-            self.conn.execute("DELETE FROM generation_log WHERE product_id = ?", (pid,))
-            self.conn.execute("DELETE FROM publications WHERE product_id = ?", (pid,))
-            self.conn.execute("DELETE FROM products WHERE id = ?", (pid,))
-            self.conn.commit()
+            self._execute_write_batch([
+                ("DELETE FROM generation_log WHERE product_id = ?", (pid,)),
+                ("DELETE FROM publications WHERE product_id = ?", (pid,)),
+                ("DELETE FROM products WHERE id = ?", (pid,)),
+            ])
 
     # ──────────────────────────────────────────────────────────────────
     # PUBLICATIONS
@@ -531,7 +652,7 @@ class ProductDatabase:
                 )
                 return None
 
-            cursor = self.conn.execute("""
+            cursor = self._execute_write("""
                 INSERT INTO publications (
                     product_id, site_key, site_name, post_url, slug,
                     slug_angle, content_type, platform, published_date, wp_post_id
@@ -548,7 +669,6 @@ class ProductDatabase:
                 row["id"], site_key, site_name, post_url, slug,
                 slug_angle, content_type, platform, published_date, wp_post_id,
             ))
-            self.conn.commit()
             return cursor.lastrowid
         except sqlite3.IntegrityError:
             return None
@@ -636,19 +756,28 @@ class ProductDatabase:
 
     def check_data_freshness(self, product_key: str, max_days: int = 30) -> dict:
         """
-        Check if research data is stale.
+        Check if research data is stale based on when content actually changed.
+        Uses research_updated_at (content-change timestamp), NOT last_updated
+        (administrative timestamp that refreshes on every touch).
+
         Returns: {"is_fresh": bool, "days_old": int, "message": str}
         """
         product = self.get_product(product_key)
         if not product:
             return {"is_fresh": False, "days_old": -1, "message": "Product not found"}
 
-        last_updated = product.get("last_updated", "")
-        if not last_updated:
-            return {"is_fresh": False, "days_old": -1, "message": "No update timestamp"}
+        # Prefer research_updated_at (only changes when data changes)
+        # Fall back to last_updated for pre-v2 records
+        timestamp = product.get("research_updated_at") or product.get("last_updated", "")
+        if not timestamp:
+            return {"is_fresh": False, "days_old": -1, "message": "No research timestamp"}
+
+        # Stubs (no research_json) are never fresh
+        if not product.get("research_json"):
+            return {"is_fresh": False, "days_old": -1, "message": "No research data (stub)"}
 
         try:
-            updated_dt = datetime.fromisoformat(last_updated)
+            updated_dt = datetime.fromisoformat(timestamp)
             age = (datetime.utcnow() - updated_dt).days
             if age <= max_days:
                 return {
@@ -683,13 +812,12 @@ class ProductDatabase:
         prompt_hash = hashlib.md5(prompt_text.encode()).hexdigest() if prompt_text else ""
         now = datetime.utcnow().isoformat()
 
-        cursor = self.conn.execute("""
+        cursor = self._execute_write("""
             INSERT INTO generation_log (
                 product_id, platform, content_type, target_site,
                 generated_at, prompt_hash
             ) VALUES (?, ?, ?, ?, ?, ?)
         """, (row["id"], platform, content_type, target_site, now, prompt_hash))
-        self.conn.commit()
         return cursor.lastrowid
 
     def get_generation_history(self, product_key: str) -> list:
@@ -765,11 +893,11 @@ class ProductDatabase:
             if not existing:
                 # Create a stub product record (no research data, just name)
                 now = datetime.utcnow().isoformat()
-                self.conn.execute("""
+                self._execute_write("""
                     INSERT OR IGNORE INTO products (
                         product_key, product_name, brand, product_type, category,
                         first_researched, last_updated, quality_score, quality_flags
-                    ) VALUES (?, ?, ?, 'unknown', '', ?, ?, 0, '["QUALITY: STUB — No research data, imported from master list"]')
+                    ) VALUES (?, ?, ?, 'unknown', '', ?, ?, 0, '["COMPLETENESS: STUB — No research data, imported from master list"]')
                 """, (product_key, product_name, "", now, now))
                 products_imported += 1
 
@@ -791,7 +919,7 @@ class ProductDatabase:
                     continue
 
                 try:
-                    self.conn.execute("""
+                    self._execute_write("""
                         INSERT OR IGNORE INTO publications (
                             product_id, site_key, site_name, slug,
                             content_type, published_date, wp_post_id
@@ -804,8 +932,6 @@ class ProductDatabase:
                     pubs_imported += 1
                 except sqlite3.IntegrityError:
                     pass
-
-        self.conn.commit()
         return {"products_imported": products_imported, "publications_imported": pubs_imported}
 
     # ──────────────────────────────────────────────────────────────────

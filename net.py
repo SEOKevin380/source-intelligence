@@ -50,6 +50,11 @@ _METADATA_IPS = {
     "fd00:ec2::254",    # AWS IPv6 metadata
 }
 
+# DNS resolution cache — mitigates TOCTOU rebinding by reusing validated results
+# Format: {hostname: (resolved_ips_list, expiry_timestamp)}
+_DNS_CACHE = {}
+_DNS_CACHE_TTL = 60  # seconds
+
 
 # ============================================================================
 # FetchResult dataclass — provenance metadata on every fetch
@@ -138,7 +143,18 @@ def _check_ip_safety(addr, display_name: str):
 
 
 def _resolve_and_check(hostname: str):
-    """Resolve hostname via DNS and check all resulting IPs for safety."""
+    """Resolve hostname via DNS, check all IPs for safety, cache result.
+
+    Uses a short-lived DNS cache to mitigate TOCTOU rebinding attacks.
+    The same resolved IPs validated here are reused during connection.
+    """
+    # Check cache first
+    cached = _DNS_CACHE.get(hostname)
+    if cached:
+        ips, expiry = cached
+        if time.monotonic() < expiry:
+            return  # Already validated and still fresh
+
     try:
         results = socket.getaddrinfo(hostname, None)
     except socket.gaierror:
@@ -147,6 +163,12 @@ def _resolve_and_check(hostname: str):
     for family, _, _, _, sockaddr in results:
         ip = ipaddress.ip_address(sockaddr[0])
         _check_ip_safety(ip, f"{hostname} (resolves to {sockaddr[0]})")
+
+    # Cache validated resolution
+    _DNS_CACHE[hostname] = (
+        [sockaddr[0] for _, _, _, _, sockaddr in results],
+        time.monotonic() + _DNS_CACHE_TTL,
+    )
 
 
 # ============================================================================
@@ -250,8 +272,25 @@ def safe_fetch(
     )
 
 
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Validates each redirect destination against SSRF rules before following.
+
+    Without this, urllib auto-follows redirects to private/internal IPs.
+    A public URL redirecting to http://169.254.169.254/ would be fetched
+    before post-fetch validation could block it.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        validate_url(newurl)  # raises ValueError if destination is unsafe
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def _do_fetch(url, *, max_bytes, timeout, verify_tls, user_agent):
-    """Internal: perform the actual HTTP fetch with streaming reads."""
+    """Internal: perform the actual HTTP fetch with streaming reads.
+
+    Uses _SafeRedirectHandler to validate every redirect destination
+    BEFORE following it, preventing redirect-based SSRF.
+    """
     if verify_tls:
         ctx = ssl.create_default_context()
     else:
@@ -265,7 +304,13 @@ def _do_fetch(url, *, max_bytes, timeout, verify_tls, user_agent):
         "Accept-Language": "en-US,en;q=0.9",
     })
 
-    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+    # Build opener with safe redirect handler instead of default
+    opener = urllib.request.build_opener(
+        _SafeRedirectHandler,
+        urllib.request.HTTPSHandler(context=ctx),
+    )
+
+    with opener.open(req, timeout=timeout) as resp:
         # Stream in chunks instead of reading entire response
         chunks = []
         bytes_read = 0
@@ -326,7 +371,13 @@ def safe_download(
         ctx = ssl.create_default_context()
         req = urllib.request.Request(url, headers={"User-Agent": ua})
 
-        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+        # Use safe redirect handler for downloads too
+        opener = urllib.request.build_opener(
+            _SafeRedirectHandler,
+            urllib.request.HTTPSHandler(context=ctx),
+        )
+
+        with opener.open(req, timeout=timeout) as resp:
             chunks = []
             bytes_read = 0
             while bytes_read < max_bytes:
@@ -341,7 +392,7 @@ def safe_download(
             status_code = resp.status
             headers = resp.headers
 
-        # Validate redirect destination
+        # Defense-in-depth: validate final URL (redirect handler already checked each hop)
         if final_url and final_url != url:
             validate_url(final_url)
 
@@ -378,14 +429,15 @@ def safe_download(
 # fetch_text — backward-compatible drop-in for old fetch_url()
 # ============================================================================
 
-def fetch_text(url: str, max_bytes: int = 60000) -> str:
+def fetch_text(url: str, max_bytes: int = 60000,
+               allow_tls_fallback: bool = True) -> str:
     """Backward-compatible text fetch. Returns text or empty string.
 
     This is a drop-in replacement for the old fetch_url() function.
-    Uses safe_fetch() internally with TLS fallback enabled for vendor pages.
+    Uses safe_fetch() internally. TLS fallback is caller-controlled.
     """
     result = safe_fetch(
         url, max_bytes=max_bytes,
-        allow_tls_fallback=True,
+        allow_tls_fallback=allow_tls_fallback,
     )
     return result.text

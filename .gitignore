@@ -4,3 +4,7 @@ ingredient_db.json
 __pycache__/
 *.pyc
 .env
+*.db
+*.db-shm
+*.db-wal
+MBK_Project_Instructions_Globe_ACW_Barchart.txt

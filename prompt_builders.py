@@ -133,7 +133,7 @@ def _get_relevant_exemplar(category, platform, has_ingredients=True, has_conflic
         patterns = cat_data.get("proven_claim_patterns", [])
         if patterns:
             lines.append("CLAIM PATTERN EXAMPLES (from other products — use ONLY if this")
-            lines.append("product's verified data supports the same claim):")
+            lines.append("product's extracted data supports the same claim):")
             for p in patterns[:8]:
                 lines.append(f"  ✓ \"{p}\"")
             lines.append("")
@@ -141,7 +141,7 @@ def _get_relevant_exemplar(category, platform, has_ingredients=True, has_conflic
         # Proven headline patterns
         headlines = cat_data.get("proven_headline_patterns", [])
         if headlines:
-            lines.append("HEADLINE PATTERNS (adapt to this product's verified facts):")
+            lines.append("HEADLINE PATTERNS (adapt to this product's extracted facts):")
             for h in headlines:
                 lines.append(f"  ✓ {h}")
             lines.append("")
@@ -154,8 +154,8 @@ def _get_relevant_exemplar(category, platform, has_ingredients=True, has_conflic
             lines.append("")
     else:
         lines.append("NOTE: Product-specific claim patterns suppressed — C1/C7 data is empty.")
-        lines.append("Without verified ingredient/research data, claim patterns from other")
-        lines.append("products cannot be safely applied. Write from verified claims only.")
+        lines.append("Without extracted ingredient/research data, claim patterns from other")
+        lines.append("products cannot be safely applied. Write from source-documented claims only.")
         lines.append("")
         # Still show reference releases — they contain framing guidance for data-limited products
         if recent_refs:
@@ -519,7 +519,7 @@ Globe: {'PASS' if compliance.get('globe_compliance', {}).get('passes', True) els
         block += "No ingredients extracted — invoke Thin Web Presence Protocol\n"
 
     # Ingredient research — enriched with KB data
-    block += "\n--- INGREDIENT RESEARCH (PubMed-Verified) ---\n"
+    block += "\n--- INGREDIENT RESEARCH (PubMed-Sourced) ---\n"
     for ing_name, ing_data in ingredient_research.items():
         enriched = _get_enriched_ingredient(ing_name, ingredient_research, ingredient_kb)
         block += f"\n{ing_name} — Evidence: {enriched['evidence_grade']} — {len(enriched['studies'])} studies\n"
@@ -653,7 +653,7 @@ Globe: {'PASS' if compliance.get('globe_compliance', {}).get('passes', True) els
     if not standing_declines:
         block += "\n--- AUTHORIZATION ---\n"
         block += "This product has passed all compliance gates. Source data is clean.\n"
-        block += "Proceed with article generation using the verified data above.\n"
+        block += "Proceed with article generation using the extracted data above.\n"
 
     # Testimonials
     testimonials = product.get("testimonials", [])
@@ -891,7 +891,7 @@ EDITORIAL PHILOSOPHY (NON-NEGOTIABLE — APPLIES TO ALL CONTENT):
   Balance means showing what works well AND where limitations exist — not
   being hostile or accusatory.
 - Never tell the reader to buy. Never tell the reader not to buy. Present
-  verified facts, ingredient research, dose comparisons, and safety data —
+  sourced facts, ingredient research, dose comparisons, and safety data —
   then let the reader decide.
 - If the label says one thing and the sales page markets another, lead with
   what the LABEL actually contains and what those ingredients do per research.
@@ -929,7 +929,7 @@ review by a Google Quality Rater evaluating E-E-A-T for YMYL health content.
 # =============================================================================
 
 def _build_cvd_source_block(full_data, platform=""):
-    """Build pre-verified source data organized by CVD-5 verification categories.
+    """Build pre-researched source data organized by CVD-5 categories.
 
     This maps Source Intelligence research directly to the MBK production system's
     verification framework. The data replaces Phase 0.0/0.1 entirely — the production
@@ -992,7 +992,7 @@ def _build_cvd_source_block(full_data, platform=""):
 
     block = f"""
 ═══════════════════════════════════════════════
-SOURCE INTELLIGENCE — PRE-VERIFIED DATA
+SOURCE INTELLIGENCE — PRE-RESEARCHED DATA
 ═══════════════════════════════════════════════
 
 Research Date: {today}
@@ -1000,10 +1000,10 @@ Source Tool: MBK Source Intelligence Tool
 Data Sources: Live page fetch + PubMed API + Claude vision OCR
 Official URL: {product.get('official_url', '')}
 
-PHASE 0.0 STATUS: COMPLETED EXTERNALLY
+PHASE 0.0 STATUS: DATA COLLECTION COMPLETE
 The Source Intelligence Tool has already performed live page fetches on the
 official URL, policy pages, and affiliate link — satisfying CVD-1 live-source
-requirements. The verified data is organized below by CVD-5 categories.
+requirements. The collected data is organized below by CVD-5 categories.
 All SEO strategy, archetype selection, and angle differentiation should be
 determined by your own real-time SERP analysis — this data feeds facts only.
 
@@ -1014,7 +1014,7 @@ marked with hedging suggestions should use the softened version provided.
 
 WORKFLOW:
 1. Phase 0.0 (source-page fetch) is complete — use the CVD categories below
-   as your verified-facts inventory for Phase 0.1.
+   as your source-data inventory for Phase 0.1.
 2. Proceed through all remaining phases to finished draft output.
 3. Do NOT pause for confirmation between phases — the operator is a VA who
    cannot answer mid-process questions.
@@ -1076,7 +1076,7 @@ deliver the finished draft.
         if _bc_euphemistic:
             # Don't suggest using synonyms when claims don't match the sensitive category
             block += "- B4: R12 blocklist checked. Do NOT use R12-sensitive category language\n"
-            block += "  unless it appears in the verified claims above. Write from verified data only.\n"
+            block += "  unless it appears in the extracted claims above. Write from source data only.\n"
         elif _r12_relevant:
             block += "- B4: R12 blocklist applies — use clinical/functional synonyms for any\n"
             block += "  category-sensitive terms. The compliance section provides mappings.\n"
@@ -1633,7 +1633,7 @@ provided for reader awareness, not as a contraindication for the product itself.
             # Sparse data — investigative framing required
             block += "AUTHORIZATION: PROCEED WITH INVESTIGATIVE FRAMING.\n"
             block += f"Data gaps: {', '.join(_data_gaps)}.\n"
-            block += "With limited verified data, use protective skepticism:\n"
+            block += "With limited source data, use protective skepticism:\n"
             block += "- Frame as first-to-market investigation, not product endorsement\n"
             block += "- Direct readers to official site for details you cannot verify\n"
             block += "- Note every data gap explicitly in the article body\n"
@@ -1643,7 +1643,7 @@ provided for reader awareness, not as a contraindication for the product itself.
         elif _data_gaps:
             block += "This product has passed compliance gates with partial data.\n"
             block += f"Data gaps: {', '.join(_data_gaps)}. Note these in Material Limitations.\n"
-            block += "Proceed with article generation using verified data only.\n"
+            block += "Proceed with article generation using extracted data only.\n"
             block += "Deliver a complete, publish-ready draft.\n"
         else:
             block += "This product has passed all pre-publication compliance gates.\n"
@@ -1651,7 +1651,7 @@ provided for reader awareness, not as a contraindication for the product itself.
             block += "The production system is authorized to proceed with article generation.\n"
             block += "Deliver a complete, publish-ready draft using the clean source data below.\n"
         if _auth_effective_cat in {"male_enhancement"}:
-            block += "Avoid R12-sensitive terminology. Write from verified claims only.\n"
+            block += "Avoid R12-sensitive terminology. Write from source-documented claims only.\n"
 
     # ── MARKETING CLAIMS — all blocked claims silently omitted ──
     block += "\n"
@@ -1774,16 +1774,16 @@ provided for reader awareness, not as a contraindication for the product itself.
 def build_l6_press_release_prompt(full_data, intake_fields):
     """Build an MBK v3.10 production submission for press release platforms.
 
-    Generates a complete intake submission with pre-verified source intelligence
-    that maps directly to the MBK production system's CVD-5 verification
-    categories. Paste directly into the platform project (Barchart, ACW,
+    Generates a complete intake submission with pre-researched source intelligence
+    that maps directly to the MBK production system's CVD-5 categories.
+    Paste directly into the platform project (Barchart, ACW,
     Newswire, Globe) — the system runs the full pipeline autonomously:
     real-time SERP analysis, archetype selection, angle differentiation,
     drafting, gate check, and delivery in ONE pass.
 
     The submission includes:
     1. MBK v3.10 intake header (exact field-for-field match)
-    2. Pre-verified source data organized by CVD-5 verification categories
+    2. Pre-researched source data organized by CVD-5 categories
     3. Standing authorization for autonomous CVD-8 collision handling + archetype flex
     No production rules or article-writing instructions — the project has those.
     SEO strategy is determined in real-time by the production system, never pre-baked.
@@ -1833,7 +1833,7 @@ PREVIOUS RELEASES: {previous}"""
     if notes:
         prompt += f"\nOPERATOR NOTES: {notes}"
 
-    prompt += f"\nSOURCE MATERIALS: Pre-verified research data included below"
+    prompt += f"\nSOURCE MATERIALS: Pre-researched source data included below"
 
     has_prev = previous and previous.strip().upper() != "FIRST RELEASE"
 
@@ -1858,7 +1858,7 @@ cannibalizes the existing coverage.
 COMPETITOR RELEASE(S): {competitor}
 """
 
-    # ── PRE-VERIFIED SOURCE DATA (CVD-organized) ──
+    # ── PRE-RESEARCHED SOURCE DATA (CVD-organized) ──
     prompt += _build_cvd_source_block(full_data, platform=platform)
 
     return prompt

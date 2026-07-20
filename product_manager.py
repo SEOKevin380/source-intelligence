@@ -466,8 +466,8 @@ def get_prompt_completeness(product_key: str, db: ProductDatabase = None) -> dic
         sections["C6"] = {"status": "complete", "detail": "Safety data available"}
         earned += 10
     elif product.get("product_type") == "cannabis" or product.get("category") == "cannabis":
-        sections["C6"] = {"status": "complete", "detail": "Cannabis — standard interactions applied"}
-        earned += 10
+        sections["C6"] = {"status": "partial", "detail": "Cannabis — generic safety profile applied, product-specific data not collected"}
+        earned += 5
     elif ingredients:
         sections["C6"] = {"status": "partial", "detail": "Ingredients found but no safety data"}
         earned += 3
@@ -544,18 +544,23 @@ def get_prompt_completeness(product_key: str, db: ProductDatabase = None) -> dic
         missing_critical.append("C15: No compliance data")
 
     # C16-C19 — Shipping, Warranty, Testimonials, FAQs
-    total += 10
+    # Use local scoring — NOT the global earned/total accumulators
+    c16_earned = 0
     if product.get("shipping_policy"):
-        earned += 3
+        c16_earned += 3
     if product.get("warranty"):
-        earned += 2
+        c16_earned += 2
     if product.get("testimonials"):
-        earned += 3
+        c16_earned += 3
     if product.get("brand_faqs"):
-        earned += 2
+        c16_earned += 2
+    total += 10
+    earned += c16_earned
     sections["C16-C19"] = {
-        "status": "complete" if earned >= total - 5 else "partial",
-        "detail": "Supporting data sections",
+        "status": "complete" if c16_earned >= 7 else (
+            "partial" if c16_earned > 0 else "missing"
+        ),
+        "detail": f"Supporting data: {c16_earned}/10 points",
     }
 
     score = round(earned / total * 100) if total > 0 else 0

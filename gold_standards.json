@@ -1,0 +1,278 @@
+{
+  "_meta": {
+    "description": "Gold Standard Exemplar Library \u2014 Proven patterns from past approved releases",
+    "philosophy": "This system LEARNS from every successful release. Instead of just telling the production system what it CANNOT do, it shows exactly what WORKS. Every new approval adds to this library, making the next release faster and more confident.",
+    "last_updated": "2026-07-18",
+    "version": "1.0"
+  },
+  "exemplars": {
+    "male_enhancement": {
+      "platforms": [
+        "accesswire",
+        "barchart",
+        "newswire"
+      ],
+      "proven_voice": "Clinical/vascular health framing. Never sexual \u2014 always physiological. Frame the product as a health optimization tool, not a sexual enhancer. The condition is vascular; the solution is medical.",
+      "proven_claim_patterns": [
+        "4-ingredient compounded ED formula",
+        "Sublingual route bypasses the digestive system entirely",
+        "Addresses broader range of ED mechanisms than single-agent therapy",
+        "Designed for men who did not get adequate results from single-ingredient generics",
+        "Includes physician consultation, medication, and shipping in price",
+        "Supports healthy blood flow and vascular function",
+        "Clinically studied ingredients for circulatory health",
+        "Nitric oxide precursor for endothelial support",
+        "Men's vitality support formula",
+        "Physician-prescribed treatment program"
+      ],
+      "proven_framing_rules": [
+        "Frame as VASCULAR HEALTH, not sexual performance",
+        "Frame as MEDICAL TREATMENT, not enhancement",
+        "Frame as QUALITY OF LIFE, not bedroom results",
+        "Use 'ED' (abbreviation) freely \u2014 it passes all platforms",
+        "Use 'blood flow' and 'circulation' as the mechanism language",
+        "Use 'nitric oxide' and 'endothelial function' for science framing",
+        "Reference 'physician consultation' and 'prescribed' for authority",
+        "Use 'men who have not responded to' for the target audience"
+      ],
+      "proven_headline_patterns": [
+        "[Product] Review: [Ingredient Count]-Ingredient ED Formula \u2014 Does It Work?",
+        "[Product]: Physician-Prescribed Men's Vitality Support \u2014 What to Know",
+        "New [Product] Formula Targets Vascular Health for Men Over 40",
+        "[Product] Review: Sublingual ED Compound Gets Attention \u2014 Here's Why"
+      ],
+      "approved_terminology": {
+        "use_these": [
+          "men's vitality support",
+          "performance support",
+          "intimate wellness",
+          "male health optimization",
+          "circulatory health support",
+          "vascular wellness",
+          "blood flow support",
+          "physician-prescribed treatment",
+          "men's wellness",
+          "quality of life improvement",
+          "endothelial function support",
+          "ED formula",
+          "ED mechanisms",
+          "nitric oxide production",
+          "vascular tone",
+          "sublingual delivery",
+          "compounded formula"
+        ],
+        "never_these": [
+          "male enhancement",
+          "erection",
+          "libido",
+          "sexual performance",
+          "penis",
+          "enlargement",
+          "inches",
+          "bedroom performance",
+          "rock hard",
+          "lasting longer"
+        ]
+      },
+      "reference_releases": [
+        {
+          "product": "MEDVi QUAD",
+          "platform": "barchart",
+          "date": "2026-07-17",
+          "status": "APPROVED",
+          "key_pattern": "Telehealth/prescription framing. Clinical voice. Zero R12 terms. Used 'ED formula', 'sublingual route', 'ED mechanisms' throughout."
+        },
+        {
+          "product": "Eregummy",
+          "platform": "barchart",
+          "date": "2026-07-18",
+          "status": "APPROVED",
+          "key_pattern": "Data-limited product. Protective skepticism voice. Transparent about missing ingredients. Brand claims attributed to manufacturer. Same-name confusion warning included. Framed as men's wellness/vitality — no specific ED or cognitive claims. Directed readers to verify URL and seller."
+        }
+      ],
+      "globe_specific": {
+        "voice": "Brand-as-subject + mechanism-forward. '[Brand] is designed to support vascular function through...'",
+        "proven_patterns": [
+          "[Product] is a physician-directed men's wellness formula",
+          "[Product] incorporates [N] active compounds targeting vascular health",
+          "The formulation is designed to support nitric oxide-mediated blood flow",
+          "[Product] is available through a licensed telehealth consultation process"
+        ]
+      }
+    },
+    "weight_loss": {
+      "platforms": [
+        "accesswire",
+        "barchart",
+        "newswire",
+        "globe"
+      ],
+      "proven_voice": "Metabolic science framing. Evidence-graded. Focus on mechanism (how it works) not outcome promises (you will lose X pounds).",
+      "proven_claim_patterns": [
+        "Supports healthy metabolic function",
+        "Contains [N] research-backed thermogenic compounds",
+        "Formulated with clinically studied doses of [ingredient]",
+        "Designed to complement a healthy diet and exercise routine",
+        "May help support the body's natural fat metabolism processes"
+      ],
+      "proven_framing_rules": [
+        "Frame as METABOLIC SUPPORT, not weight loss promises",
+        "Frame as COMPLEMENT TO LIFESTYLE, not magic pill",
+        "Use 'may help support' hedging on all benefit claims",
+        "Reference specific ingredient doses vs clinical literature",
+        "Include 'diet and exercise' context for any efficacy claims",
+        "Never promise specific pounds or timeframes"
+      ],
+      "proven_headline_patterns": [
+        "[Product] Review: [Key Ingredient] Metabolism Formula \u2014 Evidence Check",
+        "[Product]: [N]-Ingredient Metabolic Support \u2014 What the Research Shows",
+        "New [Product] Targets [Mechanism] for Healthy Weight Management"
+      ],
+      "approved_terminology": {
+        "use_these": [
+          "metabolic support",
+          "thermogenic compounds",
+          "healthy weight management",
+          "fat metabolism",
+          "metabolic function",
+          "caloric efficiency",
+          "appetite management",
+          "satiety support"
+        ],
+        "never_these": [
+          "melt fat",
+          "burn belly fat fast",
+          "lose X pounds in X days",
+          "guaranteed weight loss",
+          "no diet or exercise needed"
+        ]
+      },
+      "reference_releases": []
+    },
+    "blood_sugar": {
+      "platforms": [
+        "accesswire",
+        "barchart",
+        "newswire",
+        "globe"
+      ],
+      "proven_voice": "Glycemic health framing. Supplement supports healthy levels already in normal range. Never implies treatment of diabetes.",
+      "proven_claim_patterns": [
+        "Supports healthy blood sugar levels already within normal range",
+        "Contains [N] ingredients studied for glycemic health",
+        "Formulated with chromium, berberine, and botanical extracts",
+        "Designed to support the body's natural glucose metabolism"
+      ],
+      "proven_framing_rules": [
+        "ALWAYS include 'already within normal range' qualifier",
+        "Frame as SUPPORT, never TREATMENT or CURE",
+        "Never reference diabetes, insulin resistance, or A1C directly",
+        "Use 'glucose metabolism' and 'glycemic health' as framing",
+        "Reference 'healthy lifestyle' as context for any claims"
+      ],
+      "approved_terminology": {
+        "use_these": [
+          "glycemic health support",
+          "glucose metabolism",
+          "healthy blood sugar levels already within normal range",
+          "pancreatic function support",
+          "metabolic wellness"
+        ],
+        "never_these": [
+          "cures diabetes",
+          "fixes blood sugar",
+          "insulin replacement",
+          "reverses type 2"
+        ]
+      },
+      "reference_releases": []
+    },
+    "brain_health": {
+      "platforms": [
+        "accesswire",
+        "barchart",
+        "newswire",
+        "globe"
+      ],
+      "proven_voice": "Cognitive wellness framing. Focus on support and optimization, never treatment of neurological conditions.",
+      "proven_claim_patterns": [
+        "Supports healthy cognitive function",
+        "Contains nootropic compounds studied for mental clarity",
+        "Formulated to support focus, memory, and mental energy",
+        "Designed for adults seeking cognitive performance support"
+      ],
+      "proven_framing_rules": [
+        "Frame as COGNITIVE SUPPORT, not dementia treatment",
+        "Use 'mental clarity', 'focus', 'cognitive performance'",
+        "Never reference Alzheimer's, dementia, or brain disease",
+        "Reference ingredient-level research, not product-level claims"
+      ],
+      "approved_terminology": {
+        "use_these": [
+          "cognitive support",
+          "mental clarity",
+          "focus and concentration",
+          "brain health optimization",
+          "neuroprotective compounds",
+          "cognitive performance"
+        ],
+        "never_these": [
+          "cures brain fog",
+          "reverses dementia",
+          "prevents Alzheimer's",
+          "fixes memory loss"
+        ]
+      },
+      "reference_releases": []
+    },
+    "telehealth": {
+      "platforms": [
+        "accesswire",
+        "barchart",
+        "newswire",
+        "globe"
+      ],
+      "proven_voice": "Medical authority framing. Emphasize the three-entity structure (platform + physician group + pharmacy). Frame as access to care, not self-medication.",
+      "proven_claim_patterns": [
+        "Licensed physician consultation included",
+        "Prescribed by board-certified providers",
+        "Compounded at licensed pharmacy facilities",
+        "Telehealth platform connecting patients with licensed medical groups",
+        "Individualized treatment plans based on patient health profile"
+      ],
+      "proven_framing_rules": [
+        "ALWAYS name the three entities: platform, medical group, pharmacy",
+        "Frame as ACCESS TO LEGITIMATE MEDICINE, not shortcuts",
+        "Emphasize physician decision-making, not patient self-selection",
+        "Reference licensing, board certification, state regulations",
+        "Include 'individual results assessed by prescribing physician'"
+      ],
+      "approved_terminology": {
+        "use_these": [
+          "licensed physician",
+          "board-certified provider",
+          "telehealth consultation",
+          "compounding pharmacy",
+          "individualized treatment",
+          "physician-supervised",
+          "prescription program"
+        ],
+        "never_these": [
+          "no prescription needed",
+          "skip the doctor",
+          "get pills online fast",
+          "without a doctor visit"
+        ]
+      },
+      "reference_releases": [
+        {
+          "product": "MEDVi QUAD",
+          "platform": "barchart",
+          "date": "2026-07-17",
+          "status": "APPROVED",
+          "key_pattern": "Three-entity structure clearly named. Clinical voice. R25 telehealth routing. Zero casual/sales language."
+        }
+      ]
+    }
+  }
+}
