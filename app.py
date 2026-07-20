@@ -371,37 +371,58 @@ if CRM_AVAILABLE and db:
         category=filter_cat,
     )
 
-    # Display product list
+    # Display product list — grouped by brand
     if products:
+        # Group products by brand
+        from collections import OrderedDict
+        brand_groups = OrderedDict()
         for p in products[:30]:
-            pkey = p["product_key"]
-            pname = p["product_name"]
-            ptype = p.get("product_type", "")
-            quality = p.get("quality_score", 0)
-            pub_count = p.get("publication_count", 0)
-            updated = (p.get("last_updated", "") or "")[:10]
+            brand = (p.get("brand") or "").strip()
+            if brand not in brand_groups:
+                brand_groups[brand] = []
+            brand_groups[brand].append(p)
 
-            # Quality indicator
-            if quality >= 80:
-                q_icon = "🟢"
-            elif quality >= 60:
-                q_icon = "🟡"
-            elif quality > 0:
-                q_icon = "🟠"
-            else:
-                q_icon = "⚫"
+        # Render: brands with multiple products get a header
+        for brand, brand_products in brand_groups.items():
+            if brand and len(brand_products) > 1:
+                st.sidebar.markdown(f"**{brand}** ({len(brand_products)} products)")
 
-            label = f"{q_icon} {pname[:30]}"
-            if pub_count:
-                label += f" ({pub_count})"
+            for p in brand_products:
+                pkey = p["product_key"]
+                pname = p["product_name"]
+                ptype = p.get("product_type", "")
+                quality = p.get("quality_score", 0)
+                pub_count = p.get("publication_count", 0)
+                updated = (p.get("last_updated", "") or "")[:10]
 
-            if st.sidebar.button(
-                label, key=f"prod_{pkey}",
-                use_container_width=True,
-                help=f"Type: {ptype} | Quality: {quality}/100 | Updated: {updated}",
-            ):
-                # Load product from DB
-                product_rec = db.get_product(pkey)
+                # Quality indicator
+                if quality >= 80:
+                    q_icon = "🟢"
+                elif quality >= 60:
+                    q_icon = "🟡"
+                elif quality > 0:
+                    q_icon = "🟠"
+                else:
+                    q_icon = "⚫"
+
+                # Show short name if brand is displayed as group header
+                if brand and len(brand_products) > 1:
+                    display_name = pname.replace(brand, "").strip(" -–—:,")
+                    if not display_name:
+                        display_name = pname
+                    label = f"  {q_icon} {display_name[:28]}"
+                else:
+                    label = f"{q_icon} {pname[:30]}"
+                if pub_count:
+                    label += f" ({pub_count})"
+
+                if st.sidebar.button(
+                    label, key=f"prod_{pkey}",
+                    use_container_width=True,
+                    help=f"Brand: {brand} | Type: {ptype} | Quality: {quality}/100 | Updated: {updated}",
+                ):
+                    # Load product from DB
+                    product_rec = db.get_product(pkey)
                 if product_rec and product_rec.get("research_data"):
                     st.session_state.result_data = product_rec["research_data"]
                     st.session_state.result_json_path = os.path.join(
@@ -854,10 +875,12 @@ else:
     rd_notes = fv.get("rd_notes", "")
 
     # ── Product Header ──
+    st.markdown("")  # Spacer so header isn't clipped by Streamlit chrome
     header_col1, header_col2 = st.columns([6, 2])
     with header_col1:
         st.title(name)
     with header_col2:
+        st.markdown("")  # Align button vertically with title
         if st.button("Update Report", use_container_width=True):
             st.session_state.update_mode = True
             st.session_state.show_form = True
@@ -916,34 +939,36 @@ else:
     _quick_slug = name.lower().replace(" ", "-")
     _quick_json = json.dumps(data, indent=2, default=str)
 
-    st.markdown("#### Use with Claude")
-    qe_col1, qe_col2, qe_col3 = st.columns(3)
-    with qe_col1:
-        st.download_button(
-            "Download Prompt (.txt)",
-            data=_quick_prompt,
-            file_name=f"{_quick_slug}_prompt.txt",
-            mime="text/plain",
-            use_container_width=True,
-        )
-    with qe_col2:
-        st.download_button(
-            "Download Source Data (.json)",
-            data=_quick_json,
-            file_name=f"{_quick_slug}_source_data.json",
-            mime="application/json",
-            use_container_width=True,
-        )
-    with qe_col3:
-        report_md = st.session_state.get("result_report", "")
-        st.download_button(
-            "Download Report (.md)",
-            data=report_md if report_md else "No report available",
-            file_name=f"{_quick_slug}_report.md",
-            mime="text/markdown",
-            use_container_width=True,
-        )
-    st.caption("Download the prompt → upload or paste into [Claude](https://claude.ai). For persistent access, upload the .json to a Claude Project.")
+    st.markdown("#### Copy Prompt for Claude")
+    st.caption("Click the copy icon (top-right of the box) → paste into [claude.ai](https://claude.ai)")
+    st.code(_quick_prompt, language="text", wrap_lines=True)
+    with st.expander("Download files", expanded=False):
+        dl_col1, dl_col2, dl_col3 = st.columns(3)
+        with dl_col1:
+            st.download_button(
+                "Prompt (.txt)",
+                data=_quick_prompt,
+                file_name=f"{_quick_slug}_prompt.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
+        with dl_col2:
+            st.download_button(
+                "Source Data (.json)",
+                data=_quick_json,
+                file_name=f"{_quick_slug}_source_data.json",
+                mime="application/json",
+                use_container_width=True,
+            )
+        with dl_col3:
+            report_md = st.session_state.get("result_report", "")
+            st.download_button(
+                "Report (.md)",
+                data=report_md if report_md else "No report available",
+                file_name=f"{_quick_slug}_report.md",
+                mime="text/markdown",
+                use_container_width=True,
+            )
 
     st.divider()
 
