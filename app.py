@@ -1152,8 +1152,56 @@ else:
 
         # Display the output
         if prompt:
-            st.markdown("**Copy the prompt below and paste it into your Claude project chat:**")
-            st.code(prompt, language="text", wrap_lines=True)
+            slug = name.lower().replace(" ", "-")
+            layer_tag = layer_type.split(":")[0].strip().lower()
+
+            # ── Download buttons FIRST — always visible at top ──
+            st.markdown("---")
+            st.markdown("#### Get Your Prompt")
+            st.caption("Download the file, then upload or paste it into your Claude chat.")
+            dl_col1, dl_col2, dl_col3 = st.columns(3)
+            with dl_col1:
+                st.download_button(
+                    "Download Prompt (.txt)",
+                    data=prompt,
+                    file_name=f"{slug}_{layer_tag}_prompt.txt",
+                    mime="text/plain",
+                    use_container_width=True,
+                )
+            with dl_col2:
+                report_md = st.session_state.get("result_report", "")
+                st.download_button(
+                    "Download Report (.md)",
+                    data=report_md if report_md else "No report available",
+                    file_name=f"{slug}_source_report.md",
+                    mime="text/markdown",
+                    use_container_width=True,
+                )
+            with dl_col3:
+                # Raw JSON source data — upload this to a Claude Project for persistent access
+                source_json = json.dumps(data, indent=2, default=str)
+                st.download_button(
+                    "Download Source Data (.json)",
+                    data=source_json,
+                    file_name=f"{slug}_source_data.json",
+                    mime="application/json",
+                    use_container_width=True,
+                )
+
+            st.info(
+                "**How to use with Claude:**\n"
+                "1. Download the **Prompt (.txt)** file above\n"
+                "2. Open a new Claude chat at [claude.ai](https://claude.ai)\n"
+                "3. Click the paperclip icon and upload the .txt file\n"
+                "4. Send it — Claude will generate your article\n\n"
+                "**For persistent access:** Upload the **Source Data (.json)** to a "
+                "[Claude Project](https://claude.ai) as a Project Knowledge file. "
+                "Then any chat in that project can reference the research data."
+            )
+
+            # ── Prompt preview (collapsed by default to keep page clean) ──
+            with st.expander("Preview Full Prompt", expanded=False):
+                st.code(prompt, language="text", wrap_lines=True)
 
             # Log generation to CRM (dedup: only log once per unique prompt)
             if CRM_AVAILABLE and db and product_key:
@@ -1170,92 +1218,69 @@ else:
                         st.session_state["_logged_generations"] = set()
                     st.session_state["_logged_generations"].add(_gen_key)
 
-            slug = name.lower().replace(" ", "-")
-            layer_tag = layer_type.split(":")[0].strip().lower()
-
-            dl_col1, dl_col2 = st.columns(2)
-            with dl_col1:
-                st.download_button(
-                    "Download Prompt (.txt)",
-                    data=prompt,
-                    file_name=f"{slug}_{layer_tag}_prompt.txt",
-                    mime="text/plain",
-                    use_container_width=True,
-                )
-            with dl_col2:
-                st.download_button(
-                    "Download Full Report (.md)",
-                    data=st.session_state.get("result_report", ""),
-                    file_name=f"{slug}_source_report.md",
-                    mime="text/markdown",
-                    use_container_width=True,
-                )
-
-        # ── Record Publication Form ──
+        # ── Record Publication Form (collapsed) ──
         if CRM_AVAILABLE and db and product_key:
             st.divider()
-            st.markdown("### Record Publication")
-            st.caption("After publishing, record it here to track coverage and SERP stacking.")
+            with st.expander("Record Publication (after publishing)", expanded=False):
+                st.caption("After publishing, record it here to track coverage and SERP stacking.")
+                with st.form("record_publication", border=True):
+                    rec_col1, rec_col2 = st.columns(2)
+                    with rec_col1:
+                        rec_site = st.text_input(
+                            "Site Key",
+                            placeholder="pvmedcenter",
+                            help="Site key from wp-sites.json (e.g., pvmedcenter, hollyherman)",
+                        )
+                        rec_slug = st.text_input(
+                            "Post Slug",
+                            placeholder="product-name-review",
+                            help="The URL slug used for this publication",
+                        )
+                        rec_angle = st.text_input(
+                            "Slug Angle",
+                            placeholder="research_evidence",
+                            help="The SERP angle (e.g., clinical_physician, consumer_investigative)",
+                        )
+                    with rec_col2:
+                        rec_url = st.text_input(
+                            "Post URL (optional)",
+                            placeholder="https://site.com/post-slug/",
+                        )
+                        rec_content_type = st.selectbox(
+                            "Content Type",
+                            ["L6_review", "L1_ingredient", "L3_safety", "funnel_hub",
+                             "funnel_comparison", "funnel_guide"],
+                        )
+                        rec_date = st.text_input(
+                            "Published Date",
+                            value=__import__("datetime").datetime.utcnow().strftime("%Y-%m-%d"),
+                        )
 
-            with st.form("record_publication", border=True):
-                rec_col1, rec_col2 = st.columns(2)
-                with rec_col1:
-                    rec_site = st.text_input(
-                        "Site Key",
-                        placeholder="pvmedcenter",
-                        help="Site key from wp-sites.json (e.g., pvmedcenter, hollyherman)",
-                    )
-                    rec_slug = st.text_input(
-                        "Post Slug",
-                        placeholder="product-name-review",
-                        help="The URL slug used for this publication",
-                    )
-                    rec_angle = st.text_input(
-                        "Slug Angle",
-                        placeholder="research_evidence",
-                        help="The SERP angle (e.g., clinical_physician, consumer_investigative)",
-                    )
-                with rec_col2:
-                    rec_url = st.text_input(
-                        "Post URL (optional)",
-                        placeholder="https://site.com/post-slug/",
-                    )
-                    rec_content_type = st.selectbox(
-                        "Content Type",
-                        ["L6_review", "L1_ingredient", "L3_safety", "funnel_hub",
-                         "funnel_comparison", "funnel_guide"],
-                    )
-                    rec_date = st.text_input(
-                        "Published Date",
-                        value=__import__("datetime").datetime.utcnow().strftime("%Y-%m-%d"),
-                    )
+                    rec_submitted = st.form_submit_button("Record Publication", use_container_width=True)
 
-                rec_submitted = st.form_submit_button("Record Publication", use_container_width=True)
+                if rec_submitted and rec_site and rec_slug:
+                    warnings = db.check_publishing_compliance(product_key, rec_site, rec_slug)
+                    has_errors = any("ERROR" in w for w in warnings)
 
-            if rec_submitted and rec_site and rec_slug:
-                # Run compliance checks first
-                warnings = db.check_publishing_compliance(product_key, rec_site, rec_slug)
-                has_errors = any("ERROR" in w for w in warnings)
+                    for w in warnings:
+                        if "ERROR" in w:
+                            st.error(w)
+                        elif "WARNING" in w:
+                            st.warning(w)
 
-                for w in warnings:
-                    if "ERROR" in w:
-                        st.error(w)
-                    elif "WARNING" in w:
-                        st.warning(w)
-
-                if not has_errors:
-                    db.add_publication(
-                        product_key=product_key,
-                        site_key=rec_site,
-                        slug=rec_slug,
-                        slug_angle=rec_angle,
-                        post_url=rec_url,
-                        content_type=rec_content_type,
-                        platform=rd_platform,
-                        published_date=rec_date,
-                    )
-                    st.success(f"Publication recorded: {rec_site} / {rec_slug}")
-                    st.rerun()
+                    if not has_errors:
+                        db.add_publication(
+                            product_key=product_key,
+                            site_key=rec_site,
+                            slug=rec_slug,
+                            slug_angle=rec_angle,
+                            post_url=rec_url,
+                            content_type=rec_content_type,
+                            platform=rd_platform,
+                            published_date=rec_date,
+                        )
+                        st.success(f"Publication recorded: {rec_site} / {rec_slug}")
+                        st.rerun()
 
     # ────────────────────────────────────────────────────
     # TAB 3: RESEARCH DETAILS
