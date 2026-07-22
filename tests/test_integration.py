@@ -2453,6 +2453,68 @@ class TestRealHandlerPipeline:
             error="",
         )
 
+    def test_recover_label_image_uses_vision_ocr(self, pipeline_db):
+        """A direct PNG label URL is stored as evidence and sent to vision OCR."""
+        import hashlib
+        from unittest.mock import patch
+        from net import FetchResult
+        from stage_handlers import recover_evidence
+        from claims import ClaimsLedger
+        from workflow import JobStatus
+
+        job, pipeline = self._run_pipeline_with_mocks(pipeline_db)
+        if job.status == JobStatus.AWAITING_REVIEW:
+            job = pipeline.approve_review(job.job_id, reviewer="test")
+
+        image_bytes = b"\x89PNG\r\n\x1a\n" + (b"label" * 100)
+        image_url = "https://cdn.example.com/supplement-facts.png"
+        image_fetch = FetchResult(
+            content=image_bytes,
+            text="",
+            final_url=image_url,
+            status_code=200,
+            headers={"Content-Type": "image/png"},
+            content_hash=hashlib.sha256(image_bytes).hexdigest(),
+            content_length=len(image_bytes),
+            tls_verified=True,
+            error="",
+        )
+        ocr_result = {
+            "serving_size": "2 capsules",
+            "servings_per_container": "30",
+            "ingredients": [
+                {"name": "Tongkat Ali", "amount": "400 mg"},
+            ],
+        }
+
+        with patch("config.DB_PATH", pipeline_db), \
+             patch("net.safe_fetch", return_value=image_fetch), \
+             patch("research_product.extract_label_image",
+                   return_value=ocr_result) as vision_ocr:
+            result = recover_evidence(
+                url=image_url,
+                offering_id=job.offering_id,
+                job_id=job.job_id,
+                target_facts=["ingredients_with_amounts", "serving_size"],
+                db_path=pipeline_db,
+            )
+
+        vision_ocr.assert_called_once()
+        assert result["facts_missing"] == []
+        assert set(result["facts_found"]) == {
+            "ingredients_with_amounts", "serving_size",
+        }
+        ledger = ClaimsLedger(db_path=pipeline_db)
+        recovered = [
+            c for c in ledger.get_claims(job.offering_id)
+            if c.metadata.get("recovery_source") == image_url
+        ]
+        assert len(recovered) >= 2
+        assert all(c.source_artifact_id == result["artifact_id"] for c in recovered)
+        assert all(c.extraction_method == "machine_ocr" for c in recovered)
+        assert all(c.metadata.get("image_ocr") is True for c in recovered)
+        assert all(c.metadata.get("excerpt_is_literal") is False for c in recovered)
+
     def test_recover_evidence_single_fetch_stores_artifact_and_claims(
         self, pipeline_db
     ):

@@ -765,7 +765,8 @@ if st.session_state.get("awaiting_review") and st.session_state.get("review_cont
         _needs_review = [
             c for c in _all_claims
             if c.source_artifact_id  # Has artifact (not manual)
-            and c.metadata.get("recovery_source")  # From recovery
+            and (c.metadata.get("recovery_source")
+                 or c.metadata.get("image_ocr"))  # Recovery or uploaded label OCR
             and not c.metadata.get("excerpt_is_literal", False)
             and c.review_status == _RS.UNREVIEWED
             and (not _mandatory_fact_keys  # Show all if pack unavailable
@@ -784,7 +785,8 @@ if st.session_state.get("awaiting_review") and st.session_state.get("review_cont
             for claim in _needs_review:
                 fk = claim.metadata.get("fact_key", "unknown")
                 label = fk.replace("_", " ").title()
-                src = claim.metadata.get("recovery_source", "")
+                src = (claim.metadata.get("recovery_source", "")
+                       or claim.metadata.get("label_source", ""))
                 with st.expander(
                     f"{label}: {claim.claim_text}", expanded=True
                 ):

@@ -11,6 +11,8 @@ data flow between handlers.
 """
 
 import json
+import os
+import tempfile
 import time
 from typing import Optional
 
@@ -140,11 +142,16 @@ def handle_acquire(job: Job) -> dict:
         label_url = job.metadata.get("label_image")
         if label_url:
             try:
-                from net import safe_fetch
-                result = safe_fetch(label_url, max_bytes=5_000_000)
-                if result.content:
+                if os.path.isfile(label_url):
+                    with open(label_url, "rb") as label_file:
+                        label_bytes = label_file.read()
+                else:
+                    from net import safe_fetch
+                    result = safe_fetch(label_url, max_bytes=5_000_000)
+                    label_bytes = result.content
+                if label_bytes:
                     aid = acq.store_label_image(
-                        result.content, source_description=label_url
+                        label_bytes, source_description=label_url
                     )
                     stored_artifacts.append({"artifact_id": aid, "type": "label_image"})
             except Exception as e:
@@ -643,24 +650,58 @@ def handle_extract(job: Job) -> dict:
 
         claims_batch = []
 
-        # Extract ingredient claims — uses extract_data (new-only in update mode)
+        # Extract ingredient claims — uses extract_data (new-only in update mode).
+        # A user-supplied label image is authoritative for Supplement Facts and
+        # must be sent through vision OCR rather than ignored as a local path.
         supp_facts = extract_data.get("supplement_facts", {})
+        supplement_artifact_id = source_artifact_id
+        supplement_method = "llm_extraction"
+        supplement_confidence = vendor_confidence
+        label_source = job.metadata.get("label_image", "")
+        label_artifact_id = next(
+            (a.get("artifact_id") for a in acquire_result.get("artifacts", [])
+             if a.get("type") == "label_image"),
+            None,
+        )
+        if label_artifact_id and label_source and os.path.isfile(label_source):
+            try:
+                from research_product import extract_label_image
+                label_result = extract_label_image(label_source)
+                if isinstance(label_result, dict) and label_result.get("ingredients"):
+                    supp_facts = label_result
+                    supplement_artifact_id = label_artifact_id
+                    supplement_method = "machine_ocr"
+                    try:
+                        from authority import score_authority as _score_label
+                        supplement_confidence = _score_label(
+                            SourceClass.OFFICIAL_VENDOR,
+                            SourceRelationship.FIRST_PARTY,
+                            tls_verified=True,
+                            extraction_method="machine_ocr",
+                        )
+                    except ImportError:
+                        supplement_confidence = min(vendor_confidence, 0.4)
+            except Exception as label_err:
+                extraction_errors.append(f"Label OCR failed: {label_err}")
         ingredients = supp_facts.get("ingredients", [])
 
         for ing in ingredients:
             name = ing.get("name", "")
             amount = ing.get("amount", "")
             if name:
-                ext_method = ing.get("extraction_method", "llm_extraction")
+                ext_method = ing.get("extraction_method", supplement_method)
                 # Use authority scoring from real artifact properties
                 try:
                     from authority import score_authority
-                    conf = score_authority(
-                        artifact_source_class,
-                        artifact_relationship,
-                        tls_verified=artifact_tls,
-                        extraction_method=ext_method,
-                    )
+                    if supplement_method == "machine_ocr":
+                        conf = supplement_confidence
+                    else:
+                        conf = score_authority(
+                            artifact_source_class,
+                            artifact_relationship,
+                            tls_verified=artifact_tls,
+                            extraction_method=ext_method,
+                        )
                 except ImportError:
                     conf = vendor_confidence
 
@@ -668,15 +709,18 @@ def handle_extract(job: Job) -> dict:
                 # Try to find literal excerpt in artifact content
                 # Composite: require both name AND amount for literal match
                 search_terms = [name, amount] if amount else [name]
-                excerpt, location = _find_literal_excerpt(
-                    artifact_text, search_terms,
-                    require_all=bool(amount),
-                )
+                if supplement_method == "machine_ocr":
+                    excerpt, location = "", ""
+                else:
+                    excerpt, location = _find_literal_excerpt(
+                        artifact_text, search_terms,
+                        require_all=bool(amount),
+                    )
                 claim = Claim(
                     offering_id=job.offering_id,
                     claim_text=claim_text,
                     claim_type=ClaimType.INGREDIENT_AMOUNT,
-                    source_artifact_id=source_artifact_id,
+                    source_artifact_id=supplement_artifact_id,
                     exact_excerpt=excerpt or claim_text,
                     page_location=location or "Supplement Facts panel",
                     source_class=artifact_sc_str,
@@ -685,29 +729,36 @@ def handle_extract(job: Job) -> dict:
                     metadata={"ingredient_name": name, "amount": amount,
                               "form": ing.get("form", ""),
                               "excerpt_is_literal": bool(excerpt),
-                              "fact_key": "ingredients_with_amounts"},
+                              "fact_key": "ingredients_with_amounts",
+                              "image_ocr": supplement_method == "machine_ocr",
+                              "label_source": label_source},
                 )
                 claims_batch.append(claim)
 
         # Extract serving info
         serving = supp_facts.get("serving_size", "")
         if serving:
-            excerpt, location = _find_literal_excerpt(
-                artifact_text, [serving, "serving size"]
-            )
+            if supplement_method == "machine_ocr":
+                excerpt, location = "", ""
+            else:
+                excerpt, location = _find_literal_excerpt(
+                    artifact_text, [serving, "serving size"]
+                )
             claims_batch.append(Claim(
                 offering_id=job.offering_id,
                 claim_text=f"Serving size: {serving}",
                 claim_type=ClaimType.SERVING_INFO,
-                source_artifact_id=source_artifact_id,
+                source_artifact_id=supplement_artifact_id,
                 exact_excerpt=excerpt or f"Serving size: {serving}",
                 page_location=location or "Supplement Facts panel",
                 source_class=artifact_sc_str,
-                confidence=vendor_confidence,
-                extraction_method="llm_extraction",
+                confidence=supplement_confidence,
+                extraction_method=supplement_method,
                 metadata={"serving_size": serving,
                           "excerpt_is_literal": bool(excerpt),
-                          "fact_key": "serving_size"},
+                          "fact_key": "serving_size",
+                          "image_ocr": supplement_method == "machine_ocr",
+                          "label_source": label_source},
             ))
 
         # Extract servings_per_container (distinct from serving_size)
@@ -715,22 +766,28 @@ def handle_extract(job: Job) -> dict:
         if not servings_ct:
             servings_ct = supp_facts.get("servings", "")
         if servings_ct:
-            excerpt, location = _find_literal_excerpt(
-                artifact_text, [str(servings_ct), "servings per container", "servings"]
-            )
+            if supplement_method == "machine_ocr":
+                excerpt, location = "", ""
+            else:
+                excerpt, location = _find_literal_excerpt(
+                    artifact_text,
+                    [str(servings_ct), "servings per container", "servings"],
+                )
             claims_batch.append(Claim(
                 offering_id=job.offering_id,
                 claim_text=f"Servings per container: {servings_ct}",
                 claim_type=ClaimType.SERVING_INFO,
-                source_artifact_id=source_artifact_id,
+                source_artifact_id=supplement_artifact_id,
                 exact_excerpt=excerpt or f"Servings per container: {servings_ct}",
                 page_location=location or "Supplement Facts panel",
                 source_class=artifact_sc_str,
-                confidence=vendor_confidence,
-                extraction_method="llm_extraction",
+                confidence=supplement_confidence,
+                extraction_method=supplement_method,
                 metadata={"servings_per_container": str(servings_ct),
                           "excerpt_is_literal": bool(excerpt),
-                          "fact_key": "servings_per_container"},
+                          "fact_key": "servings_per_container",
+                          "image_ocr": supplement_method == "machine_ocr",
+                          "label_source": label_source},
             ))
 
         # Extract manufacturer / company info if available
@@ -1164,12 +1221,46 @@ def recover_evidence(url: str, offering_id: str, job_id: str,
     lake = EvidenceLake(db_path=effective_db)
     acq = Acquirer(lake, offering_id=offering_id, job_id=job_id)
 
+    # Direct label-image URLs must go through vision extraction, not the HTML
+    # text extractor. The normal third-party fetch is intentionally small and
+    # returns no useful text for PNG/JPEG bytes.
+    image_exts = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+    is_label_image = url.lower().split("?", 1)[0].endswith(image_exts)
+    image_ocr_data = None
+
     # Single fetch — artifact stores this exact response
     try:
-        art_id, text_content = acq.fetch_third_party(
-            url, phase="EVIDENCE_RECOVERY",
-            notes="Recovery fetch for missing mandatory facts",
-        )
+        if is_label_image:
+            from net import safe_fetch
+            image_result = safe_fetch(url, max_bytes=5_000_000)
+            if image_result.error or image_result.status_code != 200 \
+                    or not image_result.content:
+                raise ValueError(
+                    image_result.error
+                    or f"Label image fetch returned HTTP {image_result.status_code}"
+                )
+            art_id = acq.store_label_image(
+                image_result.content,
+                source_description=url,
+                phase="EVIDENCE_RECOVERY",
+            )
+            suffix = os.path.splitext(url.split("?", 1)[0])[1] or ".png"
+            tmp_path = ""
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    tmp.write(image_result.content)
+                    tmp_path = tmp.name
+                from research_product import extract_label_image
+                image_ocr_data = extract_label_image(tmp_path)
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+            text_content = ""  # Images have no literal text excerpt.
+        else:
+            art_id, text_content = acq.fetch_third_party(
+                url, phase="EVIDENCE_RECOVERY",
+                notes="Recovery fetch for missing mandatory facts",
+            )
     except Exception as fetch_err:
         _log_recovery_audit(
             "recovery_failure", offering_id, job_id,
@@ -1193,14 +1284,27 @@ def recover_evidence(url: str, offering_id: str, job_id: str,
         sr = SourceRelationship.THIRD_PARTY
         tls = True
 
+    extraction_method = "machine_ocr" if is_label_image else "llm_extraction"
     confidence = score_authority(sc, sr, tls_verified=tls,
-                                 extraction_method="llm_extraction")
+                                 extraction_method=extraction_method)
     sc_str = sc.value if sc else "user_generated"
 
-    # Extract product data from the SAME content we just stored
-    from research_product import phase1_extract_product
+    # Extract product data from the SAME artifact we just stored. Label images
+    # use the vision result; web pages use the text extractor.
     try:
-        new_data = phase1_extract_product(text_content, url)
+        if is_label_image:
+            if isinstance(image_ocr_data, dict):
+                new_data = {"supplement_facts": image_ocr_data}
+            elif isinstance(image_ocr_data, list):
+                new_data = {"supplement_facts": {
+                    "ingredients": image_ocr_data,
+                    "serving_size": "",
+                }}
+            else:
+                new_data = {}
+        else:
+            from research_product import phase1_extract_product
+            new_data = phase1_extract_product(text_content, url)
     except Exception as extract_err:
         _log_recovery_audit(
             "recovery_failure", offering_id, job_id,
@@ -1290,11 +1394,12 @@ def recover_evidence(url: str, offering_id: str, job_id: str,
                     page_location=location or "Product info",
                     source_class=sc_str,
                     confidence=confidence,
-                    extraction_method="llm_extraction",
+                    extraction_method=extraction_method,
                     metadata={
                         "fact_key": fact,
                         "excerpt_is_literal": bool(excerpt),
                         "recovery_source": url,
+                        "image_ocr": is_label_image,
                     },
                 ))
                 existing_keys.add(dedup_key)
