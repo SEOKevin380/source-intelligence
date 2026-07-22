@@ -99,6 +99,43 @@ def test_aggressive_vsl_language_is_not_product_compliance_corpus():
     assert channel == "accesswire"
 
 
+def test_accesswire_r12_adapter_reports_rewrite_term_not_missing_field_fail():
+    from compliance import ComplianceState
+    from stage_handlers import handle_comply
+    from workflow import Job, PipelineStage
+
+    job = Job.create(
+        url="https://vendor.example/product",
+        product_name="T-Max African Aphrodisiac",
+        channel="Accesswire",
+    )
+    job.set_stage_result(PipelineStage.IDENTIFY, {
+        "offering_type": "supplement",
+        "product_data": {
+            "product_name": "T-Max African Aphrodisiac",
+            "product_type": "supplement",
+            "description": "A dietary supplement.",
+            "claims": [],
+        },
+    })
+    report = MagicMock(
+        overall_state=ComplianceState.CLEARED,
+        blocks=0, reviews=0, warnings=0, results=[],
+    )
+    report.summary.return_value = "cleared"
+    engine = MagicMock()
+    engine.evaluate.return_value = report
+
+    with patch("compliance.ComplianceEngine", return_value=engine):
+        result = handle_comply(job)
+
+    check = result["compliance"]["accesswire_blocklist_check"]
+    assert check["passes"] is False
+    assert check["action"] == "rewrite"
+    assert "aphrodisiac" in check["flagged_terms"]
+    assert check["blocked_claims"][0]["safe_alternatives"]["aphrodisiac"]
+
+
 def test_label_artifact_preserves_original_source_url(tmp_path):
     from acquire import Acquirer
     from evidence import EvidenceLake

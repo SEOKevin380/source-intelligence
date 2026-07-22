@@ -2173,6 +2173,49 @@ def handle_comply(job: Job) -> dict:
 
         report = engine.evaluate(corpus, offering_type, channel, jurisdiction)
 
+        # Compatibility output for the dashboard/prompt builder. R12 scans
+        # source material (including the product name) to identify language
+        # that must be rewritten for AccessWire. It is a transformation flag,
+        # not a reason to reject the client or stop source research.
+        from config import ACCESSWIRE_BLOCKLIST, R12_SAFE_ALTERNATIVES
+
+        r12_fields = [
+            str(product_data.get("product_name", "")),
+            str(product_data.get("description", "")),
+            str(product_data.get("tagline", "")),
+        ]
+        for source_claim in product_data.get("claims", []) or []:
+            if isinstance(source_claim, dict):
+                r12_fields.append(str(source_claim.get(
+                    "claim", source_claim.get("text", "")
+                )))
+            else:
+                r12_fields.append(str(source_claim))
+        r12_text = " ".join(r12_fields)
+        flagged_r12 = [
+            term for term in ACCESSWIRE_BLOCKLIST
+            if re.search(r"\b" + re.escape(term) + r"\b",
+                         r12_text, re.IGNORECASE)
+        ]
+        r12_matches = [{
+            "claim": field,
+            "matched_terms": [
+                term for term in flagged_r12
+                if re.search(r"\b" + re.escape(term) + r"\b",
+                             field, re.IGNORECASE)
+            ],
+            "safe_alternatives": {
+                term: R12_SAFE_ALTERNATIVES.get(term, "omit or rewrite")
+                for term in flagged_r12
+                if re.search(r"\b" + re.escape(term) + r"\b",
+                             field, re.IGNORECASE)
+            },
+        } for field in r12_fields if any(
+            re.search(r"\b" + re.escape(term) + r"\b",
+                      field, re.IGNORECASE)
+            for term in flagged_r12
+        )]
+
         # NOTE: FDA disclaimer check is NOT performed here. The vendor's
         # raw claims naturally won't contain our editorial disclaimer.
         # FDA disclaimer validation belongs in post-generation content
@@ -2205,6 +2248,17 @@ def handle_comply(job: Job) -> dict:
                     for r in report.results
                 ],
                 "summary": report.summary(),
+                "accesswire_blocklist_check": {
+                    "passes": not flagged_r12,
+                    "flagged_terms": flagged_r12,
+                    "blocked_claims": r12_matches,
+                    "action": "pass" if not flagged_r12 else "rewrite",
+                },
+                "barchart_compliance": {
+                    "passes": None,
+                    "review_flag": True,
+                    "notes": "Manual editorial review required",
+                },
             },
             "risk_level": risk_level,
         }

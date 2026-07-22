@@ -7,7 +7,10 @@ ready to paste into Claude Projects. Pure functions — data in, string out.
 
 import json
 import os
-from config import INGREDIENT_DB_PATH, R12_SAFE_ALTERNATIVES, CATEGORY_DISPLAY_LABELS, RISK_DISPLAY_LABELS
+import re
+from config import (INGREDIENT_DB_PATH, ACCESSWIRE_BLOCKLIST,
+                    R12_SAFE_ALTERNATIVES, CATEGORY_DISPLAY_LABELS,
+                    RISK_DISPLAY_LABELS)
 
 # Gold Standard Exemplar Library — proven patterns from past approved releases
 _GOLD_STANDARDS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gold_standards.json")
@@ -1461,6 +1464,18 @@ provided for reader awareness, not as a contraindication for the product itself.
     is_acw = "accesswire" in platform_lower or "newswire" in platform_lower
 
     aw = compliance.get("accesswire_blocklist_check", {})
+    if not aw:
+        _r12_source = " ".join([
+            str(product.get("product_name", "")),
+            str(product.get("description", "")),
+            str(product.get("tagline", "")),
+        ])
+        _r12_terms = [
+            term for term in ACCESSWIRE_BLOCKLIST
+            if re.search(r"\b" + re.escape(term) + r"\b",
+                         _r12_source, re.IGNORECASE)
+        ]
+        aw = {"passes": not _r12_terms, "flagged_terms": _r12_terms}
     bc = compliance.get("barchart_compliance", {})
     gc = compliance.get("globe_compliance", {})
 
@@ -1492,9 +1507,9 @@ provided for reader awareness, not as a contraindication for the product itself.
         block += "  All claims use mechanism language: 'is designed to support...' — never bare outcome verbs\n"
     elif is_barchart:
         # Barchart inherits ACW R-rules + B1-B4 overlay
-        block += f"R12 Blocklist (ACW/Barchart): {'PASS' if aw.get('passes') else 'FAIL'}\n"
+        block += f"R12 Blocklist (ACW/Barchart): {'PASS' if aw.get('passes') else 'REWRITE REQUIRED'}\n"
         if not aw.get("passes"):
-            block += "  R12 FAIL does NOT mean 'decline to write' — it means WRITE AROUND these terms.\n"
+            block += "  R12 REWRITE does NOT mean 'decline to write' — it identifies terms to replace.\n"
             block += "  Use the clinical synonyms below instead. Never use the banned term or its variants.\n"
             flagged_r12 = aw.get("flagged_terms", [])
             for term in flagged_r12:
@@ -1515,9 +1530,9 @@ provided for reader awareness, not as a contraindication for the product itself.
             block += f"Barchart B1-B4 Overlay: {'PASS' if bc.get('passes') else 'REVIEW — ' + bc_notes}\n"
     else:
         # Accesswire / Newswire.com
-        block += f"R12 Blocklist (ACW): {'PASS' if aw.get('passes') else 'FAIL'}\n"
+        block += f"R12 Blocklist (ACW): {'PASS' if aw.get('passes') else 'REWRITE REQUIRED'}\n"
         if not aw.get("passes"):
-            block += "  R12 FAIL does NOT mean 'decline to write' — it means WRITE AROUND these terms.\n"
+            block += "  R12 REWRITE does NOT mean 'decline to write' — it identifies terms to replace.\n"
             block += "  Use the clinical synonyms below instead. Never use the banned term or its variants.\n"
             flagged_r12 = aw.get("flagged_terms", [])
             for term in flagged_r12:
@@ -1739,7 +1754,6 @@ provided for reader awareness, not as a contraindication for the product itself.
     # ── KEYWORD & CONTENT STRATEGY ──
     keywords = full_data.get("keywords", {})
     if keywords:
-        from config import ACCESSWIRE_BLOCKLIST
         # Filter keywords containing R12 blocklist terms (e.g., "male enhancement" is R12)
         def _kw_safe(kw):
             kw_lower = kw.lower()

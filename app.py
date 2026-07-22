@@ -1646,7 +1646,36 @@ else:
     ing_count = len(sf.get("ingredients", []))
     study_count = sum(len(r.get("studies", [])) for r in data.get("ingredient_research", {}).values())
     risk = compliance_data.get("risk_level", "Unknown")
-    aw_pass = compliance_data.get("accesswire_blocklist_check", {}).get("passes", False)
+    _aw_check = compliance_data.get("accesswire_blocklist_check", {})
+    if not _aw_check:
+        from config import ACCESSWIRE_BLOCKLIST, R12_SAFE_ALTERNATIVES
+        _aw_source_text = " ".join([
+            str(product.get("product_name", "")),
+            str(product.get("description", "")),
+            str(product.get("tagline", "")),
+        ])
+        _aw_terms = [
+            term for term in ACCESSWIRE_BLOCKLIST
+            if re.search(r"\b" + re.escape(term) + r"\b",
+                         _aw_source_text, re.IGNORECASE)
+        ]
+        _aw_check = {
+            "passes": not _aw_terms,
+            "flagged_terms": _aw_terms,
+            "blocked_claims": [{
+                "claim": product.get("product_name", ""),
+                "matched_terms": _aw_terms,
+                "safe_alternatives": {
+                    term: R12_SAFE_ALTERNATIVES.get(term, "omit or rewrite")
+                    for term in _aw_terms
+                },
+            }] if _aw_terms else [],
+        }
+        compliance_data["accesswire_blocklist_check"] = _aw_check
+    aw_pass = _aw_check.get("passes") is True
+    aw_status = "PASS" if aw_pass else (
+        "REWRITE" if _aw_check.get("flagged_terms") else "NOT CHECKED"
+    )
     bc_pass = compliance_data.get("barchart_compliance", {}).get("passes", False)
     gc_pass = compliance_data.get("globe_compliance", {}).get("passes", False)
 
@@ -1661,12 +1690,12 @@ else:
 
     if is_globe_platform:
         stat_cols[3].metric("Globe", "PASS" if gc_pass else "FAIL")
-        stat_cols[4].metric("R12 (ACW)", "PASS" if aw_pass else "FAIL")
+        stat_cols[4].metric("R12 (ACW)", aw_status)
     elif is_barchart_platform:
-        stat_cols[3].metric("R12 (ACW)", "PASS" if aw_pass else "FAIL")
+        stat_cols[3].metric("R12 (ACW)", aw_status)
         stat_cols[4].metric("Barchart", "PASS" if bc_pass else "REVIEW")
     else:
-        stat_cols[3].metric("AccessWire", "PASS" if aw_pass else "FAIL")
+        stat_cols[3].metric("AccessWire", aw_status)
         stat_cols[4].metric("Barchart", "PASS" if bc_pass else "REVIEW")
 
     # Quality score from CRM
@@ -2279,7 +2308,10 @@ else:
                     color = {"High": "🔴", "Very High": "🔴", "Moderate": "🟡", "Low": "🟢"}.get(risk, "⚫")
                     st.markdown(f"**Risk Level:** {color} {risk}")
                 with c2:
-                    st.markdown(f"**AccessWire:** {'✅ PASS' if aw_pass else '❌ FAIL'}")
+                    st.markdown(
+                        f"**AccessWire:** "
+                        f"{'✅ PASS' if aw_pass else '✏️ ' + aw_status}"
+                    )
                 with c3:
                     st.markdown(f"**Barchart:** {'✅ PASS' if bc_pass else '⚠️ REVIEW'}")
                 with c4:
@@ -2298,10 +2330,14 @@ else:
 
                 bl_blocked = compliance_data.get("accesswire_blocklist_check", {}).get("blocked_claims", [])
                 if bl_blocked:
-                    st.markdown(f"### Blocklist-Blocked Claims ({len(bl_blocked)})")
+                    st.markdown(f"### AccessWire Language Requiring Rewrite ({len(bl_blocked)})")
                     for item in bl_blocked:
-                        st.error(f"**BLOCKED:** \"{item.get('claim', '')}\"")
+                        st.warning(f"**SOURCE TEXT:** \"{item.get('claim', '')}\"")
                         st.caption(f"Banned terms: *{', '.join(item.get('matched_terms', []))}*")
+                        for term, replacement in item.get(
+                            "safe_alternatives", {}
+                        ).items():
+                            st.caption(f"Use instead: **{term} → {replacement}**")
 
                 cvd9 = compliance_data.get("cvd9_blocked_claims", [])
                 if cvd9:
