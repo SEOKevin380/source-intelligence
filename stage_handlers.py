@@ -1593,9 +1593,12 @@ def recover_evidence(url: str, offering_id: str, job_id: str,
     # preventing exact duplicates from the SAME artifact.
     existing_claims = ledger.get_claims(offering_id)
     existing_keys = set()
+    existing_by_key = {}
     for c in existing_claims:
         fk = c.metadata.get("fact_key", "")
-        existing_keys.add((c.source_artifact_id, fk, c.claim_text.lower()))
+        existing_key = (c.source_artifact_id, fk, c.claim_text.lower())
+        existing_keys.add(existing_key)
+        existing_by_key[existing_key] = c
 
     # Composite fact keys: literal matching must find ALL components,
     # not just one.  e.g. ingredient name AND amount, package AND price.
@@ -1622,6 +1625,18 @@ def recover_evidence(url: str, offering_id: str, job_id: str,
                 # Deduplicate: skip if same artifact+fact+value already exists
                 dedup_key = (art_id, fact, claim_text.lower())
                 if dedup_key in existing_keys:
+                    # Self-heal claims created before label OCR was correctly
+                    # recognized as verified artifact transcription. Retrying
+                    # the same immutable image upgrades metadata in place.
+                    if is_label_image:
+                        existing_claim = existing_by_key.get(dedup_key)
+                        if existing_claim:
+                            existing_claim.extraction_method = "machine_ocr"
+                            existing_claim.metadata["image_ocr"] = True
+                            existing_claim.metadata[
+                                "artifact_transcription_verified"
+                            ] = True
+                            ledger.add_claim(existing_claim)
                     duplicates_skipped += 1
                     claims_created_for_fact += 1  # Count as found
                     continue
