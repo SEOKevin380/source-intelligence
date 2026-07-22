@@ -1701,30 +1701,21 @@ else:
     bc_pass = compliance_data.get("barchart_compliance", {}).get("passes", False)
     gc_pass = compliance_data.get("globe_compliance", {}).get("passes", False)
 
-    # Platform-aware compliance metrics
+    # Operator summary: show useful research outcomes only. Platform rewrite
+    # mechanics are applied automatically inside the generated source pack.
     is_globe_platform = "globe" in rd_platform.lower()
     is_barchart_platform = "barchart" in rd_platform.lower()
 
-    stat_cols = st.columns(6)
+    stat_cols = st.columns(4)
     stat_cols[0].metric("Ingredients", ing_count)
     stat_cols[1].metric("PubMed Studies", study_count)
     stat_cols[2].metric("Risk Level", risk)
-
-    if is_globe_platform:
-        stat_cols[3].metric("Globe", "PASS" if gc_pass else "FAIL")
-        stat_cols[4].metric("R12 (ACW)", aw_status)
-    elif is_barchart_platform:
-        stat_cols[3].metric("R12 (ACW)", aw_status)
-        stat_cols[4].metric("Barchart", "PASS" if bc_pass else "REVIEW")
-    else:
-        stat_cols[3].metric("AccessWire", aw_status)
-        stat_cols[4].metric("Barchart", "PASS" if bc_pass else "REVIEW")
 
     # Quality score from CRM
     if CRM_AVAILABLE and db and product_key:
         product_rec = db.get_product(product_key)
         quality_score = product_rec.get("quality_score", 0) if product_rec else 0
-        stat_cols[5].metric("Quality", f"{quality_score}/100")
+        stat_cols[3].metric("Quality", f"{quality_score}/100")
 
     st.divider()
 

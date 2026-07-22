@@ -230,6 +230,38 @@ def test_generation_prompt_enforces_client_positive_compliance_boundary():
     assert "Assume the client and brand are acting in good faith" in prompt
     assert "SOURCE-OF-RECORD STANDARD (GOVERNING RULE)" in prompt
     assert "exclusive factual source for the draft" in prompt
+    assert "NO-PAUSE DELIVERY RULE (GOVERNING RULE)" in prompt
+    assert "Editorial review happens AFTER the complete draft" in prompt
+
+
+def test_accesswire_r12_uses_neutral_approved_framing_and_never_pauses():
+    from prompt_builders import build_l6_press_release_prompt
+
+    prompt = build_l6_press_release_prompt(
+        {
+            "product": {
+                "product_name": "T-Max African Aphrodisiac",
+                "official_url": "https://example.com/t-max",
+                "product_type": "supplement",
+                "supplement_facts": {
+                    "ingredients": [{"name": "Vitamin B12", "amount": "2500 mcg"}],
+                },
+            },
+            "ingredient_research": {"Vitamin B12": {"studies": []}},
+            "compliance": {
+                "accesswire_blocklist_check": {
+                    "passes": False,
+                    "flagged_terms": ["aphrodisiac"],
+                },
+            },
+        },
+        {"platform": "Accesswire"},
+    )
+
+    assert "'aphrodisiac' → use 'men's vitality'" in prompt
+    assert "desire-supporting" not in prompt
+    assert "AUTHORIZED TO DRAFT NOW" in prompt
+    assert "Deliver the complete draft now" in prompt
 
 
 def test_verified_label_ocr_satisfies_strict_mandatory_gate(tmp_path):

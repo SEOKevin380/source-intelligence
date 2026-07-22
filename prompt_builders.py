@@ -1053,6 +1053,21 @@ WORKFLOW:
    available data.
 5. Output a complete, publish-ready draft in a single response.
 
+NO-PAUSE DELIVERY RULE (GOVERNING RULE):
+- Never ask the operator to choose positioning, approve a rewrite, resolve a
+  routine data gap, or confirm that drafting should continue.
+- Editorial review happens AFTER the complete draft is delivered, never before.
+- If supplied wording is prohibited by the selected platform, omit that wording
+  and use the strongest neutral platform-approved framing supported by the facts.
+- A prohibited term inside the official product name is source-record data, not
+  authorization to repeat it as marketing copy. Use a safe shortened brand name
+  in publishable copy when needed.
+- If a suggested synonym would preserve the prohibited meaning, do not use it.
+  Fall back to neutral terms such as men's vitality, men's wellness, general
+  well-being, or overall vitality, only where supported by the source record.
+- Compliance friction changes the wording; it does not stop delivery. Produce
+  the full draft and document material limitations without asking questions.
+
 HANDLING INCOMPLETE DATA:
 Some CVD categories below may show "NO DATA" — this means the information
 was not available at research time. This is normal for first-to-market
@@ -1684,15 +1699,15 @@ provided for reader awareness, not as a contraindication for the product itself.
             block += "- Push SEO and conversion framing to the strongest compliant boundary\n"
             block += "Deliver a complete, publish-ready draft.\n"
         elif _data_gaps:
-            block += "Status: READY FOR EDITORIAL REVIEW (partial data).\n"
+            block += "Status: AUTHORIZED TO DRAFT NOW (partial data).\n"
             block += f"Data gaps: {', '.join(_data_gaps)}. Note these in Material Limitations.\n"
             block += "Proceed with article generation using extracted data only.\n"
-            block += "Human editorial review required before publication.\n"
+            block += "Deliver the complete draft now; editorial review occurs after drafting.\n"
         else:
-            block += "Status: READY FOR EDITORIAL REVIEW.\n"
+            block += "Status: AUTHORIZED TO DRAFT NOW.\n"
             block += "Problematic claims have been pre-screened from source data.\n"
             block += "Proceed with article generation using the source data below.\n"
-            block += "Human editorial review required before publication.\n"
+            block += "Deliver the complete draft now; editorial review occurs after drafting.\n"
         if _auth_effective_cat in {"male_enhancement"}:
             block += "Avoid R12-sensitive terminology. Write from source-documented claims only.\n"
 
