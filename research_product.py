@@ -20,6 +20,7 @@ import os
 import re
 import ssl
 import sys
+import tempfile
 import time
 import urllib.request
 import urllib.parse
@@ -411,6 +412,153 @@ def call_claude(prompt, system="You are a product research assistant. Extract ON
         return ""
 
 
+def _extract_label_with_local_ocr(image_path):
+    """Provider-independent OCR for Supplement Facts label images."""
+    try:
+        from PIL import Image, ImageEnhance, ImageFilter
+        from rapidocr_onnxruntime import RapidOCR
+    except ImportError as exc:
+        return {"error": f"local_ocr_unavailable: {exc}", "ingredients": []}
+
+    processed_path = ""
+    try:
+        image = Image.open(image_path).convert("RGB")
+        # Small web labels lose spaces and punctuation at native resolution.
+        # A 4x high-quality resize reliably preserves row structure.
+        image = image.resize((image.width * 4, image.height * 4))
+        image = ImageEnhance.Contrast(image).enhance(1.5)
+        image = image.filter(ImageFilter.SHARPEN)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
+            processed_path = tmp.name
+        image.save(processed_path)
+
+        results, _ = RapidOCR()(processed_path)
+        if not results:
+            return {"error": "local_ocr_returned_no_text", "ingredients": []}
+
+        positioned = []
+        for result in results:
+            box, text = result[0], str(result[1]).strip()
+            if text:
+                positioned.append({
+                    "x": min(point[0] for point in box),
+                    "y": min(point[1] for point in box),
+                    "text": text,
+                })
+        positioned.sort(key=lambda item: (item["y"], item["x"]))
+
+        # Reconstruct visual rows. Amount and %DV are often separate OCR boxes
+        # on the same horizontal line as the ingredient name.
+        rows = []
+        for item in positioned:
+            if not rows or abs(item["y"] - rows[-1]["y"]) > 12:
+                rows.append({"y": item["y"], "items": [item]})
+            else:
+                rows[-1]["items"].append(item)
+        row_texts = []
+        for row in rows:
+            row["items"].sort(key=lambda item: item["x"])
+            row_texts.append(" ".join(item["text"] for item in row["items"]))
+
+        full_text = "\n".join(row_texts)
+        serving_match = re.search(
+            r"Serving\s*Size\s*:\s*(.+)", full_text, re.IGNORECASE
+        )
+        servings_match = re.search(
+            r"Servings\s*Per\s*(?:Container|Bottle)\s*:\s*([^\n]+)",
+            full_text, re.IGNORECASE,
+        )
+        serving_size = serving_match.group(1).strip() if serving_match else ""
+        servings = servings_match.group(1).strip() if servings_match else ""
+
+        ingredients = []
+        in_facts = False
+        in_other = False
+        other_text = ""
+        amount_pattern = re.compile(
+            r"(\d[\d,.]*\s*(?:mcg|mg|g|IU|CFU))\b", re.IGNORECASE
+        )
+        for row in row_texts:
+            compact = row.strip()
+            lower = compact.lower()
+            if "amount per serving" in lower:
+                in_facts = True
+                continue
+            if lower.startswith("daily values") or lower.startswith("daily value"):
+                in_facts = False
+                continue
+            if "other ingredients" in lower:
+                in_facts = False
+                in_other = True
+                other_text += re.split(
+                    r"other\s*ingredients\s*:\s*", compact,
+                    flags=re.IGNORECASE,
+                )[-1]
+                continue
+            if in_other:
+                other_text += ", " + compact
+                continue
+            if not in_facts or not compact or compact in {"%DV", "% DV"}:
+                continue
+
+            amount_match = amount_pattern.search(compact)
+            if amount_match:
+                descriptor = compact[:amount_match.start()].strip(" |:-")
+                amount = amount_match.group(1).strip()
+                dv_match = re.search(r"\d[\d,.]*\s*%", compact[amount_match.end():])
+                daily_value = dv_match.group(0).strip() if dv_match else ""
+                if descriptor:
+                    paren_at = descriptor.find("(")
+                    name = (descriptor[:paren_at] if paren_at >= 0 else descriptor).strip()
+                    form = (descriptor[paren_at:] if paren_at >= 0 else "").strip()
+                    if name:
+                        ingredients.append({
+                            "name": name,
+                            "amount": amount,
+                            "daily_value": daily_value,
+                            "form": form,
+                            "source": "label_image",
+                            "extraction_method": "machine_ocr",
+                            "verified": False,
+                        })
+                    elif ingredients:
+                        prior = ingredients[-1]
+                        prior["form"] = (
+                            prior.get("form", "") + " " + compact
+                        ).strip()
+            elif ingredients and compact and "serving" not in lower:
+                # Continuation of the preceding ingredient's botanical/form.
+                prior = ingredients[-1]
+                prior["form"] = (prior.get("form", "") + " " + compact).strip()
+
+        if other_text:
+            for other in re.split(r",\s*", other_text.strip(" .,")):
+                if other.strip():
+                    ingredients.append({
+                        "name": other.strip(), "amount": "", "daily_value": "",
+                        "form": "Other Ingredient", "source": "label_image",
+                        "extraction_method": "machine_ocr", "verified": False,
+                    })
+
+        if not ingredients:
+            return {
+                "error": "local_ocr_could_not_parse_supplement_facts",
+                "ingredients": [], "_raw_ocr_text": full_text,
+            }
+        return {
+            "ingredients": ingredients,
+            "serving_size": serving_size,
+            "servings_per_container": servings,
+            "_extraction_model": "rapidocr_local",
+            "_raw_ocr_text": full_text,
+        }
+    except Exception as exc:
+        return {"error": f"local_ocr_failed: {exc}", "ingredients": []}
+    finally:
+        if processed_path and os.path.exists(processed_path):
+            os.unlink(processed_path)
+
+
 def extract_label_image(image_path):
     """Extract supplement facts from a label image using Claude's vision."""
     _emit(f"  Reading label image: {image_path}")
@@ -454,6 +602,9 @@ is a product mockup, marketing graphic, or unrelated image), return exactly:
         "claude-sonnet-4-5-20250929",
     ]
     last_error = "empty_vision_response"
+    if not ANTHROPIC_API_KEY:
+        attempts = []
+        last_error = "vision_api_key_unavailable"
     for attempt_number, model_name in enumerate(attempts, start=1):
         response = call_claude(
             prompt, max_tokens=3000, images=[image_path], model=model_name
@@ -508,8 +659,20 @@ is a product mockup, marketing graphic, or unrelated image), return exactly:
         except (json.JSONDecodeError, AttributeError, TypeError) as parse_error:
             last_error = f"vision_json_error_attempt_{attempt_number}: {parse_error}"
 
-    _emit(f"  [!] Label extraction failed after {len(attempts)} attempts: {last_error}")
-    return {"error": last_error, "ingredients": []}
+    _emit(f"  Cloud vision unavailable ({last_error}); using local OCR")
+    local_result = _extract_label_with_local_ocr(image_path)
+    if local_result.get("ingredients"):
+        _emit(
+            f"  Extracted {len(local_result['ingredients'])} label entries "
+            "with local OCR"
+        )
+        return local_result
+    local_error = local_result.get("error", "unknown_local_ocr_error")
+    return {
+        "error": f"cloud={last_error}; local={local_error}",
+        "ingredients": [],
+        "_raw_ocr_text": local_result.get("_raw_ocr_text", ""),
+    }
 
 
 def load_ingredient_db():
