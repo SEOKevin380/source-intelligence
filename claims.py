@@ -581,15 +581,22 @@ class ClaimsLedger:
 
         # Index: fact_keys present in evidence-backed claims
         evidence_fact_keys: set = set()
-        # Verified fact_keys: literal excerpt OR explicitly ACCEPTED
+        # Verified fact_keys: literal text, verified artifact transcription,
+        # or explicit human acceptance. OCR of an immutable label image is a
+        # transcription of the artifact—not an unsupported inference.
         verified_fact_keys: set = set()
         for c in evidence_backed:
             fk = c.metadata.get("fact_key")
             if fk:
                 evidence_fact_keys.add(fk)
                 is_literal = c.metadata.get("excerpt_is_literal", False)
+                is_verified_transcription = bool(
+                    c.source_artifact_id
+                    and c.metadata.get("artifact_transcription_verified")
+                    and c.extraction_method == "machine_ocr"
+                )
                 is_accepted = (c.review_status == ReviewStatus.ACCEPTED)
-                if is_literal or is_accepted:
+                if is_literal or is_verified_transcription or is_accepted:
                     verified_fact_keys.add(fk)
 
         # Index: fact_keys present in manual-only claims

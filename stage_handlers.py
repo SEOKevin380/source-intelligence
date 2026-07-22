@@ -892,6 +892,7 @@ def handle_extract(job: Job) -> dict:
         supplement_artifact_id = source_artifact_id
         supplement_method = "llm_extraction"
         supplement_confidence = vendor_confidence
+        supplement_source_class = artifact_sc_str
         label_source = job.metadata.get("label_image", "")
         label_artifact_id = next(
             (a.get("artifact_id") for a in acquire_result.get("artifacts", [])
@@ -906,6 +907,7 @@ def handle_extract(job: Job) -> dict:
                     supp_facts = label_result
                     supplement_artifact_id = label_artifact_id
                     supplement_method = "machine_ocr"
+                    supplement_source_class = "official_vendor"
                     try:
                         from authority import score_authority as _score_label
                         supplement_confidence = _score_label(
@@ -958,7 +960,7 @@ def handle_extract(job: Job) -> dict:
                     source_artifact_id=supplement_artifact_id,
                     exact_excerpt=excerpt or claim_text,
                     page_location=location or "Supplement Facts panel",
-                    source_class=artifact_sc_str,
+                    source_class=supplement_source_class,
                     confidence=conf,
                     extraction_method=ext_method,
                     metadata={"ingredient_name": name, "amount": amount,
@@ -966,6 +968,8 @@ def handle_extract(job: Job) -> dict:
                               "excerpt_is_literal": bool(excerpt),
                               "fact_key": "ingredients_with_amounts",
                               "image_ocr": supplement_method == "machine_ocr",
+                              "artifact_transcription_verified":
+                                  supplement_method == "machine_ocr",
                               "label_source": label_source},
                 )
                 claims_batch.append(claim)
@@ -986,13 +990,15 @@ def handle_extract(job: Job) -> dict:
                 source_artifact_id=supplement_artifact_id,
                 exact_excerpt=excerpt or f"Serving size: {serving}",
                 page_location=location or "Supplement Facts panel",
-                source_class=artifact_sc_str,
+                source_class=supplement_source_class,
                 confidence=supplement_confidence,
                 extraction_method=supplement_method,
                 metadata={"serving_size": serving,
                           "excerpt_is_literal": bool(excerpt),
                           "fact_key": "serving_size",
                           "image_ocr": supplement_method == "machine_ocr",
+                          "artifact_transcription_verified":
+                              supplement_method == "machine_ocr",
                           "label_source": label_source},
             ))
 
@@ -1015,13 +1021,15 @@ def handle_extract(job: Job) -> dict:
                 source_artifact_id=supplement_artifact_id,
                 exact_excerpt=excerpt or f"Servings per container: {servings_ct}",
                 page_location=location or "Supplement Facts panel",
-                source_class=artifact_sc_str,
+                source_class=supplement_source_class,
                 confidence=supplement_confidence,
                 extraction_method=supplement_method,
                 metadata={"servings_per_container": str(servings_ct),
                           "excerpt_is_literal": bool(excerpt),
                           "fact_key": "servings_per_container",
                           "image_ocr": supplement_method == "machine_ocr",
+                          "artifact_transcription_verified":
+                              supplement_method == "machine_ocr",
                           "label_source": label_source},
             ))
 
@@ -1636,6 +1644,7 @@ def recover_evidence(url: str, offering_id: str, job_id: str,
                         "excerpt_is_literal": bool(excerpt),
                         "recovery_source": url,
                         "image_ocr": is_label_image,
+                        "artifact_transcription_verified": is_label_image,
                     },
                 ))
                 existing_keys.add(dedup_key)

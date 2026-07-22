@@ -190,3 +190,116 @@ def test_generation_prompt_enforces_client_positive_compliance_boundary():
     assert "CLIENT ADVOCACY STANDARD (GOVERNING RULE)" in prompt
     assert "compliance boundary is the target" in prompt
     assert "Assume the client and brand are acting in good faith" in prompt
+
+
+def test_verified_label_ocr_satisfies_strict_mandatory_gate(tmp_path):
+    from claims import Claim, ClaimsLedger, ClaimType
+    from database import ProductDatabase
+
+    db_path = str(tmp_path / "ocr-gate.db")
+    db = ProductDatabase(db_path=db_path)
+    ledger = ClaimsLedger(db_path=db_path)
+    common = {
+        "offering_id": "off-ocr-gate",
+        "source_artifact_id": "immutable-label-artifact",
+        "source_class": "official_vendor",
+        "confidence": 0.8,
+        "extraction_method": "machine_ocr",
+    }
+    ledger.add_claim(Claim(
+        claim_text="Horny Goat Weed Extract: 20 mg",
+        claim_type=ClaimType.INGREDIENT_AMOUNT,
+        metadata={
+            "fact_key": "ingredients_with_amounts",
+            "excerpt_is_literal": False,
+            "image_ocr": True,
+            "artifact_transcription_verified": True,
+        },
+        **common,
+    ))
+    ledger.add_claim(Claim(
+        claim_text="Serving size: 1 chewable tablet",
+        claim_type=ClaimType.SERVING_INFO,
+        metadata={
+            "fact_key": "serving_size",
+            "excerpt_is_literal": False,
+            "image_ocr": True,
+            "artifact_transcription_verified": True,
+        },
+        **common,
+    ))
+
+    result = ledger.check_required_facts(
+        "off-ocr-gate",
+        ["ingredients_with_amounts", "serving_size"],
+        strict=True,
+    )
+    assert result["missing"] == []
+    assert result["covered"] == ["ingredients_with_amounts", "serving_size"]
+    db.close()
+
+
+def test_initial_label_ocr_flows_through_extract_and_clears_gate(tmp_path):
+    import hashlib
+
+    from claims import ClaimsLedger
+    from database import ProductDatabase
+    from net import FetchResult
+    from stage_handlers import handle_acquire, handle_extract
+    from workflow import Job, PipelineStage
+
+    db_path = str(tmp_path / "initial-label.db")
+    db = ProductDatabase(db_path=db_path)
+    label_path = tmp_path / "tmx.png"
+    label_path.write_bytes(b"representative-label-image-bytes")
+    page = b"<html><body>T-Max official product page</body></html>"
+    fetch = FetchResult(
+        content=page,
+        text=page.decode(),
+        final_url="https://primalforce.net/product/t-max/",
+        status_code=200,
+        headers={"Content-Type": "text/html"},
+        content_hash=hashlib.sha256(page).hexdigest(),
+        content_length=len(page),
+        tls_verified=True,
+        error="",
+    )
+    job = Job.create(
+        url="https://primalforce.net/product/t-max/",
+        product_name="T-Max",
+        label_image=str(label_path),
+        label_source_url="https://s15066.pcdn.co/wp-content/uploads/2016/07/tmx.png",
+    )
+    job.offering_id = "off-tmax-initial-label"
+    job.set_stage_result(PipelineStage.IDENTIFY, {
+        "offering_type": "supplement",
+        "product_data": {
+            "product_name": "T-Max",
+            "product_type": "supplement",
+            "supplement_facts": {"ingredients": []},
+        },
+    })
+    ocr = {
+        "serving_size": "1 Chewable Tablet",
+        "servings_per_container": "30",
+        "ingredients": [
+            {"name": "Vitamin B12", "amount": "2,500 mcg"},
+            {"name": "Guarana Extract", "amount": "568.18 mg"},
+        ],
+    }
+
+    with patch("config.DB_PATH", db_path), \
+         patch("net.safe_fetch", return_value=fetch), \
+         patch("research_product.extract_label_image", return_value=ocr):
+        acquire_result = handle_acquire(job)
+        job.set_stage_result(PipelineStage.ACQUIRE, acquire_result)
+        handle_extract(job)
+
+    strict = ClaimsLedger(db_path=db_path).check_required_facts(
+        job.offering_id,
+        ["ingredients_with_amounts", "serving_size"],
+        strict=True,
+    )
+    assert strict["missing"] == []
+    assert strict["needs_review"] == []
+    db.close()

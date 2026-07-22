@@ -642,6 +642,23 @@ if st.session_state.get("awaiting_review") and st.session_state.get("review_cont
         ])
 
         with acquire_tab:
+            # Reuse the label/source URL supplied at intake. This also repairs
+            # older paused sessions whose review_context predates this field.
+            default_evidence_url = ctx.get("label_source_url", "")
+            if not default_evidence_url:
+                try:
+                    from workflow import JobStore
+                    _review_job = JobStore().load(ctx.get("job_id", ""))
+                    if _review_job:
+                        default_evidence_url = (
+                            _review_job.metadata.get("label_source_url", "")
+                            or _review_job.metadata.get("vsl_url", "")
+                            or _review_job.url
+                        )
+                except Exception:
+                    default_evidence_url = ""
+            if default_evidence_url and not st.session_state.get("evidence_url"):
+                st.session_state.evidence_url = default_evidence_url
             evidence_url = st.text_input(
                 "URL with missing evidence",
                 placeholder="https://example.com/product-label",
@@ -1375,6 +1392,9 @@ elif show_form:
                         "conflicts": _rc_r.get("conflicts", []),
                         "missing_mandatory_facts": _mm,
                         "offering_id": completed_job.offering_id,
+                        "label_source_url": completed_job.metadata.get(
+                            "label_source_url", ""
+                        ),
                     }
                     progress_container.update(label="Awaiting review", state="running")
                     st.rerun()
@@ -1460,6 +1480,9 @@ elif show_form:
                         "conflicts": reconcile_result.get("conflicts", []),
                         "missing_mandatory_facts": missing_mandatory,
                         "offering_id": completed_job.offering_id,
+                        "label_source_url": completed_job.metadata.get(
+                            "label_source_url", ""
+                        ),
                     }
                     progress_container.update(
                         label="Awaiting human review", state="error"
