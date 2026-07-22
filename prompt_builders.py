@@ -649,11 +649,12 @@ Globe: {'PASS' if compliance.get('globe_compliance', {}).get('passes', True) els
         for d in req_disclaimers:
             block += f"- {d}\n"
 
-    # Authorization (if no standing decline, explicitly authorize)
+    # Editorial review status (if no standing decline)
     if not standing_declines:
-        block += "\n--- AUTHORIZATION ---\n"
-        block += "This product has passed all compliance gates. Source data is clean.\n"
-        block += "Proceed with article generation using the extracted data above.\n"
+        block += "\n--- EDITORIAL REVIEW STATUS ---\n"
+        block += "Status: READY FOR EDITORIAL REVIEW\n"
+        block += "Source data has been extracted and pre-screened. Human editorial review is required before publication.\n"
+        block += "All claims must be independently verified by the editor. Source provenance should be checked.\n"
 
     # Testimonials
     testimonials = product.get("testimonials", [])
@@ -1641,15 +1642,15 @@ provided for reader awareness, not as a contraindication for the product itself.
             block += "- Attribute ALL claims to the brand ('the brand states...')\n"
             block += "Deliver a complete, publish-ready draft.\n"
         elif _data_gaps:
-            block += "This product has passed compliance gates with partial data.\n"
+            block += "Status: READY FOR EDITORIAL REVIEW (partial data).\n"
             block += f"Data gaps: {', '.join(_data_gaps)}. Note these in Material Limitations.\n"
             block += "Proceed with article generation using extracted data only.\n"
-            block += "Deliver a complete, publish-ready draft.\n"
+            block += "Human editorial review required before publication.\n"
         else:
-            block += "This product has passed all pre-publication compliance gates.\n"
-            block += "All problematic claims have been pre-removed from source data.\n"
-            block += "The production system is authorized to proceed with article generation.\n"
-            block += "Deliver a complete, publish-ready draft using the clean source data below.\n"
+            block += "Status: READY FOR EDITORIAL REVIEW.\n"
+            block += "Problematic claims have been pre-screened from source data.\n"
+            block += "Proceed with article generation using the source data below.\n"
+            block += "Human editorial review required before publication.\n"
         if _auth_effective_cat in {"male_enhancement"}:
             block += "Avoid R12-sensitive terminology. Write from source-documented claims only.\n"
 

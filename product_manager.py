@@ -361,7 +361,7 @@ def get_prompt_completeness(product_key: str, db: ProductDatabase = None) -> dic
                 "C2": {...},
                 ...
             },
-            "ready_for_production": bool,
+            "ready_for_editorial_review": bool,
             "missing_critical": [str],
         }
     """
@@ -373,7 +373,7 @@ def get_prompt_completeness(product_key: str, db: ProductDatabase = None) -> dic
         return {
             "score": 0,
             "sections": {},
-            "ready_for_production": False,
+            "ready_for_editorial_review": False,
             "missing_critical": ["No research data found"],
         }
 
@@ -569,7 +569,7 @@ def get_prompt_completeness(product_key: str, db: ProductDatabase = None) -> dic
     return {
         "score": score,
         "sections": sections,
-        "ready_for_production": ready,
+        "ready_for_editorial_review": ready,
         "missing_critical": missing_critical,
     }
 

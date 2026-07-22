@@ -41,8 +41,8 @@ def _make_research(name="Test Product", brand="Test Brand", **extra):
 
 
 class TestSchemaVersion:
-    def test_schema_version_is_2(self):
-        assert CURRENT_SCHEMA_VERSION == 2
+    def test_schema_version_is_6(self):
+        assert CURRENT_SCHEMA_VERSION == 6
 
     def test_new_db_has_current_version(self, tmp_db):
         version = tmp_db._get_schema_version()

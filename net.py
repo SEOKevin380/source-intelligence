@@ -218,12 +218,17 @@ def safe_fetch(
         )
     except ssl.SSLError:
         if allow_tls_fallback and verify_tls:
-            # Retry without TLS verification for vendor pages
+            # Log TLS fallback — this is a security downgrade that should be audited
+            import logging
+            logging.warning(f"TLS verification failed for {url} — retrying WITHOUT verification. "
+                           f"This is a security downgrade. Source data from this URL should be treated as unverified.")
             try:
                 content, status_code, headers, final_url, tls_ok = _do_fetch(
                     url, max_bytes=max_bytes, timeout=timeout,
                     verify_tls=False, user_agent=ua,
                 )
+                # Mark that TLS was downgraded so provenance reflects this
+                tls_ok = False
             except Exception as e:
                 elapsed = (time.monotonic() - start) * 1000
                 return FetchResult(
@@ -430,7 +435,7 @@ def safe_download(
 # ============================================================================
 
 def fetch_text(url: str, max_bytes: int = 60000,
-               allow_tls_fallback: bool = True) -> str:
+               allow_tls_fallback: bool = False) -> str:
     """Backward-compatible text fetch. Returns text or empty string.
 
     This is a drop-in replacement for the old fetch_url() function.

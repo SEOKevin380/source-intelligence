@@ -119,7 +119,6 @@ class BrowserSession:
                 args=[
                     '--disable-blink-features=AutomationControlled',
                     '--disable-dev-shm-usage',
-                    '--no-sandbox',
                     '--disable-gpu',
                 ]
             )

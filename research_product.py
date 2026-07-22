@@ -467,8 +467,9 @@ is a product mockup, marketing graphic, or unrelated image), return exactly:
                 if isinstance(ingredients, list) and len(ingredients) > 0:
                     for ing in ingredients:
                         ing["source"] = "label_image"
-                        ing["verified"] = True
-                    _emit(f"  Extracted {len(ingredients)} ingredients from label image")
+                        ing["extraction_method"] = "machine_ocr"
+                        ing["verified"] = False
+                    _emit(f"  Extracted {len(ingredients)} ingredients from label image (machine-extracted, requires human verification)")
                     if parsed.get("serving_size"):
                         _emit(f"  Serving Size: {parsed['serving_size']}")
                     if parsed.get("servings_per_container"):
@@ -489,8 +490,9 @@ is a product mockup, marketing graphic, or unrelated image), return exactly:
             if isinstance(ingredients, list):
                 for ing in ingredients:
                     ing["source"] = "label_image"
-                    ing["verified"] = True
-                _emit(f"  Extracted {len(ingredients)} ingredients from label image")
+                    ing["extraction_method"] = "machine_ocr"
+                    ing["verified"] = False
+                _emit(f"  Extracted {len(ingredients)} ingredients from label image (machine-extracted, requires human verification)")
                 return ingredients
     except (json.JSONDecodeError, AttributeError):
         _emit(f"  [!] Failed to parse label extraction")
@@ -1897,6 +1899,9 @@ def phase1_extract_product(url, vsl_url=None, product_name=None, browser_session
                 _emit(f"  Inferred product name from domain: {product_name}")
 
     # Layer 3: Web search fallback if direct scrape is thin
+    # IMPORTANT: Third-party sources are tagged separately from official sources.
+    # Source boundaries must be preserved — third-party data should not be confused
+    # with official vendor statements. All third-party content is clearly labeled.
     main_text_len = len(strip_html(all_pages.get("main", "")))
     if main_text_len < 2000 or not supplement_facts_raw:
         name_for_search = product_name or ""
@@ -1905,8 +1910,14 @@ def phase1_extract_product(url, vsl_url=None, product_name=None, browser_session
             for search_type in ["ingredients", "pricing", "reviews"]:
                 search_result = _web_search_product(name_for_search, search_type)
                 if search_result:
-                    combined_text += f"\n\nWEB SEARCH ({search_type}):\n{search_result}"
-                    _emit(f"    Got web search results for: {search_type}")
+                    combined_text += (
+                        f"\n\n⚠️ THIRD-PARTY SOURCE ({search_type.upper()}) — NOT FROM OFFICIAL VENDOR ⚠️\n"
+                        f"Source class: third_party_web_search\n"
+                        f"Authority: UNVERIFIED — treat all claims as third-party assertions, not official vendor statements.\n"
+                        f"Do NOT merge these claims with official vendor data without explicit notation.\n"
+                        f"{search_result}"
+                    )
+                    _emit(f"    Got web search results for: {search_type} (tagged as third-party)")
                 time.sleep(1)  # Respect search rate limits
 
     # Layer 3b: Extract BuyGoods / ClickBank pricing from HTML data attributes
@@ -2018,6 +2029,24 @@ Return ONLY valid JSON with this exact structure:
     data.setdefault("supplement_facts", {"ingredients": []})
     data.setdefault("pricing", [])
     data.setdefault("claims", [])
+
+    # FAIL-CLOSED: Validate product type — unknown types must not proceed unchecked
+    KNOWN_PRODUCT_TYPES = {
+        "supplement", "peptide", "research_chemical", "telehealth",
+        "device", "info_product", "food", "topical", "cannabis",
+    }
+    detected_type = data.get("product_type", "").strip().lower()
+    if detected_type not in KNOWN_PRODUCT_TYPES:
+        _emit(f"  ⚠️ UNKNOWN PRODUCT TYPE: '{detected_type}' — requires human classification")
+        _emit(f"  The system does not have a validated intelligence pack for this product type.")
+        _emit(f"  Proceeding with generic extraction only. Compliance checks may be incomplete.")
+        data["product_type"] = "unknown"
+        data["_type_classification_status"] = "HUMAN_REVIEW_REQUIRED"
+        data["_type_classification_note"] = (
+            f"Detected type '{detected_type}' is not in the validated product type registry. "
+            f"A human must classify this product before compliance checks can be trusted. "
+            f"Known types: {', '.join(sorted(KNOWN_PRODUCT_TYPES))}"
+        )
 
     # Layer 5: Quality check — enrich ingredients if too few were extracted
     # Many JS-rendered landing pages only show 3-4 "hero" ingredients in static HTML

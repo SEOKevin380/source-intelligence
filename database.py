@@ -17,7 +17,7 @@ from typing import Optional
 _db_lock = threading.Lock()
 
 # Schema version — increment when adding migrations
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 6
 
 
 def _slugify(name: str) -> str:
@@ -143,6 +143,14 @@ class ProductDatabase:
             self._migrate_v1()
         if current < 2:
             self._migrate_v2()
+        if current < 3:
+            self._migrate_v3()
+        if current < 4:
+            self._migrate_v4()
+        if current < 5:
+            self._migrate_v5()
+        if current < 6:
+            self._migrate_v6()
         self._set_schema_version(CURRENT_SCHEMA_VERSION)
 
     def _migrate_v1(self):
@@ -237,6 +245,376 @@ class ProductDatabase:
                 "UPDATE products SET research_json = ?, verification_state = ? WHERE id = ?",
                 (json.dumps(data), "quarantined_dsld", row["id"])
             )
+
+    def _migrate_v3(self):
+        """V3 migration: Universal entity model + evidence lake + claims ledger + workflow."""
+        migration_sqls = [
+            # Offerings table — universal entity record
+            """CREATE TABLE IF NOT EXISTS offerings (
+                offering_id TEXT PRIMARY KEY,
+                offering_type TEXT NOT NULL DEFAULT 'unknown',
+                name TEXT NOT NULL,
+                brand_name TEXT DEFAULT '',
+                organization_name TEXT DEFAULT '',
+                url TEXT DEFAULT '',
+                category TEXT DEFAULT '',
+                market TEXT DEFAULT 'US',
+                composition_json TEXT DEFAULT '{}',
+                policies_json TEXT DEFAULT '{}',
+                metadata_json TEXT DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                legacy_product_key TEXT,
+                UNIQUE(legacy_product_key)
+            )""",
+
+            # Artifacts table (evidence lake) — immutable source snapshots
+            """CREATE TABLE IF NOT EXISTS artifacts (
+                artifact_id TEXT PRIMARY KEY,
+                artifact_type TEXT NOT NULL,
+                source_url TEXT,
+                final_url TEXT,
+                source_class TEXT NOT NULL,
+                source_relationship TEXT NOT NULL DEFAULT 'third_party',
+                captured_at TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                content_length INTEGER DEFAULT 0,
+                tls_verified INTEGER DEFAULT 1,
+                status_code INTEGER DEFAULT 0,
+                elapsed_ms REAL DEFAULT 0.0,
+                error TEXT DEFAULT '',
+                content_path TEXT DEFAULT '',
+                content_inline TEXT DEFAULT '',
+                offering_id TEXT,
+                job_id TEXT,
+                acquisition_phase TEXT DEFAULT '',
+                notes TEXT DEFAULT ''
+            )""",
+
+            # Claims ledger — atomic fact/claim records with source tracing
+            """CREATE TABLE IF NOT EXISTS claims (
+                claim_id TEXT PRIMARY KEY,
+                offering_id TEXT NOT NULL,
+                claim_text TEXT NOT NULL,
+                claim_type TEXT NOT NULL,
+                source_artifact_id TEXT,
+                exact_excerpt TEXT DEFAULT '',
+                page_location TEXT DEFAULT '',
+                captured_at TEXT NOT NULL,
+                source_class TEXT NOT NULL,
+                confidence REAL DEFAULT 0.0,
+                extraction_method TEXT DEFAULT 'manual',
+                effective_market TEXT DEFAULT 'US',
+                review_status TEXT DEFAULT 'unreviewed',
+                reviewed_by TEXT,
+                reviewed_at TEXT,
+                conflicts_json TEXT DEFAULT '[]',
+                metadata_json TEXT DEFAULT '{}'
+            )""",
+
+            # Workflow jobs table — resumable pipeline state
+            """CREATE TABLE IF NOT EXISTS jobs (
+                job_id TEXT PRIMARY KEY,
+                offering_id TEXT DEFAULT '',
+                url TEXT DEFAULT '',
+                product_name TEXT DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'created',
+                current_stage TEXT DEFAULT '',
+                quick_mode INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT DEFAULT '',
+                error TEXT DEFAULT '',
+                budget_seconds INTEGER DEFAULT 600,
+                elapsed_seconds REAL DEFAULT 0.0,
+                stage_data_json TEXT DEFAULT '{}',
+                stage_status_json TEXT DEFAULT '{}',
+                metadata_json TEXT DEFAULT '{}'
+            )""",
+
+            # Job stage checkpoints — audit trail for every pipeline stage
+            """CREATE TABLE IF NOT EXISTS job_checkpoints (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT NOT NULL,
+                stage TEXT NOT NULL,
+                status TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                result_json TEXT DEFAULT '{}',
+                error TEXT DEFAULT ''
+            )""",
+
+            # Indexes
+            "CREATE INDEX IF NOT EXISTS idx_artifacts_offering ON artifacts(offering_id)",
+            "CREATE INDEX IF NOT EXISTS idx_artifacts_source_class ON artifacts(source_class)",
+            "CREATE INDEX IF NOT EXISTS idx_artifacts_job ON artifacts(job_id)",
+            "CREATE INDEX IF NOT EXISTS idx_artifacts_captured ON artifacts(captured_at)",
+            "CREATE INDEX IF NOT EXISTS idx_claims_offering ON claims(offering_id)",
+            "CREATE INDEX IF NOT EXISTS idx_claims_source ON claims(source_artifact_id)",
+            "CREATE INDEX IF NOT EXISTS idx_claims_type ON claims(claim_type)",
+            "CREATE INDEX IF NOT EXISTS idx_claims_review ON claims(review_status)",
+            "CREATE INDEX IF NOT EXISTS idx_jobs_offering ON jobs(offering_id)",
+            "CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status)",
+            "CREATE INDEX IF NOT EXISTS idx_checkpoints_job ON job_checkpoints(job_id)",
+        ]
+
+        for sql in migration_sqls:
+            try:
+                self.conn.execute(sql)
+            except sqlite3.OperationalError:
+                pass  # Table/index already exists
+
+        # Bridge: link legacy products table to new offerings table
+        try:
+            self.conn.execute(
+                "ALTER TABLE products ADD COLUMN offering_id TEXT DEFAULT NULL"
+            )
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
+        self.conn.commit()
+
+    def _migrate_v4(self):
+        """V4 repair migration: Ensure v3 tables match expected schema.
+
+        Databases already stamped user_version=3 may have an incompatible
+        earlier v3 schema (different column names, missing columns, wrong
+        types). This migration inspects every v3 table and repairs safely:
+        - Missing tables are created
+        - Missing columns are added via ALTER TABLE
+        - Indexes are added if absent
+        No data is deleted or tables dropped — additive repairs only.
+        """
+        # Expected columns for each v3 table.
+        # format: {table: {column_name: "TYPE DEFAULT ..."}}
+        expected = {
+            "offerings": {
+                "offering_id": "TEXT PRIMARY KEY",
+                "offering_type": "TEXT NOT NULL DEFAULT 'unknown'",
+                "name": "TEXT NOT NULL",
+                "brand_name": "TEXT DEFAULT ''",
+                "organization_name": "TEXT DEFAULT ''",
+                "url": "TEXT DEFAULT ''",
+                "category": "TEXT DEFAULT ''",
+                "market": "TEXT DEFAULT 'US'",
+                "composition_json": "TEXT DEFAULT '{}'",
+                "policies_json": "TEXT DEFAULT '{}'",
+                "metadata_json": "TEXT DEFAULT '{}'",
+                "created_at": "TEXT NOT NULL",
+                "updated_at": "TEXT NOT NULL",
+                "legacy_product_key": "TEXT",
+            },
+            "artifacts": {
+                "artifact_id": "TEXT PRIMARY KEY",
+                "artifact_type": "TEXT NOT NULL",
+                "source_url": "TEXT",
+                "final_url": "TEXT",
+                "source_class": "TEXT NOT NULL",
+                "source_relationship": "TEXT NOT NULL DEFAULT 'third_party'",
+                "captured_at": "TEXT NOT NULL",
+                "content_hash": "TEXT NOT NULL",
+                "content_length": "INTEGER DEFAULT 0",
+                "tls_verified": "INTEGER DEFAULT 1",
+                "status_code": "INTEGER DEFAULT 0",
+                "elapsed_ms": "REAL DEFAULT 0.0",
+                "error": "TEXT DEFAULT ''",
+                "content_path": "TEXT DEFAULT ''",
+                "content_inline": "TEXT DEFAULT ''",
+                "offering_id": "TEXT",
+                "job_id": "TEXT",
+                "acquisition_phase": "TEXT DEFAULT ''",
+                "notes": "TEXT DEFAULT ''",
+            },
+            "claims": {
+                "claim_id": "TEXT PRIMARY KEY",
+                "offering_id": "TEXT NOT NULL",
+                "claim_text": "TEXT NOT NULL",
+                "claim_type": "TEXT NOT NULL",
+                "source_artifact_id": "TEXT",
+                "exact_excerpt": "TEXT DEFAULT ''",
+                "page_location": "TEXT DEFAULT ''",
+                "captured_at": "TEXT NOT NULL",
+                "source_class": "TEXT NOT NULL",
+                "confidence": "REAL DEFAULT 0.0",
+                "extraction_method": "TEXT DEFAULT 'manual'",
+                "effective_market": "TEXT DEFAULT 'US'",
+                "review_status": "TEXT DEFAULT 'unreviewed'",
+                "reviewed_by": "TEXT",
+                "reviewed_at": "TEXT",
+                "conflicts_json": "TEXT DEFAULT '[]'",
+                "metadata_json": "TEXT DEFAULT '{}'",
+            },
+            "jobs": {
+                "job_id": "TEXT PRIMARY KEY",
+                "offering_id": "TEXT DEFAULT ''",
+                "url": "TEXT DEFAULT ''",
+                "product_name": "TEXT DEFAULT ''",
+                "status": "TEXT NOT NULL DEFAULT 'created'",
+                "current_stage": "TEXT DEFAULT ''",
+                "quick_mode": "INTEGER DEFAULT 0",
+                "created_at": "TEXT NOT NULL",
+                "updated_at": "TEXT NOT NULL",
+                "completed_at": "TEXT DEFAULT ''",
+                "error": "TEXT DEFAULT ''",
+                "budget_seconds": "INTEGER DEFAULT 600",
+                "elapsed_seconds": "REAL DEFAULT 0.0",
+                "stage_data_json": "TEXT DEFAULT '{}'",
+                "stage_status_json": "TEXT DEFAULT '{}'",
+                "metadata_json": "TEXT DEFAULT '{}'",
+            },
+            "job_checkpoints": {
+                "id": "INTEGER PRIMARY KEY AUTOINCREMENT",
+                "job_id": "TEXT NOT NULL",
+                "stage": "TEXT NOT NULL",
+                "status": "TEXT NOT NULL",
+                "started_at": "TEXT",
+                "completed_at": "TEXT",
+                "result_json": "TEXT DEFAULT '{}'",
+                "error": "TEXT DEFAULT ''",
+            },
+        }
+
+        # Expected indexes
+        expected_indexes = [
+            ("idx_artifacts_offering", "artifacts", "offering_id"),
+            ("idx_artifacts_source_class", "artifacts", "source_class"),
+            ("idx_artifacts_job", "artifacts", "job_id"),
+            ("idx_artifacts_captured", "artifacts", "captured_at"),
+            ("idx_claims_offering", "claims", "offering_id"),
+            ("idx_claims_source", "claims", "source_artifact_id"),
+            ("idx_claims_type", "claims", "claim_type"),
+            ("idx_claims_review", "claims", "review_status"),
+            ("idx_jobs_offering", "jobs", "offering_id"),
+            ("idx_jobs_status", "jobs", "status"),
+            ("idx_checkpoints_job", "job_checkpoints", "job_id"),
+        ]
+
+        repairs = []
+
+        for table, columns in expected.items():
+            # Check if table exists
+            exists = self.conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                (table,)
+            ).fetchone()
+
+            if not exists:
+                # Table missing entirely — create it from v3 definition
+                repairs.append(f"table:{table}:created")
+                self._migrate_v3()  # Re-run v3 to create all missing tables
+                break  # v3 creates everything, no need to continue
+
+            # Table exists — check for missing columns
+            existing_cols = {
+                row[1] for row in
+                self.conn.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+
+            for col_name, col_def in columns.items():
+                if col_name not in existing_cols:
+                    # Extract just the type and default for ALTER TABLE
+                    # PRIMARY KEY and NOT NULL can't be added via ALTER
+                    add_def = col_def.replace("PRIMARY KEY", "")
+                    add_def = add_def.replace("AUTOINCREMENT", "")
+                    add_def = add_def.replace("NOT NULL", "")
+                    add_def = add_def.strip()
+                    if not add_def:
+                        add_def = "TEXT"
+                    try:
+                        self.conn.execute(
+                            f"ALTER TABLE {table} ADD COLUMN {col_name} {add_def}"
+                        )
+                        repairs.append(f"column:{table}.{col_name}:added")
+                    except sqlite3.OperationalError:
+                        pass  # Column already exists (race condition)
+
+        # Ensure all indexes exist
+        for idx_name, idx_table, idx_col in expected_indexes:
+            try:
+                self.conn.execute(
+                    f"CREATE INDEX IF NOT EXISTS {idx_name} ON {idx_table}({idx_col})"
+                )
+            except sqlite3.OperationalError:
+                pass
+
+        # Bridge column on products table
+        try:
+            self.conn.execute(
+                "ALTER TABLE products ADD COLUMN offering_id TEXT DEFAULT NULL"
+            )
+        except sqlite3.OperationalError:
+            pass
+
+        self.conn.commit()
+
+        # Log repairs if any were made
+        if repairs:
+            import logging
+            logging.getLogger(__name__).info(
+                "v4 repair migration applied %d fixes: %s",
+                len(repairs), ", ".join(repairs)
+            )
+
+    def _migrate_v5(self):
+        """V5 migration: Recovery audit events table.
+
+        Immutable log of all recovery and manual-entry operations.
+        """
+        sqls = [
+            """CREATE TABLE IF NOT EXISTS recovery_audit_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_type TEXT NOT NULL,
+                offering_id TEXT NOT NULL,
+                job_id TEXT NOT NULL,
+                url TEXT DEFAULT '',
+                target_facts TEXT DEFAULT '[]',
+                result TEXT DEFAULT '',
+                facts_found TEXT DEFAULT '[]',
+                facts_missing TEXT DEFAULT '[]',
+                artifact_id TEXT DEFAULT '',
+                claims_added INTEGER DEFAULT 0,
+                error TEXT DEFAULT '',
+                reviewer TEXT DEFAULT '',
+                created_at TEXT NOT NULL
+            )""",
+            "CREATE INDEX IF NOT EXISTS idx_audit_offering ON recovery_audit_events(offering_id)",
+            "CREATE INDEX IF NOT EXISTS idx_audit_job ON recovery_audit_events(job_id)",
+            "CREATE INDEX IF NOT EXISTS idx_audit_type ON recovery_audit_events(event_type)",
+            # Immutability triggers — audit rows must never be modified or deleted
+            """CREATE TRIGGER IF NOT EXISTS trg_audit_no_update
+               BEFORE UPDATE ON recovery_audit_events
+               BEGIN SELECT RAISE(ABORT, 'recovery_audit_events is immutable: updates are prohibited'); END""",
+            """CREATE TRIGGER IF NOT EXISTS trg_audit_no_delete
+               BEFORE DELETE ON recovery_audit_events
+               BEGIN SELECT RAISE(ABORT, 'recovery_audit_events is immutable: deletes are prohibited'); END""",
+        ]
+        for sql in sqls:
+            try:
+                self.conn.execute(sql)
+            except sqlite3.OperationalError:
+                pass  # Already exists
+        self.conn.commit()
+
+    def _migrate_v6(self):
+        """V6 migration: Immutability triggers on recovery_audit_events.
+
+        V5 databases created before triggers were added will not have them.
+        This migration ensures all databases receive the triggers.
+        """
+        sqls = [
+            """CREATE TRIGGER IF NOT EXISTS trg_audit_no_update
+               BEFORE UPDATE ON recovery_audit_events
+               BEGIN SELECT RAISE(ABORT, 'recovery_audit_events is immutable: updates are prohibited'); END""",
+            """CREATE TRIGGER IF NOT EXISTS trg_audit_no_delete
+               BEFORE DELETE ON recovery_audit_events
+               BEGIN SELECT RAISE(ABORT, 'recovery_audit_events is immutable: deletes are prohibited'); END""",
+        ]
+        for sql in sqls:
+            try:
+                self.conn.execute(sql)
+            except sqlite3.OperationalError:
+                pass  # Already exists
+        self.conn.commit()
 
     def _execute_write(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         """Thread-safe single write operation."""

@@ -192,7 +192,7 @@ def _build_form_values_from_result(data):
 # IMPORTS (after auth, so Streamlit Cloud doesn't fail on missing deps)
 # ============================================================================
 
-from research_product import research_product, extract_label_image
+from research_product import research_product  # Legacy: used only for update mode
 from config import OUTPUT_DIR, INGREDIENT_DB_PATH, CATEGORY_DISPLAY_LABELS
 try:
     from site_configs_loader import get_site_config as _get_site_cfg, get_site_names, get_l1_sites
@@ -471,10 +471,479 @@ else:
 
 
 # ============================================================================
-# MAIN AREA — Two-phase UI: FORM or RESULTS
+# MAIN AREA — Three-phase UI: FORM, REVIEW GATE, or RESULTS
 # ============================================================================
 
-if show_form:
+if st.session_state.get("awaiting_review") and st.session_state.get("review_context"):
+    # ================================================================
+    # REVIEW GATE — Human approval required before source pack
+    # ================================================================
+    ctx = st.session_state.review_context
+    st.title("Human Review Required")
+
+    st.error(
+        "Research is paused. The findings below need your review "
+        "before the source pack can be generated."
+    )
+
+    # ── Plain-language summary of why review is needed ──
+    st.subheader("Why this stopped")
+    reasons = ctx.get("error", "").replace("Review required: Human review required: ", "")
+    for reason in reasons.split("; "):
+        if reason.strip():
+            st.markdown(f"- **{reason.strip()}**")
+
+    # ── Research summary ──
+    st.subheader("What was found")
+    sum_col1, sum_col2, sum_col3 = st.columns(3)
+    sum_col1.metric("Product", ctx.get("product_name", "Unknown"))
+    sum_col2.metric("Type", ctx.get("offering_type", "unknown").replace("_", " ").title())
+    sum_col3.metric("Risk Level", ctx.get("risk_level", "unknown").title())
+
+    # ── Per-rule resolution controls ──
+    compliance = ctx.get("compliance", {})
+    compliance_results = compliance.get("results", []) if isinstance(compliance, dict) else []
+    has_conflicts = ctx.get("conflicts_found", 0) > 0
+
+    # Initialize resolution state in session if not present
+    if "rule_resolutions" not in st.session_state:
+        st.session_state.rule_resolutions = {}
+
+    if compliance_results:
+        st.subheader("Compliance Findings — Resolve Each")
+        for idx, r in enumerate(compliance_results):
+            rule_id = r.get("rule_id", f"UNKNOWN_{idx}")
+            severity = r.get("state", "")
+            severity_label = {
+                "blocked": "BLOCK", "human_review": "REVIEW", "editorial": "WARNING"
+            }.get(severity, "UNKNOWN")
+            severity_color = {
+                "blocked": "red", "human_review": "orange", "editorial": "blue"
+            }.get(severity, "gray")
+
+            with st.expander(
+                f"[{severity_label}] {rule_id}: {r.get('description', '')}",
+                expanded=True,
+            ):
+                st.markdown(f"Matched text: `{r.get('matched_text', '')}`")
+                if r.get("safe_alternative"):
+                    st.markdown(f"Safe alternative: *{r['safe_alternative']}*")
+
+                # Show allowed actions based on severity
+                if severity == "blocked":
+                    st.warning(
+                        "BLOCK: This finding can only be resolved by providing "
+                        "substitute text that replaces the matched claim."
+                    )
+                    sub_text = st.text_input(
+                        "Substitute text (required)",
+                        key=f"sub_{rule_id}",
+                        value=r.get("safe_alternative", ""),
+                        placeholder="Enter corrected text...",
+                    )
+                    sub_note = st.text_input(
+                        "Justification",
+                        key=f"note_{rule_id}",
+                        placeholder="Why this substitution is appropriate...",
+                    )
+                    if sub_text.strip():
+                        st.session_state.rule_resolutions[rule_id] = {
+                            "action": "substitute",
+                            "substitute_text": sub_text.strip(),
+                            "note": sub_note.strip(),
+                        }
+                    elif rule_id in st.session_state.rule_resolutions:
+                        del st.session_state.rule_resolutions[rule_id]
+
+                elif severity == "human_review":
+                    st.info(
+                        "REVIEW: Requires 'accept' or 'substitute' with a "
+                        "justification note."
+                    )
+                    action = st.radio(
+                        "Action",
+                        ["accept", "substitute"],
+                        key=f"action_{rule_id}",
+                        horizontal=True,
+                    )
+                    note = st.text_input(
+                        "Justification (required)",
+                        key=f"note_{rule_id}",
+                        placeholder="Explain why this is acceptable...",
+                    )
+                    sub_text = ""
+                    if action == "substitute":
+                        sub_text = st.text_input(
+                            "Substitute text",
+                            key=f"sub_{rule_id}",
+                            value=r.get("safe_alternative", ""),
+                        )
+                    if note.strip():
+                        res = {"action": action, "note": note.strip()}
+                        if sub_text.strip():
+                            res["substitute_text"] = sub_text.strip()
+                        st.session_state.rule_resolutions[rule_id] = res
+                    elif rule_id in st.session_state.rule_resolutions:
+                        del st.session_state.rule_resolutions[rule_id]
+
+                else:  # editorial / warning
+                    action = st.radio(
+                        "Action",
+                        ["accept", "waive"],
+                        key=f"action_{rule_id}",
+                        horizontal=True,
+                    )
+                    note = st.text_input(
+                        "Note (optional)",
+                        key=f"note_{rule_id}",
+                        placeholder="Optional note...",
+                    )
+                    st.session_state.rule_resolutions[rule_id] = {
+                        "action": action,
+                        "note": note.strip(),
+                    }
+
+    # Show conflicts with resolution controls
+    if has_conflicts:
+        with st.expander(
+            f"Claim Conflicts ({ctx['conflicts_found']}) — Must Resolve",
+            expanded=True,
+        ):
+            for conflict in ctx.get("conflicts", []):
+                st.markdown(f"- {conflict.get('description', 'Unknown conflict')}")
+            conflict_note = st.text_input(
+                "Resolution note (required — explain which values are correct)",
+                key="conflict_resolution_note",
+                placeholder="e.g., 'Official label shows 500mg, third-party site was outdated'",
+            )
+            if conflict_note.strip():
+                st.session_state.rule_resolutions["CLAIM_CONFLICTS"] = {
+                    "action": "accept",
+                    "note": conflict_note.strip(),
+                }
+            elif "CLAIM_CONFLICTS" in st.session_state.rule_resolutions:
+                del st.session_state.rule_resolutions["CLAIM_CONFLICTS"]
+
+    # ── Acquire missing evidence ──
+    missing_mandatory = ctx.get("missing_mandatory_facts", [])
+    if missing_mandatory:
+        st.subheader("Missing Mandatory Facts")
+        st.warning(
+            "The following facts could not be found in the evidence collected. "
+            "Provide an additional URL where these facts can be found, or "
+            "enter the facts manually. Manual entries require verification "
+            "and cannot independently satisfy mandatory evidence requirements."
+        )
+        for fact in missing_mandatory:
+            st.markdown(f"- **{fact.replace('_', ' ').title()}**")
+
+        acquire_tab, manual_tab = st.tabs([
+            "Acquire from URL", "Enter Manually",
+        ])
+
+        with acquire_tab:
+            evidence_url = st.text_input(
+                "URL with missing evidence",
+                placeholder="https://example.com/product-label",
+                key="evidence_url",
+            )
+            if st.button("Fetch and Extract", key="btn_acquire_evidence"):
+                if not evidence_url.strip():
+                    st.error("Please enter a URL.")
+                else:
+                    try:
+                        from stage_handlers import recover_evidence
+                        result = recover_evidence(
+                            url=evidence_url.strip(),
+                            offering_id=ctx.get("offering_id", ""),
+                            job_id=ctx.get("job_id", ""),
+                            target_facts=list(missing_mandatory),
+                        )
+                        if result["claims_added"] > 0:
+                            st.success(
+                                f"Extracted {result['claims_added']} facts "
+                                f"from the URL ({', '.join(result['facts_found'])}). "
+                                "You can now approve to continue."
+                            )
+                            if result["facts_missing"]:
+                                st.warning(
+                                    f"Still missing: {', '.join(result['facts_missing'])}. "
+                                    "Try another URL or enter manually."
+                                )
+                                st.session_state.review_context[
+                                    "missing_mandatory_facts"
+                                ] = result["facts_missing"]
+                            else:
+                                st.session_state.review_context[
+                                    "missing_mandatory_facts"
+                                ] = []
+                        else:
+                            st.warning(
+                                "Could not find the missing facts in this URL. "
+                                "Try a different URL or enter facts manually."
+                            )
+                        if result["errors"]:
+                            for err in result["errors"]:
+                                st.caption(f"Extraction note: {err}")
+                    except Exception as e:
+                        st.error(f"Evidence acquisition failed: {e}")
+
+        with manual_tab:
+            st.markdown(
+                "Enter each missing fact below. Manual entries are saved as "
+                "**unverified** and cannot independently satisfy mandatory "
+                "evidence requirements. A supporting artifact or second "
+                "reviewer is needed."
+            )
+            reviewer_for_manual = st.text_input(
+                "Your name (required for manual entries)",
+                key="manual_entry_reviewer",
+                placeholder="Your name",
+            )
+            manual_entries = {}
+            for fact in missing_mandatory:
+                label = fact.replace("_", " ").title()
+                val = st.text_input(
+                    label, key=f"manual_{fact}",
+                    placeholder=f"Enter {label}...",
+                )
+                if val.strip():
+                    manual_entries[fact] = val.strip()
+
+            if st.button("Save Manual Entries", key="btn_manual_facts"):
+                if not reviewer_for_manual.strip():
+                    st.error("Please enter your name before saving manual entries.")
+                elif not manual_entries:
+                    st.error("Enter at least one fact.")
+                else:
+                    try:
+                        from stage_handlers import record_manual_entry
+                        offering_id = ctx.get("offering_id", "")
+                        for fact, val in manual_entries.items():
+                            record_manual_entry(
+                                offering_id=offering_id,
+                                fact_key=fact,
+                                value=val,
+                                reviewer=reviewer_for_manual.strip(),
+                            )
+                        st.success(
+                            f"Saved {len(manual_entries)} facts as unverified. "
+                            "These need artifact evidence or a second reviewer "
+                            "before they can satisfy mandatory requirements."
+                        )
+                        # Manual entries alone don't clear mandatory block
+                        st.info(
+                            "Manual entries recorded but mandatory facts still "
+                            "require evidence-backed claims. Use 'Acquire from URL' "
+                            "to provide supporting evidence."
+                        )
+                    except Exception as e:
+                        st.error(f"Failed to save: {e}")
+
+    # ── Recovered claims needing explicit acceptance ──
+    # Show non-literal recovered claims for mandatory facts so the reviewer
+    # can accept or reject them before the pipeline proceeds.
+    # Scoped to: (a) has recovery_source metadata, (b) fact_key is in the
+    # offering's mandatory fact set, (c) non-literal, (d) unreviewed.
+    try:
+        from claims import ClaimsLedger, ReviewStatus as _RS
+        _review_ledger = ClaimsLedger()
+        _all_claims = _review_ledger.get_claims(ctx.get("offering_id", ""))
+
+        # Determine mandatory fact keys from the offering's intelligence pack
+        _mandatory_fact_keys = set()
+        try:
+            from entities import OfferingType
+            from intelligence_packs import get_mandatory_facts
+            _ot_str = ctx.get("offering_type", "")
+            if _ot_str:
+                _ot = OfferingType(_ot_str)
+                _mandatory_fact_keys = set(get_mandatory_facts(_ot))
+        except (ImportError, ValueError):
+            pass
+
+        _needs_review = [
+            c for c in _all_claims
+            if c.source_artifact_id  # Has artifact (not manual)
+            and c.metadata.get("recovery_source")  # From recovery
+            and not c.metadata.get("excerpt_is_literal", False)
+            and c.review_status == _RS.UNREVIEWED
+            and (not _mandatory_fact_keys  # Show all if pack unavailable
+                 or c.metadata.get("fact_key") in _mandatory_fact_keys)
+        ]
+        if _needs_review:
+            st.subheader("Recovered Claims Needing Review")
+            st.info(
+                "These facts were extracted by AI but could not be literally "
+                "verified in the source page. Review each claim and accept "
+                "or reject it before approving."
+            )
+            if "claim_review_actions" not in st.session_state:
+                st.session_state.claim_review_actions = {}
+
+            for claim in _needs_review:
+                fk = claim.metadata.get("fact_key", "unknown")
+                label = fk.replace("_", " ").title()
+                src = claim.metadata.get("recovery_source", "")
+                with st.expander(
+                    f"{label}: {claim.claim_text}", expanded=True
+                ):
+                    st.markdown(f"**Extracted text:** {claim.claim_text}")
+                    if src:
+                        st.caption(f"Source: {src}")
+                    if claim.exact_excerpt:
+                        st.markdown(
+                            f"**Nearest page content:** _{claim.exact_excerpt}_"
+                        )
+                    st.caption(
+                        f"Confidence: {claim.confidence:.0%} | "
+                        f"Method: {claim.extraction_method}"
+                    )
+                    col_a, col_r = st.columns(2)
+                    with col_a:
+                        if st.button(
+                            "Accept", key=f"accept_{claim.claim_id}",
+                            type="primary", use_container_width=True,
+                        ):
+                            reviewer_n = st.session_state.get(
+                                "reviewer_name", ""
+                            ) or st.session_state.get(
+                                "manual_entry_reviewer", ""
+                            )
+                            if not reviewer_n.strip():
+                                st.error("Enter your name below first.")
+                            else:
+                                _review_ledger.update_review(
+                                    claim.claim_id,
+                                    _RS.ACCEPTED,
+                                    reviewer=reviewer_n.strip(),
+                                )
+                                st.session_state.claim_review_actions[
+                                    claim.claim_id
+                                ] = "accepted"
+                                st.success(f"Accepted: {claim.claim_text}")
+                                st.rerun()
+                    with col_r:
+                        if st.button(
+                            "Reject", key=f"reject_{claim.claim_id}",
+                            use_container_width=True,
+                        ):
+                            reviewer_n = st.session_state.get(
+                                "reviewer_name", ""
+                            ) or st.session_state.get(
+                                "manual_entry_reviewer", ""
+                            )
+                            if not reviewer_n.strip():
+                                st.error("Enter your name below first.")
+                            else:
+                                _review_ledger.update_review(
+                                    claim.claim_id,
+                                    _RS.REJECTED,
+                                    reviewer=reviewer_n.strip(),
+                                )
+                                st.session_state.claim_review_actions[
+                                    claim.claim_id
+                                ] = "rejected"
+                                st.warning(f"Rejected: {claim.claim_text}")
+                                st.rerun()
+    except Exception:
+        pass  # Claims module not available or no claims to review
+
+    st.divider()
+
+    # ── Resolution status ──
+    total_findings = len(compliance_results) + (1 if has_conflicts else 0)
+    resolved_count = len(st.session_state.rule_resolutions)
+    if total_findings > 0:
+        st.progress(
+            min(resolved_count / total_findings, 1.0),
+            text=f"{resolved_count}/{total_findings} findings resolved",
+        )
+
+    # ── Approval controls ──
+    st.subheader("Your Decision")
+    reviewer_name = st.text_input(
+        "Reviewer name",
+        value=st.session_state.get("reviewer_name", ""),
+        placeholder="Your name",
+    )
+
+    btn_col1, btn_col2, btn_col3 = st.columns(3)
+
+    with btn_col1:
+        all_resolved = resolved_count >= total_findings
+        approve_label = (
+            "Submit Resolutions and Continue"
+            if total_findings > 0
+            else "Approve and Continue"
+        )
+        if st.button(
+            approve_label, type="primary", use_container_width=True,
+            disabled=(not all_resolved and total_findings > 0),
+        ):
+            if not reviewer_name.strip():
+                st.error("Please enter your name before approving.")
+            else:
+                st.session_state.reviewer_name = reviewer_name.strip()
+                job_id = ctx["job_id"]
+                try:
+                    from stage_handlers import create_default_pipeline
+                    from workflow import JobStatus, PipelineStage
+
+                    pipeline = create_default_pipeline(
+                        progress_callback=lambda msg, lvl="info": None
+                    )
+
+                    resolutions = dict(st.session_state.rule_resolutions)
+                    result_job = pipeline.approve_review(
+                        job_id,
+                        reviewer=reviewer_name.strip(),
+                        rule_resolutions=resolutions if resolutions else None,
+                    )
+                    if result_job and result_job.status == JobStatus.COMPLETED:
+                        sp_result = result_job.get_stage_result(PipelineStage.SOURCE_PACK)
+                        st.session_state.result_data = sp_result.get("full_data", {})
+                        st.session_state.result_report = sp_result.get("doc_text", "")
+                        st.session_state.result_json_path = sp_result.get("json_path", "")
+                        st.session_state.show_form = False
+                        st.session_state.pop("awaiting_review", None)
+                        st.session_state.pop("review_context", None)
+                        st.session_state.pop("update_mode", None)
+                        st.session_state.pop("rule_resolutions", None)
+                        pname = sp_result.get("full_data", {}).get("product", {}).get("product_name", "")
+                        if pname and CRM_AVAILABLE:
+                            st.session_state.selected_product_key = _slugify(pname)
+                        st.success("Approved! Generating source pack...")
+                        st.rerun()
+                    elif result_job and result_job.status == JobStatus.AWAITING_REVIEW:
+                        st.warning(f"Still blocked: {result_job.error}")
+                    else:
+                        st.error(f"Pipeline failed after approval: {result_job.error if result_job else 'Job not found'}")
+                except Exception as e:
+                    st.error(f"Approval failed: {e}")
+
+    with btn_col2:
+        if st.button("Reject — Cancel Research", use_container_width=True):
+            st.session_state.pop("awaiting_review", None)
+            st.session_state.pop("review_context", None)
+            st.session_state.pop("pipeline_job_id", None)
+            st.session_state.show_form = True
+            st.info("Research cancelled. You can start a new research from scratch.")
+            st.rerun()
+
+    with btn_col3:
+        if st.button("Start Over", use_container_width=True):
+            for key in ["result_data", "result_report", "result_json_path",
+                        "_label_page_text", "form_values", "update_mode",
+                        "selected_product_key", "awaiting_review", "review_context",
+                        "pipeline_job_id"]:
+                st.session_state.pop(key, None)
+            st.session_state.form_key += 1
+            st.session_state.show_form = True
+            st.rerun()
+
+
+elif show_form:
     # ================================================================
     # PHASE 1: INPUT FORM
     # ================================================================
@@ -689,7 +1158,7 @@ if show_form:
                             from browser_fetch import PLAYWRIGHT_AVAILABLE
                             if PLAYWRIGHT_AVAILABLE:
                                 pw = sync_playwright().start()
-                                browser = pw.chromium.launch(headless=True, args=['--no-sandbox'])
+                                browser = pw.chromium.launch(headless=True, args=['--disable-gpu'])
                                 ctx = browser.new_context(
                                     user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
                                     viewport={'width': 1280, 'height': 800},
@@ -776,15 +1245,18 @@ if show_form:
         progress_container = st.status("Researching product...", expanded=True)
         progress_log = []
 
+        # Stage-based progress for the new pipeline
+        stage_progress = {
+            "identify": 0.10, "acquire": 0.15, "extract": 0.20,
+            "reconcile": 0.25, "research": 0.50, "comply": 0.60,
+            "analyze_site": 0.70, "analyze_market": 0.80,
+            "plan": 0.85, "review": 0.90, "source_pack": 0.95,
+        }
+        # Legacy phase progress for update mode
         phase_progress = {
-            "PHASE 1": 0.10,
-            "PHASE 2": 0.25,
-            "PHASE 3": 0.45,
-            "PHASE 4": 0.55,
-            "PHASE 5": 0.65,
-            "PHASE 6": 0.75,
-            "PHASE 7": 0.85,
-            "PHASE 8": 0.95,
+            "PHASE 1": 0.10, "PHASE 2": 0.25, "PHASE 3": 0.45,
+            "PHASE 4": 0.55, "PHASE 5": 0.65, "PHASE 6": 0.75,
+            "PHASE 7": 0.85, "PHASE 8": 0.95,
         }
 
         def streamlit_callback(message, level="info"):
@@ -793,6 +1265,13 @@ if show_form:
             if not msg:
                 return
             progress_log.append(msg)
+            # New pipeline stage messages
+            for stage_key, pct in stage_progress.items():
+                if f"Stage: {stage_key.upper()}" in msg:
+                    progress_bar.progress(pct, text=msg)
+                    progress_container.update(label=msg)
+                    break
+            # Legacy phase messages (update mode)
             if "PHASE" in msg:
                 progress_container.update(label=msg.strip("= "))
                 for phase_key, pct in phase_progress.items():
@@ -801,50 +1280,152 @@ if show_form:
                         break
             progress_container.write(msg)
 
-        # Run the research engine (update mode vs new research)
+        # Run the research engine (update mode vs new pipeline)
         try:
             if is_update and "result_data" in st.session_state:
-                # UPDATE MODE — merge new data into existing report
-                from research_product import update_research
+                # UPDATE MODE — incremental pipeline merging new data
+                from stage_handlers import create_update_pipeline
+                from workflow import Job, JobStatus
+
+                existing_data = st.session_state.result_data
                 _upd_url = st.session_state.get(f"update_url_{fk}", "") or (product_url if product_url else None)
-                _upd_label = st.session_state.get(f"update_label_url_{fk}", "") or None
-                _upd_notes = st.session_state.get(f"update_notes_{fk}", "") or None
 
-                result = update_research(
-                    existing_data=st.session_state.result_data,
-                    new_url=_upd_url or None,
-                    new_label_url=_upd_label or None,
-                    new_notes=_upd_notes or None,
+                pipeline = create_update_pipeline(
+                    existing_data=existing_data,
                     progress_callback=streamlit_callback,
                 )
-            else:
-                # NEW RESEARCH — full pipeline
-                result = research_product(
-                    url=product_url or None,
-                    vsl_url=vsl_url or None,
-                    product_name=product_name or None,
+
+                product_name_upd = existing_data.get("product", {}).get("product_name", "")
+                existing_offering_id = existing_data.get("offering_id", "")
+                job = Job.create(
+                    url=_upd_url or "",
+                    product_name=product_name_upd,
                     quick=False,
-                    label_image=label_path,
-                    progress_callback=streamlit_callback,
+                    is_update=True,
+                    offering_id=existing_offering_id,
                 )
+                completed_job = pipeline.run(job)
 
-            if result:
-                json_path, doc_path, doc_text, full_data = result
-                st.session_state.result_data = full_data
-                st.session_state.result_report = doc_text
-                st.session_state.result_json_path = json_path
-                st.session_state.show_form = False
-                st.session_state.pop("update_mode", None)
-                # Set product key for CRM
-                pname = full_data.get("product", {}).get("product_name", "")
-                if pname and CRM_AVAILABLE:
-                    st.session_state.selected_product_key = _slugify(pname)
-                progress_container.update(label="Research complete!", state="complete")
-                progress_bar.progress(1.0, text="Research complete!")
-                st.rerun()
+                if completed_job.status == JobStatus.COMPLETED:
+                    from workflow import PipelineStage
+                    sp_result = completed_job.get_stage_result(PipelineStage.SOURCE_PACK)
+                    full_data = sp_result.get("full_data", {})
+                    doc_text = sp_result.get("doc_text", "")
+
+                    st.session_state.result_data = full_data
+                    st.session_state.result_report = doc_text
+                    st.session_state.show_form = False
+                    st.session_state.pop("update_mode", None)
+                    st.session_state.pipeline_job_id = completed_job.job_id
+                    pname = full_data.get("product", {}).get("product_name", "")
+                    if pname and CRM_AVAILABLE:
+                        st.session_state.selected_product_key = _slugify(pname)
+                    progress_container.update(label="Update complete!", state="complete")
+                    progress_bar.progress(1.0, text="Update complete!")
+                    st.rerun()
+                elif completed_job.status == JobStatus.AWAITING_REVIEW:
+                    st.session_state.pipeline_job_id = completed_job.job_id
+                    st.session_state.awaiting_review = True
+                    # Build review context for update pipeline too
+                    from workflow import PipelineStage as _PS
+                    _id_r = completed_job.get_stage_result(_PS.IDENTIFY)
+                    _co_r = completed_job.get_stage_result(_PS.COMPLY)
+                    _rc_r = completed_job.get_stage_result(_PS.RECONCILE)
+                    _sp_r = completed_job.get_stage_result(_PS.SOURCE_PACK)
+                    _mm = _sp_r.get("blocked_facts", [])
+                    st.session_state.review_context = {
+                        "job_id": completed_job.job_id,
+                        "error": completed_job.error,
+                        "product_name": _id_r.get("product_name", "Unknown"),
+                        "offering_type": _id_r.get("offering_type", "unknown"),
+                        "risk_level": _co_r.get("risk_level", "unknown"),
+                        "compliance": _co_r.get("compliance", {}),
+                        "conflicts_found": _rc_r.get("conflicts_found", 0),
+                        "conflicts": _rc_r.get("conflicts", []),
+                        "missing_mandatory_facts": _mm,
+                        "offering_id": completed_job.offering_id,
+                    }
+                    progress_container.update(label="Awaiting review", state="running")
+                    st.rerun()
+                else:
+                    progress_container.update(label="Update failed", state="error")
+                    st.error(f"Update failed: {completed_job.error}")
             else:
-                progress_container.update(label="Research failed", state="error")
-                st.error("Could not extract product data. Try providing the product name or a label image.")
+                # NEW RESEARCH — use the new resumable pipeline
+                from stage_handlers import create_default_pipeline
+                from workflow import Job, JobStatus
+
+                pipeline = create_default_pipeline(
+                    progress_callback=streamlit_callback
+                )
+                job = Job.create(
+                    url=product_url or "",
+                    product_name=product_name or "",
+                    quick=False,
+                    label_image=label_path or "",
+                    vsl_url=vsl_url or "",
+                )
+                completed_job = pipeline.run(job)
+
+                if completed_job.status == JobStatus.COMPLETED:
+                    from workflow import PipelineStage
+                    sp_result = completed_job.get_stage_result(PipelineStage.SOURCE_PACK)
+                    full_data = sp_result.get("full_data", {})
+                    doc_text = sp_result.get("doc_text", "")
+                    json_path = sp_result.get("json_path", "")
+
+                    st.session_state.result_data = full_data
+                    st.session_state.result_report = doc_text
+                    st.session_state.result_json_path = json_path
+                    st.session_state.show_form = False
+                    st.session_state.pop("update_mode", None)
+                    # Store job_id for pipeline tracking
+                    st.session_state.pipeline_job_id = completed_job.job_id
+                    pname = full_data.get("product", {}).get("product_name", "")
+                    if pname and CRM_AVAILABLE:
+                        st.session_state.selected_product_key = _slugify(pname)
+                    progress_container.update(label="Research complete!", state="complete")
+                    progress_bar.progress(1.0, text="Research complete!")
+                    st.rerun()
+                elif completed_job.status == JobStatus.AWAITING_REVIEW:
+                    st.session_state.pipeline_job_id = completed_job.job_id
+                    st.session_state.awaiting_review = True
+                    # Store partial results so VA can review what was researched
+                    from workflow import PipelineStage
+                    id_result = completed_job.get_stage_result(PipelineStage.IDENTIFY)
+                    comply_result = completed_job.get_stage_result(PipelineStage.COMPLY)
+                    reconcile_result = completed_job.get_stage_result(PipelineStage.RECONCILE)
+                    # Check if SOURCE_PACK blocked on missing mandatory facts
+                    source_pack_result = completed_job.get_stage_result(
+                        PipelineStage.SOURCE_PACK
+                    )
+                    missing_mandatory = source_pack_result.get(
+                        "blocked_facts", []
+                    )
+
+                    st.session_state.review_context = {
+                        "job_id": completed_job.job_id,
+                        "error": completed_job.error,
+                        "product_name": id_result.get("product_name", "Unknown"),
+                        "offering_type": id_result.get("offering_type", "unknown"),
+                        "risk_level": comply_result.get("risk_level", "unknown"),
+                        "compliance": comply_result.get("compliance", {}),
+                        "conflicts_found": reconcile_result.get("conflicts_found", 0),
+                        "conflicts": reconcile_result.get("conflicts", []),
+                        "missing_mandatory_facts": missing_mandatory,
+                        "offering_id": completed_job.offering_id,
+                    }
+                    progress_container.update(
+                        label="Awaiting human review", state="error"
+                    )
+                    st.rerun()
+                else:
+                    progress_container.update(label="Research failed", state="error")
+                    st.error(
+                        f"Research failed at stage '{completed_job.current_stage}': "
+                        f"{completed_job.error}"
+                    )
+
         except Exception as e:
             progress_container.update(label="Error", state="error")
             st.error(f"Research failed: {e}")
