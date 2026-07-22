@@ -10,13 +10,50 @@ The job's stage_data stores results from previous stages, enabling
 data flow between handlers.
 """
 
+import hashlib
 import json
 import os
+import re
 import tempfile
 import time
 from typing import Optional
+from urllib.parse import urlparse
 
 from workflow import Job, PipelineStage, ReviewBlockError
+
+
+def _parse_intake_urls(raw_value: str) -> list:
+    """Normalize comma/newline-separated intake URL fields."""
+    if not raw_value or raw_value.strip().upper() == "FIRST RELEASE":
+        return []
+    return [
+        value.strip()
+        for value in re.split(r"[,\n\r]+", raw_value)
+        if value.strip().startswith(("http://", "https://"))
+    ]
+
+
+def _normalize_publishing_channel(value: str) -> str:
+    """Map intake display labels to compliance-engine channel keys."""
+    normalized = (value or "").strip().lower()
+    aliases = {
+        "barchart advertorial": "barchart",
+        "accesswire": "accesswire",
+        "newswire.com": "newswire",
+        "globe newswire": "globe",
+        "domain site": "wordpress",
+        "": "wordpress",
+    }
+    return aliases.get(normalized, normalized.replace(" ", "_"))
+
+
+def _same_site(first_url: str, second_url: str) -> bool:
+    """Conservative same-site check for first-party classification."""
+    first = (urlparse(first_url).hostname or "").lower().removeprefix("www.")
+    second = (urlparse(second_url).hostname or "").lower().removeprefix("www.")
+    if not first or not second:
+        return False
+    return first == second or first.endswith("." + second) or second.endswith("." + first)
 
 
 def _log_recovery_audit(event_type: str, offering_id: str, job_id: str,
@@ -71,7 +108,10 @@ def handle_identify(job: Job) -> dict:
     try:
         product_data = phase1_extract_product(
             job.url,
-            vsl_url=job.metadata.get("vsl_url"),
+            # VSL marketing assertions are captured separately below. They
+            # must not be blended into factual product extraction or block
+            # content merely because the advertising language is aggressive.
+            vsl_url=None,
             product_name=job.product_name or None,
             browser_session=browser_session,
         )
@@ -121,10 +161,11 @@ def handle_acquire(job: Job) -> dict:
     product_data = identify_result.get("product_data", {})
 
     stored_artifacts = []
+    source_manifest = []
     errors = []
 
     try:
-        from evidence import EvidenceLake
+        from evidence import EvidenceLake, SourceClass
         from acquire import Acquirer
 
         lake = EvidenceLake()
@@ -135,8 +176,88 @@ def handle_acquire(job: Job) -> dict:
             try:
                 aid, _ = acq.fetch_official_page(job.url, phase="ACQUIRE")
                 stored_artifacts.append({"artifact_id": aid, "type": "official_page"})
+                source_manifest.append({"type": "product_page", "url": job.url,
+                                        "status": "captured", "artifact_id": aid})
             except Exception as e:
                 errors.append(f"Official page fetch failed: {e}")
+                source_manifest.append({"type": "product_page", "url": job.url,
+                                        "status": "failed", "error": str(e)})
+
+        # Store the VSL page independently. Its claims are marketing
+        # assertions used for intent/substantiation research, not product facts.
+        vsl_url = job.metadata.get("vsl_url", "")
+        if vsl_url:
+            try:
+                vsl_source_class = (
+                    SourceClass.OFFICIAL_VENDOR
+                    if _same_site(job.url, vsl_url)
+                    else SourceClass.ANONYMOUS
+                )
+                aid, vsl_page_text = acq.fetch_with_browser(
+                    vsl_url, source_class=vsl_source_class,
+                    phase="ACQUIRE_VSL",
+                )
+                stored_artifacts.append({"artifact_id": aid, "type": "vsl_page"})
+                source_manifest.append({
+                    "type": "vsl",
+                    "url": vsl_url,
+                    "status": "captured",
+                    "artifact_id": aid,
+                    "capture_scope": "rendered_page_html",
+                    "spoken_transcript_status": "not_confirmed",
+                    "captured_characters": len(vsl_page_text or ""),
+                    "source_class": vsl_source_class.value,
+                })
+            except Exception as e:
+                errors.append(f"VSL capture failed: {e}")
+                source_manifest.append({"type": "vsl", "url": vsl_url,
+                                        "status": "failed", "error": str(e)})
+
+        # Affiliate, previous, and competitor pages are contextual sources.
+        # Capture them separately and never let them satisfy mandatory facts.
+        contextual_sources = []
+        affiliate_url = job.metadata.get("affiliate_link", "")
+        if affiliate_url:
+            contextual_sources.append(("affiliate_page", affiliate_url))
+        contextual_sources.extend(
+            ("previous_release", u)
+            for u in _parse_intake_urls(job.metadata.get("previous_releases", ""))
+        )
+        contextual_sources.extend(
+            ("competitor_release", u)
+            for u in _parse_intake_urls(job.metadata.get("competitor_releases", ""))
+        )
+        for source_type, source_url in contextual_sources:
+            try:
+                aid, _ = acq.fetch_third_party(
+                    source_url, phase="ACQUIRE_CONTEXT",
+                    notes=f"Intake source: {source_type}",
+                )
+                stored_artifacts.append({"artifact_id": aid, "type": source_type})
+                source_manifest.append({"type": source_type, "url": source_url,
+                                        "status": "captured", "artifact_id": aid})
+            except Exception as e:
+                errors.append(f"{source_type} capture failed: {e}")
+                source_manifest.append({"type": source_type, "url": source_url,
+                                        "status": "failed", "error": str(e)})
+
+        # Preserve operator-provided context immutably, but do not treat it as
+        # verified factual evidence.
+        operator_payload = {
+            "notes": job.metadata.get("operator_notes", ""),
+            "client_locked_title": job.metadata.get("client_locked_title", ""),
+            "publishing_channel": job.metadata.get("channel", ""),
+        }
+        if any(operator_payload.values()):
+            aid = acq.store_structured_data(
+                operator_payload,
+                source_url="intake://operator-context",
+                source_name="operator_intake",
+                phase="ACQUIRE_INTAKE",
+            )
+            stored_artifacts.append({"artifact_id": aid, "type": "operator_intake"})
+            source_manifest.append({"type": "operator_intake",
+                                    "status": "captured", "artifact_id": aid})
 
         # Store label image if provided
         label_url = job.metadata.get("label_image")
@@ -151,11 +272,25 @@ def handle_acquire(job: Job) -> dict:
                     label_bytes = result.content
                 if label_bytes:
                     aid = acq.store_label_image(
-                        label_bytes, source_description=label_url
+                        label_bytes,
+                        source_description=label_url,
+                        source_url=job.metadata.get("label_source_url", ""),
                     )
                     stored_artifacts.append({"artifact_id": aid, "type": "label_image"})
+                    source_manifest.append({
+                        "type": "label_image",
+                        "url": job.metadata.get("label_source_url", label_url),
+                        "status": "captured",
+                        "artifact_id": aid,
+                    })
             except Exception as e:
                 errors.append(f"Label image fetch failed: {e}")
+                source_manifest.append({
+                    "type": "label_image",
+                    "url": job.metadata.get("label_source_url", label_url),
+                    "status": "failed",
+                    "error": str(e),
+                })
 
     except ImportError:
         # Evidence lake not yet wired — allow pipeline to continue
@@ -179,6 +314,10 @@ def handle_acquire(job: Job) -> dict:
         "artifacts": stored_artifacts,
         "evidence_lake_available": True,
         "errors": errors,
+        "source_manifest": source_manifest,
+        "intake_complete": not any(
+            s.get("status") == "failed" for s in source_manifest
+        ),
     }
 
 
@@ -519,6 +658,48 @@ def _normalize_fact_value(fact_key: str, value) -> list:
     return [f"{fact_key}: {value}"] if value else []
 
 
+def _extract_vsl_marketing_assertions(vsl_text: str) -> list:
+    """Extract attributed marketing assertions and search intent from a VSL.
+
+    These records describe what the marketer said. They are never treated as
+    substantiated product facts and cannot satisfy mandatory evidence gates.
+    """
+    if not vsl_text or len(vsl_text.strip()) < 50:
+        return []
+    from research_product import call_claude
+    prompt = f"""Analyze this video-sales-letter page text as advertising evidence.
+
+Return ONLY a JSON array. Each item must contain:
+- claim: a short verbatim or very close quotation of the marketing assertion
+- search_intent: the underlying question/problem a consumer is trying to solve
+- topic: ingredient, benefit, mechanism, testimonial, urgency, guarantee, safety, or other
+- evidence_needed: what independent evidence would be needed to evaluate it
+
+Do not endorse, rewrite, strengthen, or imitate any claim. Capture what was said
+so an editor can correct or contextualize it. Maximum 30 material assertions.
+
+VSL PAGE TEXT:
+{vsl_text[:50000]}
+"""
+    response = call_claude(
+        prompt,
+        system=(
+            "You are an evidence auditor. Attribute marketing claims accurately "
+            "without treating them as true or generating promotional copy."
+        ),
+        max_tokens=5000,
+    )
+    if not response:
+        return []
+    try:
+        clean = re.sub(r"```json\s*|```", "", response).strip()
+        match = re.search(r"\[[\s\S]*\]", clean)
+        parsed = json.loads(match.group() if match else clean)
+        return [item for item in parsed if isinstance(item, dict) and item.get("claim")]
+    except (json.JSONDecodeError, AttributeError, TypeError):
+        return []
+
+
 def handle_extract(job: Job) -> dict:
     """Stage: EXTRACT — Extract atomic claims from artifacts.
 
@@ -537,7 +718,7 @@ def handle_extract(job: Job) -> dict:
     extraction_errors = []
 
     try:
-        from claims import ClaimsLedger, Claim, ClaimType
+        from claims import ClaimsLedger, Claim, ClaimType, ReviewStatus
         ledger = ClaimsLedger()
 
         # Determine the source artifact ID (official page stored in ACQUIRE)
@@ -649,6 +830,57 @@ def handle_extract(job: Job) -> dict:
                 pass  # Fall through to extract from existing product_data
 
         claims_batch = []
+
+        # VSL marketing claims are extracted from their own artifact. They are
+        # useful for search intent and rebuttal research, but explicitly remain
+        # unsubstantiated and cannot satisfy mandatory product facts.
+        vsl_artifact_id = next(
+            (a.get("artifact_id") for a in acquire_result.get("artifacts", [])
+             if a.get("type") == "vsl_page"),
+            None,
+        )
+        if vsl_artifact_id:
+            try:
+                vsl_text = lake.get_content(vsl_artifact_id)
+                vsl_artifact = lake.get(vsl_artifact_id)
+                vsl_source_class = (
+                    vsl_artifact.source_class.value
+                    if vsl_artifact and hasattr(vsl_artifact.source_class, "value")
+                    else "anonymous"
+                )
+                for assertion in _extract_vsl_marketing_assertions(vsl_text):
+                    assertion_text = str(assertion.get("claim", "")).strip()
+                    if not assertion_text:
+                        continue
+                    excerpt, location = _find_literal_excerpt(
+                        vsl_text, [assertion_text]
+                    )
+                    claims_batch.append(Claim(
+                        offering_id=job.offering_id,
+                        claim_text=assertion_text,
+                        claim_type=ClaimType.MANUFACTURER_CLAIM,
+                        source_artifact_id=vsl_artifact_id,
+                        exact_excerpt=excerpt or assertion_text,
+                        page_location=location or "VSL page",
+                        source_class=vsl_source_class,
+                        confidence=0.25,
+                        extraction_method="marketing_copy",
+                        review_status=ReviewStatus.NEEDS_VERIFICATION,
+                        metadata={
+                            "fact_key": "vsl_marketing_assertion",
+                            "claim_nature": "marketing_assertion",
+                            "attribution_verified": bool(excerpt),
+                            "substantiation_state": "unverified",
+                            "cannot_satisfy_mandatory": True,
+                            "allowed_use": "attributed_context_or_rebuttal_only",
+                            "search_intent": assertion.get("search_intent", ""),
+                            "topic": assertion.get("topic", ""),
+                            "evidence_needed": assertion.get("evidence_needed", ""),
+                            "vsl_url": job.metadata.get("vsl_url", ""),
+                        },
+                    ))
+            except Exception as vsl_err:
+                extraction_errors.append(f"VSL marketing extraction failed: {vsl_err}")
 
         # Extract ingredient claims — uses extract_data (new-only in update mode).
         # A user-supplied label image is authoritative for Supplement Facts and
@@ -1242,6 +1474,7 @@ def recover_evidence(url: str, offering_id: str, job_id: str,
             art_id = acq.store_label_image(
                 image_result.content,
                 source_description=url,
+                source_url=url,
                 phase="EVIDENCE_RECOVERY",
             )
             suffix = os.path.splitext(url.split("?", 1)[0])[1] or ".png"
@@ -1648,7 +1881,9 @@ def handle_comply(job: Job) -> dict:
             offering_type = OfferingType.UNKNOWN
 
         engine = ComplianceEngine()
-        channel = job.metadata.get("channel", "wordpress")
+        channel = _normalize_publishing_channel(
+            job.metadata.get("channel", "wordpress")
+        )
         jurisdiction = job.metadata.get("jurisdiction", "US")
 
         # Build text corpus from product claims and descriptions
@@ -2029,6 +2264,7 @@ def handle_source_pack(job: Job) -> dict:
     to a specific artifact and page location.
     """
     identify_result = job.get_stage_result(PipelineStage.IDENTIFY)
+    acquire_result = job.get_stage_result(PipelineStage.ACQUIRE)
     extract_result = job.get_stage_result(PipelineStage.EXTRACT)
     research_result = job.get_stage_result(PipelineStage.RESEARCH)
     comply_result = job.get_stage_result(PipelineStage.COMPLY)
@@ -2045,6 +2281,7 @@ def handle_source_pack(job: Job) -> dict:
     # Load claims and evidence
     claims_by_type = {}
     artifacts_used = {}
+    all_artifacts = {}
     try:
         from claims import ClaimsLedger, ClaimType, ReviewStatus
         from evidence import EvidenceLake
@@ -2053,6 +2290,33 @@ def handle_source_pack(job: Job) -> dict:
         lake = EvidenceLake()
 
         all_claims = ledger.get_claims(job.offering_id)
+
+        # Preserve every acquired source in the pack, even when it does not
+        # substantiate an accepted factual claim (VSLs and briefs included).
+        acquired_artifacts = list(lake.list_for_job(job.job_id))
+        acquired_ids = {art.artifact_id for art in acquired_artifacts}
+        # Content-addressed artifacts can be reused across jobs. In that case
+        # the immutable row retains its original job_id, so also follow the
+        # artifact IDs recorded by this job's ACQUIRE result.
+        for acquired in acquire_result.get("artifacts", []):
+            acquired_id = acquired.get("artifact_id")
+            if acquired_id and acquired_id not in acquired_ids:
+                reused = lake.get(acquired_id)
+                if reused:
+                    acquired_artifacts.append(reused)
+                    acquired_ids.add(acquired_id)
+        for art in acquired_artifacts:
+            all_artifacts[art.artifact_id] = {
+                "artifact_type": art.artifact_type.value
+                    if hasattr(art.artifact_type, "value") else art.artifact_type,
+                "source_url": art.source_url,
+                "source_class": art.source_class.value
+                    if hasattr(art.source_class, "value") else art.source_class,
+                "captured_at": art.captured_at,
+                "tls_verified": bool(art.tls_verified),
+                "is_usable": art.is_usable,
+                "acquisition_phase": art.acquisition_phase,
+            }
 
         # Group claims by type, prioritizing accepted > unreviewed > rejected
         for c in all_claims:
@@ -2095,6 +2359,44 @@ def handle_source_pack(job: Job) -> dict:
     sections.append(f"{'=' * 60}")
     sections.append(f"Job ID: {job.job_id}")
     sections.append(f"Offering ID: {job.offering_id}")
+    sections.append("")
+
+    intake_manifest = {
+        "product_url": job.url,
+        "product_name": job.product_name,
+        "label_source_url": job.metadata.get("label_source_url", ""),
+        "vsl_url": job.metadata.get("vsl_url", ""),
+        "affiliate_link": job.metadata.get("affiliate_link", ""),
+        "previous_releases": job.metadata.get("previous_releases", ""),
+        "competitor_releases": job.metadata.get("competitor_releases", ""),
+        "publishing_channel": job.metadata.get("channel", ""),
+        "client_locked_title": job.metadata.get("client_locked_title", ""),
+        "operator_notes": job.metadata.get("operator_notes", ""),
+    }
+    intake_manifest_hash = hashlib.sha256(
+        json.dumps(intake_manifest, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    source_manifest = acquire_result.get("source_manifest", [])
+    sections.append("INTAKE SOURCE MANIFEST")
+    sections.append("-" * 40)
+    sections.append(f"  Manifest SHA-256: {intake_manifest_hash}")
+    for source in source_manifest:
+        status = str(source.get("status", "unknown")).upper()
+        source_type = source.get("type", "source")
+        source_url = source.get("url", "intake context")
+        sections.append(f"  [{status}] {source_type}: {source_url}")
+        if source.get("error"):
+            sections.append(f"    Capture error: {source['error']}")
+        if (source_type == "vsl" and
+                source.get("spoken_transcript_status") != "confirmed"):
+            sections.append(
+                "    Scope warning: rendered VSL page captured; a complete "
+                "spoken-word transcript has not been confirmed."
+            )
+    sections.append(
+        "  VSL statements are attributed marketing assertions, not accepted "
+        "product facts or substantiation."
+    )
     sections.append("")
 
     # Ingredients section
@@ -2348,6 +2650,16 @@ def handle_source_pack(job: Job) -> dict:
             )
         sections.append("")
 
+    if all_artifacts:
+        sections.append("ALL CAPTURED SOURCE MATERIAL")
+        sections.append("-" * 40)
+        for aid, art_info in all_artifacts.items():
+            sections.append(
+                f"  [{aid[:12]}...] {art_info['artifact_type']} | "
+                f"{art_info['source_class']} | {art_info['source_url']}"
+            )
+        sections.append("")
+
     doc_text = "\n".join(sections)
 
     # Build structured data for downstream consumption
@@ -2356,6 +2668,11 @@ def handle_source_pack(job: Job) -> dict:
         "offering_id": job.offering_id,
         "claims_by_type": claims_by_type,
         "artifacts_used": artifacts_used,
+        "all_artifacts": all_artifacts,
+        "intake_manifest": intake_manifest,
+        "intake_manifest_hash": intake_manifest_hash,
+        "source_manifest": source_manifest,
+        "intake_complete": acquire_result.get("intake_complete", False),
         "ingredient_research": ingredient_research,
         "safety": safety_data,
         "compliance": compliance,
@@ -2363,7 +2680,7 @@ def handle_source_pack(job: Job) -> dict:
         "reputation": market_result.get("reputation", {}),
         "competitive": market_result.get("competitive", {}),
         "total_claims": sum(len(v) for v in claims_by_type.values()),
-        "total_artifacts": len(artifacts_used),
+        "total_artifacts": len(all_artifacts),
         "required_facts": required_facts_result,
     }
 

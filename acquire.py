@@ -252,6 +252,7 @@ class Acquirer:
 
     def store_label_image(self, image_data: bytes,
                           source_description: str = "",
+                          source_url: str = "",
                           phase: str = "ACQUIRE") -> str:
         """Store a label image as an artifact.
 
@@ -262,7 +263,7 @@ class Acquirer:
         artifact = Artifact(
             artifact_id=content_hash,
             artifact_type=ArtifactType.LABEL_SCREENSHOT,
-            source_url=f"upload://label-image",
+            source_url=source_url or "upload://label-image",
             source_class=SourceClass.OFFICIAL_VENDOR,
             source_relationship=SourceRelationship.FIRST_PARTY,
             captured_at=now,

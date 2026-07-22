@@ -967,6 +967,9 @@ elif show_form:
         st.caption("Enter product details below to generate a research-backed prompt.")
 
     fk = st.session_state.form_key
+    update_url = ""
+    update_label_url = ""
+    update_notes = ""
 
     with st.form(f"research_form_{fk}", border=True):
 
@@ -1100,6 +1103,14 @@ elif show_form:
         if label_url and label_url.strip() and not label_url.strip().startswith(("http://", "https://")):
             errors.append("**Label Image URL** must start with http:// or https://")
 
+        if (is_update and update_url and update_url.strip() and
+                not update_url.strip().startswith(("http://", "https://"))):
+            errors.append("**Additional URL** must start with http:// or https://")
+
+        if (is_update and update_label_url and update_label_url.strip() and
+                not update_label_url.strip().startswith(("http://", "https://"))):
+            errors.append("**New Label Image URL** must start with http:// or https://")
+
         if not rd_affiliate or not rd_affiliate.strip():
             warnings.append("No **Affiliate Link** provided — prompt will use 'TRAFFIC-FIRST' as default.")
 
@@ -1128,12 +1139,20 @@ elif show_form:
             "rd_notes": rd_notes,
         }
 
+        # In update mode the explicitly supplied replacement label/notes take
+        # precedence. Previously these controls were collected but ignored.
+        submitted_label_url = (
+            update_label_url.strip()
+            if is_update and update_label_url and update_label_url.strip()
+            else (label_url.strip() if label_url else "")
+        )
+
         # Handle label image — from URL
         label_path = None
-        if label_url and label_url.strip():
+        if submitted_label_url:
             from net import safe_fetch
             try:
-                resp = safe_fetch(label_url.strip())
+                resp = safe_fetch(submitted_label_url)
                 if resp.error:
                     st.warning(f"Label URL fetch error: {resp.error}")
                 elif resp.status_code == 200:
@@ -1166,7 +1185,7 @@ elif show_form:
                                     viewport={'width': 1280, 'height': 800},
                                 )
                                 page = ctx.new_page()
-                                page.goto(label_url.strip(), wait_until='networkidle', timeout=25000)
+                                page.goto(submitted_label_url, wait_until='networkidle', timeout=25000)
                                 page.wait_for_timeout(3000)
                                 page_text = page.inner_text('body')
                                 has_supp_facts = any(kw in page_text.lower() for kw in
@@ -1227,7 +1246,7 @@ elif show_form:
                         if len(resp.content) > 1000:
                             ext = ".png"
                             for e in [".jpg", ".jpeg", ".png", ".webp"]:
-                                if e in label_url.lower():
+                                if e in submitted_label_url.lower():
                                     ext = e
                                     break
                             tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
@@ -1306,6 +1325,15 @@ elif show_form:
                     budget_seconds=1800,
                     is_update=True,
                     offering_id=existing_offering_id,
+                    label_image=label_path or "",
+                    label_source_url=submitted_label_url,
+                    vsl_url=vsl_url or "",
+                    affiliate_link=rd_affiliate or "",
+                    previous_releases=rd_previous or "",
+                    competitor_releases=rd_competitor or "",
+                    channel=rd_platform or "",
+                    client_locked_title=rd_client_title or "",
+                    operator_notes=(update_notes or rd_notes or ""),
                 )
                 completed_job = pipeline.run(job)
 
@@ -1374,7 +1402,14 @@ elif show_form:
                     quick=False,
                     budget_seconds=1800,
                     label_image=label_path or "",
+                    label_source_url=submitted_label_url,
                     vsl_url=vsl_url or "",
+                    affiliate_link=rd_affiliate or "",
+                    previous_releases=rd_previous or "",
+                    competitor_releases=rd_competitor or "",
+                    channel=rd_platform or "",
+                    client_locked_title=rd_client_title or "",
+                    operator_notes=rd_notes or "",
                 )
                 completed_job = pipeline.run(job)
 
