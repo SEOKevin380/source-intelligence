@@ -268,6 +268,60 @@ def test_accesswire_r12_uses_neutral_approved_framing_and_never_pauses():
     assert "No publishable marketing claims were extracted" in prompt
 
 
+def test_press_release_prompt_accepts_legacy_list_safety_shape():
+    from prompt_builders import build_l6_press_release_prompt
+
+    prompt = build_l6_press_release_prompt(
+        {
+            "product": {
+                "product_name": "Legacy Product",
+                "product_type": "supplement",
+                "official_url": "https://example.com/product",
+                "supplement_facts": {
+                    "ingredients": [{"name": "Ingredient A", "amount": "10 mg"}],
+                },
+            },
+            "ingredient_research": {"Ingredient A": {"studies": []}},
+            "safety": {
+                "Ingredient A": [
+                    {"severity": "Moderate", "drug_class": "Example drugs",
+                     "interaction": "May alter exposure"},
+                    "Legacy safety note",
+                ],
+            },
+            "compliance": {},
+        },
+        {"platform": "Accesswire"},
+    )
+
+    assert "May alter exposure" in prompt
+    assert "Legacy safety note" in prompt
+
+
+def test_press_release_prompt_degrades_invalid_legacy_sections_without_crash():
+    from prompt_builders import build_l6_press_release_prompt
+
+    prompt = build_l6_press_release_prompt(
+        {
+            "product": {
+                "product_name": "Legacy Product",
+                "official_url": "https://example.com/product",
+                "supplement_facts": None,
+                "pricing": "unknown",
+                "claims": None,
+                "refund_policy": [],
+            },
+            "ingredient_research": [],
+            "safety": [],
+            "compliance": None,
+        },
+        {"platform": "Accesswire"},
+    )
+
+    assert "SOURCE INTELLIGENCE" in prompt
+    assert "FINAL OUTPUT CONTRACT" in prompt
+
+
 def test_verified_label_ocr_satisfies_strict_mandatory_gate(tmp_path):
     from claims import Claim, ClaimsLedger, ClaimType
     from database import ProductDatabase

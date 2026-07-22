@@ -243,22 +243,54 @@ def _format_studies_block(studies, max_studies=None):
 
 
 def _format_safety_block(ingredient_name, safety_data):
-    """Format safety data for a single ingredient."""
+    """Format current or legacy safety data for a single ingredient."""
+    if not isinstance(safety_data, dict):
+        return ""
     sdata = safety_data.get(ingredient_name, {})
+    legacy_notes = []
+    if isinstance(sdata, list):
+        interaction_rows = [row for row in sdata if isinstance(row, dict)]
+        legacy_notes = [str(row).strip() for row in sdata
+                        if not isinstance(row, dict) and str(row).strip()]
+        if interaction_rows and all(
+                "drug_interactions" not in row for row in interaction_rows):
+            sdata = {"drug_interactions": interaction_rows}
+        else:
+            merged = {"drug_interactions": [], "side_effects": [],
+                      "contraindications": []}
+            for row in interaction_rows:
+                for key in merged:
+                    value = row.get(key, [])
+                    merged[key].extend(value if isinstance(value, list) else [value])
+            sdata = merged
+    elif isinstance(sdata, str):
+        legacy_notes = [sdata.strip()] if sdata.strip() else []
+        sdata = {}
+    elif not isinstance(sdata, dict):
+        sdata = {}
     interactions = sdata.get("drug_interactions", [])
     side_fx = sdata.get("side_effects", [])
     contras = sdata.get("contraindications", [])
 
-    if not interactions and not side_fx and not contras:
+    interactions = interactions if isinstance(interactions, list) else [interactions]
+    side_fx = side_fx if isinstance(side_fx, list) else [side_fx]
+    contras = contras if isinstance(contras, list) else [contras]
+
+    if not interactions and not side_fx and not contras and not legacy_notes:
         return ""
 
     lines = [f"\n{ingredient_name}:"]
     for di in interactions:
-        lines.append(f"  [{di.get('severity', 'Unknown')}] {di.get('drug_class', '')}: {di.get('interaction', '')}")
+        if isinstance(di, dict):
+            lines.append(f"  [{di.get('severity', 'Unknown')}] {di.get('drug_class', '')}: {di.get('interaction', '')}")
+        elif str(di).strip():
+            lines.append(f"  Safety Note: {str(di).strip()}")
     if side_fx:
-        lines.append(f"  Side Effects: {', '.join(side_fx)}")
+        lines.append(f"  Side Effects: {', '.join(str(v) for v in side_fx if v)}")
     if contras:
-        lines.append(f"  Contraindications: {', '.join(contras)}")
+        lines.append(f"  Contraindications: {', '.join(str(v) for v in contras if v)}")
+    for note in legacy_notes:
+        lines.append(f"  Safety Note: {note}")
     return "\n".join(lines) + "\n"
 
 
@@ -371,6 +403,7 @@ def build_l3_safety_prompt(full_data, safety_data, site_config):
     Aggregates all safety data across the product's ingredients.
     """
     product = full_data.get("product", {})
+    product = product if isinstance(product, dict) else {}
     name = product.get("product_name", "Unknown")
     category = product.get("category", "")
     ingredients = product.get("supplement_facts", {}).get("ingredients", [])
@@ -480,13 +513,21 @@ def _build_source_data_block(full_data):
     product = full_data.get("product", {})
     name = product.get("product_name", "Unknown")
     compliance = full_data.get("compliance", {})
+    compliance = compliance if isinstance(compliance, dict) else {}
     safety = full_data.get("safety", {})
+    safety = safety if isinstance(safety, dict) else {}
     ingredient_research = full_data.get("ingredient_research", {})
+    ingredient_research = ingredient_research if isinstance(ingredient_research, dict) else {}
     pricing = product.get("pricing", [])
+    pricing = pricing if isinstance(pricing, list) else []
     claims = product.get("claims", [])
+    claims = claims if isinstance(claims, list) else []
     rp = product.get("refund_policy", {})
+    rp = rp if isinstance(rp, dict) else {}
     sf = product.get("supplement_facts", {})
+    sf = sf if isinstance(sf, dict) else {}
     ingredients = sf.get("ingredients", [])
+    ingredients = ingredients if isinstance(ingredients, list) else []
     ingredient_kb = _load_ingredient_kb()
 
     block = f"""
@@ -958,15 +999,24 @@ def _build_cvd_source_block(full_data, platform=""):
     from datetime import date
 
     product = full_data.get("product", {})
+    product = product if isinstance(product, dict) else {}
     name = product.get("product_name", "Unknown")
     compliance = full_data.get("compliance", {})
+    compliance = compliance if isinstance(compliance, dict) else {}
     safety = full_data.get("safety", {})
+    safety = safety if isinstance(safety, dict) else {}
     ingredient_research = full_data.get("ingredient_research", {})
+    ingredient_research = ingredient_research if isinstance(ingredient_research, dict) else {}
     pricing = product.get("pricing", [])
+    pricing = pricing if isinstance(pricing, list) else []
     claims = product.get("claims", [])
+    claims = claims if isinstance(claims, list) else []
     rp = product.get("refund_policy", {})
+    rp = rp if isinstance(rp, dict) else {}
     sf = product.get("supplement_facts", {})
+    sf = sf if isinstance(sf, dict) else {}
     ingredients = sf.get("ingredients", [])
+    ingredients = ingredients if isinstance(ingredients, list) else []
     ingredient_kb = _load_ingredient_kb()
     today = date.today().strftime("%B %d, %Y")
 
@@ -1270,7 +1320,10 @@ provided for reader awareness, not as a contraindication for the product itself.
     # ── C7: CLINICAL CITATIONS / RESEARCH ──
     block += "\n"
     if ingredient_research:
-        total_studies = sum(len(d.get("studies", [])) for d in ingredient_research.values())
+        total_studies = sum(
+            len(d.get("studies", []))
+            for d in ingredient_research.values() if isinstance(d, dict)
+        )
         block += f"C7 — CLINICAL CITATIONS / RESEARCH {_verification_label(True, source='pubmed')} — {total_studies} studies across {len(ingredient_research)} ingredients\n"
         block += "Source: PubMed API queries + ingredient knowledge base\n"
         block += "Note: Ingredient-level research, not finished-product clinical trials.\n\n"
