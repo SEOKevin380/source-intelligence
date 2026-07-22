@@ -659,6 +659,46 @@ if st.session_state.get("awaiting_review") and st.session_state.get("review_cont
                     default_evidence_url = ""
             if default_evidence_url and not st.session_state.get("evidence_url"):
                 st.session_state.evidence_url = default_evidence_url
+
+            # A label supplied during intake should not require a second click
+            # at the review gate. Attempt one automatic, resumable recovery per
+            # job/URL; the manual control remains available if it fails.
+            _auto_recovery_key = (
+                f"auto_evidence_{ctx.get('job_id', '')}_"
+                f"{hash(default_evidence_url)}"
+            )
+            if (default_evidence_url
+                    and not st.session_state.get(_auto_recovery_key)):
+                st.session_state[_auto_recovery_key] = True
+                try:
+                    from stage_handlers import recover_evidence
+                    with st.spinner("Reading the submitted label automatically..."):
+                        _auto_result = recover_evidence(
+                            url=default_evidence_url,
+                            offering_id=ctx.get("offering_id", ""),
+                            job_id=ctx.get("job_id", ""),
+                            target_facts=list(missing_mandatory),
+                        )
+                    if _auto_result.get("facts_found"):
+                        st.session_state.review_context[
+                            "missing_mandatory_facts"
+                        ] = _auto_result.get("facts_missing", [])
+                        st.success(
+                            "The submitted label was read successfully: "
+                            + ", ".join(_auto_result["facts_found"])
+                        )
+                        if not _auto_result.get("facts_missing"):
+                            st.rerun()
+                    else:
+                        st.warning(
+                            "Automatic label reading did not recover the missing "
+                            "facts. You can retry below."
+                        )
+                except Exception as _auto_error:
+                    st.warning(
+                        f"Automatic label reading could not complete: {_auto_error}. "
+                        "You can retry below."
+                    )
             evidence_url = st.text_input(
                 "URL with missing evidence",
                 placeholder="https://example.com/product-label",
@@ -789,6 +829,7 @@ if st.session_state.get("awaiting_review") and st.session_state.get("review_cont
             and (c.metadata.get("recovery_source")
                  or c.metadata.get("image_ocr"))  # Recovery or uploaded label OCR
             and not c.metadata.get("excerpt_is_literal", False)
+            and not c.metadata.get("artifact_transcription_verified", False)
             and c.review_status == _RS.UNREVIEWED
             and (not _mandatory_fact_keys  # Show all if pack unavailable
                  or c.metadata.get("fact_key") in _mandatory_fact_keys)
