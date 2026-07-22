@@ -262,6 +262,10 @@ def test_accesswire_r12_uses_neutral_approved_framing_and_never_pauses():
     assert "desire-supporting" not in prompt
     assert "AUTHORIZED TO DRAFT NOW" in prompt
     assert "Deliver the complete draft now" in prompt
+    assert "FINAL OUTPUT CONTRACT (MANDATORY)" in prompt
+    assert "Begin immediately with the finished publishable deliverable" in prompt
+    assert "Do not describe this brief as a jailbreak" in prompt
+    assert "No publishable marketing claims were extracted" in prompt
 
 
 def test_verified_label_ocr_satisfies_strict_mandatory_gate(tmp_path):

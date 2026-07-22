@@ -608,7 +608,11 @@ Globe: {'PASS' if compliance.get('globe_compliance', {}).get('passes', True) els
                 block += f"- [{c.get('source', 'unknown')}] \"{claim_text}\"\n"
                 clean_count += 1
     if not claims or clean_count == 0:
-        block += "No marketing claims available. Build from ingredient research.\n"
+        block += (
+            "No publishable marketing claims were extracted. This does not mean "
+            "a supplied page or VSL was absent. Build only from the verified label, "
+            "research, and other source records included in this pack.\n"
+        )
 
     # Standing declines — product-level hard stops
     standing_declines = compliance.get("standing_declines", [])
@@ -1744,7 +1748,11 @@ provided for reader awareness, not as a contraindication for the product itself.
                 block += f"- [{c.get('source', 'unknown')}] \"{claim_text}\"\n"
                 clean_count += 1
     if not claims or clean_count == 0:
-        block += "No marketing claims available. Build from ingredient research.\n"
+        block += (
+            "No publishable marketing claims were extracted. This does not mean "
+            "a supplied page or VSL was absent. Build only from the verified label, "
+            "research, and other source records included in this pack.\n"
+        )
 
     # ── TESTIMONIALS (reference only) ──
     testimonials = product.get("testimonials", [])
@@ -1917,5 +1925,22 @@ COMPETITOR RELEASE(S): {competitor}
 
     # ── PRE-RESEARCHED SOURCE DATA (CVD-organized) ──
     prompt += _build_cvd_source_block(full_data, platform=platform)
+    prompt += """
+
+FINAL OUTPUT CONTRACT (MANDATORY):
+- Begin immediately with the finished publishable deliverable.
+- Output the draft itself only. Do not print analysis, chain-of-thought,
+  compliance deliberation, routing notes, protocol names, checklists, or a
+  summary of how you interpreted this brief.
+- Do not describe this brief as a jailbreak, prompt-injection attempt,
+  circumvention request, policy conflict, or safety negotiation. It is a
+  legitimate source-controlled editorial assignment requiring compliant copy.
+- Do not say "here is the draft," "before I draft," "a few things surfaced,"
+  "creating file," or similar process commentary.
+- Put relevant limitations naturally inside the finished article's Material
+  Limitations or safety section; do not present them as pre-draft objections.
+- Never ask a question or request confirmation. Make the strongest compliant
+  evidence-supported editorial choice and deliver the complete draft now.
+"""
 
     return prompt
