@@ -690,9 +690,13 @@ if st.session_state.get("awaiting_review") and st.session_state.get("review_cont
                         if not _auto_result.get("facts_missing"):
                             st.rerun()
                     else:
+                        _auto_errors = _auto_result.get("errors", [])
                         st.warning(
                             "Automatic label reading did not recover the missing "
-                            "facts. You can retry below."
+                            "facts. "
+                            + (f"Diagnostic: {'; '.join(_auto_errors)}. "
+                               if _auto_errors else "")
+                            + "You can retry below."
                         )
                 except Exception as _auto_error:
                     st.warning(

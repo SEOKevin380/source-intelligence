@@ -416,7 +416,7 @@ def extract_label_image(image_path):
     _emit(f"  Reading label image: {image_path}")
     if not os.path.exists(image_path):
         _emit(f"  [!] Image not found: {image_path}")
-        return []
+        return {"error": "image_not_found", "ingredients": []}
 
     prompt = """Extract the complete Supplement Facts from this product label image.
 
@@ -445,58 +445,71 @@ If this image does NOT contain a Supplement Facts panel or ingredient list (e.g.
 is a product mockup, marketing graphic, or unrelated image), return exactly:
 {"error": "no_supplement_facts", "ingredients": []}"""
 
-    response = call_claude(prompt, max_tokens=3000, images=[image_path])
-    if not response:
-        return []
+    # Vision is a mandatory intake path, so do not turn a transient empty API
+    # response into "no facts found." Retry with the primary model and then a
+    # stronger fallback before returning a structured diagnostic.
+    attempts = [
+        "claude-haiku-4-5-20251001",
+        "claude-haiku-4-5-20251001",
+        "claude-sonnet-4-5-20250929",
+    ]
+    last_error = "empty_vision_response"
+    for attempt_number, model_name in enumerate(attempts, start=1):
+        response = call_claude(
+            prompt, max_tokens=3000, images=[image_path], model=model_name
+        )
+        if not response:
+            last_error = f"empty_vision_response_attempt_{attempt_number}"
+            continue
+        try:
+            clean = re.sub(r'```json\s*', '', response)
+            clean = re.sub(r'```\s*$', '', clean)
 
-    try:
-        clean = re.sub(r'```json\s*', '', response)
-        clean = re.sub(r'```\s*$', '', clean)
+            # Try parsing as a dict first (new format with serving info)
+            obj_match = re.search(r'\{[\s\S]*\}', clean)
+            if obj_match:
+                parsed = json.loads(obj_match.group())
+                if isinstance(parsed, dict) and parsed.get("error") == "no_supplement_facts":
+                    _emit("  [!] Label image does not contain a Supplement Facts panel")
+                    return parsed
+                if isinstance(parsed, dict) and "ingredients" in parsed:
+                    ingredients = parsed["ingredients"]
+                    if isinstance(ingredients, list) and len(ingredients) > 0:
+                        for ing in ingredients:
+                            ing["source"] = "label_image"
+                            ing["extraction_method"] = "machine_ocr"
+                            ing["verified"] = False
+                        _emit(f"  Extracted {len(ingredients)} ingredients from label image (artifact transcription)")
+                        if parsed.get("serving_size"):
+                            _emit(f"  Serving Size: {parsed['serving_size']}")
+                        if parsed.get("servings_per_container"):
+                            _emit(f"  Servings Per Container: {parsed['servings_per_container']}")
+                        return {
+                            "ingredients": ingredients,
+                            "serving_size": parsed.get("serving_size", ""),
+                            "servings_per_container": parsed.get("servings_per_container", ""),
+                            "_extraction_model": model_name,
+                            "_extraction_attempt": attempt_number,
+                        }
+                    last_error = f"zero_ingredients_attempt_{attempt_number}"
+                    continue
 
-        # Try parsing as a dict first (new format with serving info)
-        obj_match = re.search(r'\{[\s\S]*\}', clean)
-        if obj_match:
-            parsed = json.loads(obj_match.group())
-            # Check for "no supplement facts" response
-            if isinstance(parsed, dict) and parsed.get("error") == "no_supplement_facts":
-                _emit("  [!] Label image does not contain a Supplement Facts panel")
-                _emit("      Provide a direct image of the Supplement Facts label (not a product mockup)")
-                return []
-            if isinstance(parsed, dict) and "ingredients" in parsed:
-                ingredients = parsed["ingredients"]
-                if isinstance(ingredients, list) and len(ingredients) > 0:
+            # Fallback: try parsing as array (old format, ingredients only)
+            arr_match = re.search(r'\[[\s\S]*\]', clean)
+            if arr_match:
+                ingredients = json.loads(arr_match.group())
+                if isinstance(ingredients, list) and ingredients:
                     for ing in ingredients:
                         ing["source"] = "label_image"
                         ing["extraction_method"] = "machine_ocr"
                         ing["verified"] = False
-                    _emit(f"  Extracted {len(ingredients)} ingredients from label image (machine-extracted, requires human verification)")
-                    if parsed.get("serving_size"):
-                        _emit(f"  Serving Size: {parsed['serving_size']}")
-                    if parsed.get("servings_per_container"):
-                        _emit(f"  Servings Per Container: {parsed['servings_per_container']}")
-                    return {
-                        "ingredients": ingredients,
-                        "serving_size": parsed.get("serving_size", ""),
-                        "servings_per_container": parsed.get("servings_per_container", ""),
-                    }
-                else:
-                    _emit("  [!] Label image OCR returned 0 ingredients — image may not show a Supplement Facts panel")
-                    return []
+                    return ingredients
+            last_error = f"unparseable_vision_response_attempt_{attempt_number}"
+        except (json.JSONDecodeError, AttributeError, TypeError) as parse_error:
+            last_error = f"vision_json_error_attempt_{attempt_number}: {parse_error}"
 
-        # Fallback: try parsing as array (old format, ingredients only)
-        arr_match = re.search(r'\[[\s\S]*\]', clean)
-        if arr_match:
-            ingredients = json.loads(arr_match.group())
-            if isinstance(ingredients, list):
-                for ing in ingredients:
-                    ing["source"] = "label_image"
-                    ing["extraction_method"] = "machine_ocr"
-                    ing["verified"] = False
-                _emit(f"  Extracted {len(ingredients)} ingredients from label image (machine-extracted, requires human verification)")
-                return ingredients
-    except (json.JSONDecodeError, AttributeError):
-        _emit(f"  [!] Failed to parse label extraction")
-    return []
+    _emit(f"  [!] Label extraction failed after {len(attempts)} attempts: {last_error}")
+    return {"error": last_error, "ingredients": []}
 
 
 def load_ingredient_db():

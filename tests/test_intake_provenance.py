@@ -173,6 +173,7 @@ def test_source_pack_contains_complete_intake_and_uncited_artifacts(tmp_path):
     assert artifact_id in data["all_artifacts"]
     assert "complete spoken-word transcript has not been confirmed" in pack["doc_text"]
     assert "strongest compliant client-positive positioning" in pack["doc_text"]
+    assert "SOURCE-OF-RECORD RULE" in pack["doc_text"]
     db.close()
 
 
@@ -190,6 +191,8 @@ def test_generation_prompt_enforces_client_positive_compliance_boundary():
     assert "CLIENT ADVOCACY STANDARD (GOVERNING RULE)" in prompt
     assert "compliance boundary is the target" in prompt
     assert "Assume the client and brand are acting in good faith" in prompt
+    assert "SOURCE-OF-RECORD STANDARD (GOVERNING RULE)" in prompt
+    assert "exclusive factual source for the draft" in prompt
 
 
 def test_verified_label_ocr_satisfies_strict_mandatory_gate(tmp_path):
@@ -302,4 +305,37 @@ def test_initial_label_ocr_flows_through_extract_and_clears_gate(tmp_path):
     )
     assert strict["missing"] == []
     assert strict["needs_review"] == []
+    label_claims = ClaimsLedger(db_path=db_path).get_claims(job.offering_id)
+    assert all(c.metadata.get("source_of_record") for c in label_claims)
+    assert all(
+        c.metadata.get("authoritative_scope") == "printed_label_contents"
+        for c in label_claims
+    )
     db.close()
+
+
+def test_label_vision_retries_empty_response_and_transcribes(tmp_path):
+    import json
+
+    from research_product import extract_label_image
+
+    image_path = tmp_path / "label.png"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"label-data")
+    transcription = json.dumps({
+        "serving_size": "1 Chewable Tablet",
+        "servings_per_container": "30",
+        "ingredients": [
+            {"name": "Vitamin B12", "amount": "2,500 mcg"},
+            {"name": "Guarana Extract", "amount": "568.18 mg"},
+        ],
+    })
+
+    with patch("research_product.call_claude",
+               side_effect=["", transcription]) as vision:
+        result = extract_label_image(str(image_path))
+
+    assert vision.call_count == 2
+    assert result["serving_size"] == "1 Chewable Tablet"
+    assert result["servings_per_container"] == "30"
+    assert len(result["ingredients"]) == 2
+    assert result["_extraction_attempt"] == 2

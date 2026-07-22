@@ -876,6 +876,8 @@ def handle_extract(job: Job) -> dict:
                             "substantiation_state": "unverified",
                             "cannot_satisfy_mandatory": True,
                             "allowed_use": "client_positive_compliant_positioning",
+                            "source_of_record": True,
+                            "authoritative_scope": "marketing_statement_as_presented",
                             "search_intent": assertion.get("search_intent", ""),
                             "topic": assertion.get("topic", ""),
                             "evidence_needed": assertion.get("evidence_needed", ""),
@@ -918,6 +920,10 @@ def handle_extract(job: Job) -> dict:
                         )
                     except ImportError:
                         supplement_confidence = min(vendor_confidence, 0.4)
+                elif isinstance(label_result, dict) and label_result.get("error"):
+                    extraction_errors.append(
+                        f"Label OCR failed: {label_result['error']}"
+                    )
             except Exception as label_err:
                 extraction_errors.append(f"Label OCR failed: {label_err}")
         ingredients = supp_facts.get("ingredients", [])
@@ -970,6 +976,9 @@ def handle_extract(job: Job) -> dict:
                               "image_ocr": supplement_method == "machine_ocr",
                               "artifact_transcription_verified":
                                   supplement_method == "machine_ocr",
+                              "source_of_record":
+                                  supplement_method == "machine_ocr",
+                              "authoritative_scope": "printed_label_contents",
                               "label_source": label_source},
                 )
                 claims_batch.append(claim)
@@ -999,6 +1008,9 @@ def handle_extract(job: Job) -> dict:
                           "image_ocr": supplement_method == "machine_ocr",
                           "artifact_transcription_verified":
                               supplement_method == "machine_ocr",
+                          "source_of_record":
+                              supplement_method == "machine_ocr",
+                          "authoritative_scope": "printed_label_contents",
                           "label_source": label_source},
             ))
 
@@ -1030,6 +1042,9 @@ def handle_extract(job: Job) -> dict:
                           "image_ocr": supplement_method == "machine_ocr",
                           "artifact_transcription_verified":
                               supplement_method == "machine_ocr",
+                          "source_of_record":
+                              supplement_method == "machine_ocr",
+                          "authoritative_scope": "printed_label_contents",
                           "label_source": label_source},
             ))
 
@@ -1538,6 +1553,11 @@ def recover_evidence(url: str, offering_id: str, job_id: str,
     try:
         if is_label_image:
             if isinstance(image_ocr_data, dict):
+                if image_ocr_data.get("error"):
+                    raise ValueError(
+                        f"Label vision extraction failed: "
+                        f"{image_ocr_data['error']}"
+                    )
                 new_data = {"supplement_facts": image_ocr_data}
             elif isinstance(image_ocr_data, list):
                 new_data = {"supplement_facts": {
@@ -1660,6 +1680,11 @@ def recover_evidence(url: str, offering_id: str, job_id: str,
                         "recovery_source": url,
                         "image_ocr": is_label_image,
                         "artifact_transcription_verified": is_label_image,
+                        "source_of_record": True,
+                        "authoritative_scope": (
+                            "printed_label_contents" if is_label_image
+                            else "submitted_page_contents"
+                        ),
                     },
                 ))
                 existing_keys.add(dedup_key)
@@ -2407,6 +2432,11 @@ def handle_source_pack(job: Job) -> dict:
     sections.append("INTAKE SOURCE MANIFEST")
     sections.append("-" * 40)
     sections.append(f"  Manifest SHA-256: {intake_manifest_hash}")
+    sections.append(
+        "  SOURCE-OF-RECORD RULE: Submitted artifacts control what the product "
+        "label, VSL, and vendor materials say. Outside research may evaluate "
+        "those statements but may not replace or rewrite the source record."
+    )
     for source in source_manifest:
         status = str(source.get("status", "unknown")).upper()
         source_type = source.get("type", "source")

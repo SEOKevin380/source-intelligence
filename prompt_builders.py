@@ -1031,6 +1031,14 @@ CLIENT ADVOCACY STANDARD (GOVERNING RULE):
   the strongest accurate attribution, qualification, mechanism language, or
   evidence-backed alternative. Never fabricate or present unsupported claims as fact.
 
+SOURCE-OF-RECORD STANDARD (GOVERNING RULE):
+- This Source Intelligence Pack is the exclusive factual source for the draft.
+- Client-submitted labels control what the label says; submitted VSLs control
+  what the presentation says; submitted vendor pages control what the vendor says.
+- Research included inside this pack may evaluate or contextualize those records.
+- Do not introduce product facts from model memory, unsupplied web copy, or assumptions.
+- If a fact is not in this pack, omit it or identify it as unavailable—never fill the gap.
+
 WORKFLOW:
 1. Phase 0.0 (source-page fetch) is complete — use the CVD categories below
    as your source-data inventory for Phase 0.1.
