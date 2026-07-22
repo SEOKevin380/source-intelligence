@@ -874,8 +874,10 @@ CONTENT QUALITY RULES (NON-NEGOTIABLE):
    and be transparent about the quality of supporting research
 4. BALANCE IS MANDATORY: Include genuine limitations, "who this is NOT for," and negative observations.
    A one-sided positive review fails Google's Product Review System
-5. NO MARKETING LANGUAGE: Do not republish marketing claims as fact. Analyze them skeptically.
-   Note which claims are supported by research and which are marketing hype
+5. MAXIMUM COMPLIANT PERSUASION: Give the client the benefit of the doubt and use the
+   strongest persuasive, SEO-aggressive positioning the verified evidence permits.
+   Do not republish unsupported marketing claims as fact; attribute, substantiate,
+   qualify, or reframe them at the exact compliance boundary
 6. CITE REAL RESEARCH: Reference PubMed studies by PMID from the source data below.
    Do NOT fabricate or hallucinate citations — only cite studies provided in the source materials
 7. YMYL COMPLIANCE: This is health content subject to Google's highest scrutiny.
@@ -899,6 +901,12 @@ EDITORIAL PHILOSOPHY (NON-NEGOTIABLE — APPLIES TO ALL CONTENT):
   This is buyer-protection information gain, not an accusation against the brand.
 - Conversion-optimized through trust: factual, helpful content that connects
   the right reader to the right information is what drives conversions.
+- CLIENT-POSITIVE DEFAULT: Assume good faith. Preserve every supportable benefit,
+  differentiator, mechanism, offer, and search-intent angle. Do not introduce
+  suspicion or adversarial framing without specific evidence requiring it.
+- MAXIMUM COMPLIANT AGGRESSIVENESS: Push headlines, SEO coverage, benefit framing,
+  differentiation, calls to action, and conversion strategy to the strongest point
+  permitted by verified facts, platform rules, and applicable law—never beyond it.
 - Never fabricate information. Never plagiarize. Every factual assertion must
   trace back to the source materials or PubMed research provided.
 - Third-party marketing funnels (VSLs, affiliates) are not the brand's
@@ -1012,6 +1020,16 @@ Marketing claims below have been pre-screened. Claims that failed compliance
 review (CVD-9 disease-reversal language, R12 banned terms, Globe A-K phrases)
 have already been removed — only publishable claims are included. Claims
 marked with hedging suggestions should use the softened version provided.
+
+CLIENT ADVOCACY STANDARD (GOVERNING RULE):
+- Assume the client and brand are acting in good faith.
+- Maximize every supportable benefit, differentiator, search-intent angle,
+  headline opportunity, and conversion path.
+- Write as aggressively as verified facts, platform policy, and applicable law
+  allow. The compliance boundary is the target—not a reason to retreat from it.
+- When a claim crosses that boundary, preserve its commercial intent through
+  the strongest accurate attribution, qualification, mechanism language, or
+  evidence-backed alternative. Never fabricate or present unsupported claims as fact.
 
 WORKFLOW:
 1. Phase 0.0 (source-page fetch) is complete — use the CVD categories below
@@ -1631,15 +1649,16 @@ provided for reader awareness, not as a contraindication for the product itself.
     if not standing_declines:
         block += "\n══ AUTHORIZATION ══\n"
         if len(_data_gaps) >= 3:
-            # Sparse data — investigative framing required
-            block += "AUTHORIZATION: PROCEED WITH INVESTIGATIVE FRAMING.\n"
+            # Sparse data — client-positive, evidence-limited framing required
+            block += "AUTHORIZATION: PROCEED WITH CLIENT-POSITIVE EVIDENCE-LIMITED FRAMING.\n"
             block += f"Data gaps: {', '.join(_data_gaps)}.\n"
-            block += "With limited source data, use protective skepticism:\n"
-            block += "- Frame as first-to-market investigation, not product endorsement\n"
+            block += "With limited source data, maximize the verified opportunity without inventing facts:\n"
+            block += "- Assume client good faith and lead with supportable positioning\n"
             block += "- Direct readers to official site for details you cannot verify\n"
             block += "- Note every data gap explicitly in the article body\n"
             block += "- Do NOT fabricate ingredients, research, pricing, or mechanisms\n"
             block += "- Attribute ALL claims to the brand ('the brand states...')\n"
+            block += "- Push SEO and conversion framing to the strongest compliant boundary\n"
             block += "Deliver a complete, publish-ready draft.\n"
         elif _data_gaps:
             block += "Status: READY FOR EDITORIAL REVIEW (partial data).\n"

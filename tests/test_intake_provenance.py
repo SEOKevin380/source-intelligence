@@ -172,5 +172,21 @@ def test_source_pack_contains_complete_intake_and_uncited_artifacts(tmp_path):
     assert data["intake_manifest_hash"]
     assert artifact_id in data["all_artifacts"]
     assert "complete spoken-word transcript has not been confirmed" in pack["doc_text"]
-    assert "not accepted product facts or substantiation" in pack["doc_text"]
+    assert "strongest compliant client-positive positioning" in pack["doc_text"]
     db.close()
+
+
+def test_generation_prompt_enforces_client_positive_compliance_boundary():
+    from prompt_builders import build_l6_press_release_prompt
+
+    prompt = build_l6_press_release_prompt(
+        {
+            "product": {"product_name": "Example", "official_url": "https://example.com"},
+            "compliance": {},
+        },
+        {"platform": "Accesswire", "affiliate_link": "TRAFFIC-FIRST"},
+    )
+
+    assert "CLIENT ADVOCACY STANDARD (GOVERNING RULE)" in prompt
+    assert "compliance boundary is the target" in prompt
+    assert "Assume the client and brand are acting in good faith" in prompt

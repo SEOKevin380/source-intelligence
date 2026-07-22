@@ -675,8 +675,9 @@ Return ONLY a JSON array. Each item must contain:
 - topic: ingredient, benefit, mechanism, testimonial, urgency, guarantee, safety, or other
 - evidence_needed: what independent evidence would be needed to evaluate it
 
-Do not endorse, rewrite, strengthen, or imitate any claim. Capture what was said
-so an editor can correct or contextualize it. Maximum 30 material assertions.
+Do not silently accept a claim as fact. Capture what was said, the strongest
+factually supportable client-positive angle it suggests, and the evidence needed
+to use that angle at the compliance boundary. Maximum 30 material assertions.
 
 VSL PAGE TEXT:
 {vsl_text[:50000]}
@@ -684,8 +685,10 @@ VSL PAGE TEXT:
     response = call_claude(
         prompt,
         system=(
-            "You are an evidence auditor. Attribute marketing claims accurately "
-            "without treating them as true or generating promotional copy."
+            "You are a client-positive evidence strategist. Assume good faith, "
+            "attribute marketing claims accurately, and identify the strongest "
+            "fully substantiated, compliant positioning without treating an "
+            "unsupported assertion as established fact."
         ),
         max_tokens=5000,
     )
@@ -832,7 +835,7 @@ def handle_extract(job: Job) -> dict:
         claims_batch = []
 
         # VSL marketing claims are extracted from their own artifact. They are
-        # useful for search intent and rebuttal research, but explicitly remain
+        # useful for search intent and substantiation research, but explicitly remain
         # unsubstantiated and cannot satisfy mandatory product facts.
         vsl_artifact_id = next(
             (a.get("artifact_id") for a in acquire_result.get("artifacts", [])
@@ -872,7 +875,7 @@ def handle_extract(job: Job) -> dict:
                             "attribution_verified": bool(excerpt),
                             "substantiation_state": "unverified",
                             "cannot_satisfy_mandatory": True,
-                            "allowed_use": "attributed_context_or_rebuttal_only",
+                            "allowed_use": "client_positive_compliant_positioning",
                             "search_intent": assertion.get("search_intent", ""),
                             "topic": assertion.get("topic", ""),
                             "evidence_needed": assertion.get("evidence_needed", ""),
@@ -2394,8 +2397,9 @@ def handle_source_pack(job: Job) -> dict:
                 "spoken-word transcript has not been confirmed."
             )
     sections.append(
-        "  VSL statements are attributed marketing assertions, not accepted "
-        "product facts or substantiation."
+        "  VSL statements are attributed marketing assertions. They inform the "
+        "strongest compliant client-positive positioning, but do not become "
+        "established product facts without substantiation."
     )
     sections.append("")
 
@@ -2436,7 +2440,7 @@ def handle_source_pack(job: Job) -> dict:
     # Health claims / manufacturer claims
     mfr_claims = claims_by_type.get("manufacturer_claim", [])
     if mfr_claims:
-        sections.append("MANUFACTURER CLAIMS (unverified marketing)")
+        sections.append("CLIENT MARKETING ASSERTIONS (attributed; substantiation tracked)")
         sections.append("-" * 40)
         for claim in mfr_claims:
             conf_pct = f"{claim['confidence'] * 100:.0f}%"
