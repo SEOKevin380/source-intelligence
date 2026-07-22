@@ -676,9 +676,13 @@ if st.session_state.get("awaiting_review") and st.session_state.get("review_cont
                             job_id=ctx.get("job_id", ""),
                             target_facts=list(missing_mandatory),
                         )
-                        if result["claims_added"] > 0:
+                        if result.get("facts_found"):
+                            found_count = (
+                                result.get("claims_added", 0)
+                                + result.get("duplicates_skipped", 0)
+                            )
                             st.success(
-                                f"Extracted {result['claims_added']} facts "
+                                f"Verified {found_count} evidence-backed claim(s) "
                                 f"from the URL ({', '.join(result['facts_found'])}). "
                                 "You can now approve to continue."
                             )
