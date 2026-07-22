@@ -3198,6 +3198,21 @@ class TestRealHandlerPipeline:
         assert "$49.95" in excerpt
         assert "1 Bottle" in excerpt
 
+    def test_ingredient_names_without_amounts_do_not_clear_mandatory_fact(
+        self, pipeline_db
+    ):
+        """ingredients_with_amounts requires a real amount, not just a name."""
+        from stage_handlers import _extract_targeted_fact
+
+        data = {"supplement_facts": {"ingredients": [
+            {"name": "Zinc", "amount": ""},
+            {"name": "Vitamin B12", "amount": "2,500 mcg"},
+            {"name": "Stevia", "amount": "", "form": "Other Ingredient"},
+        ]}}
+        facts = _extract_targeted_fact("ingredients_with_amounts", data)
+        assert facts == [("Vitamin B12: 2,500 mcg",
+                          ["Vitamin B12", "2,500 mcg"])]
+
     def test_manual_entry_rejects_invalid_fact_for_offering(self, pipeline_db):
         """record_manual_entry rejects facts not in the offering's pack."""
         from stage_handlers import record_manual_entry, RecoveryError
@@ -3317,6 +3332,21 @@ class TestRealHandlerPipeline:
             # facts_found should still list them (dedup counts as found)
             assert "serving_size" in r2["facts_found"] or \
                    "ingredients_with_amounts" in r2["facts_found"]
+
+        # Recovery must update the canonical product snapshot and invalidate
+        # every ingredient-dependent downstream stage for regeneration.
+        repaired_job = store.load(job.job_id)
+        repaired_product = repaired_job.get_stage_result(
+            PipelineStage.EXTRACT
+        )["merged_product_data"]
+        repaired_sf = repaired_product["supplement_facts"]
+        assert repaired_sf["ingredients"][0]["name"] == "Zinc"
+        assert repaired_sf["ingredients"][0]["amount"] == "30mg"
+        assert repaired_sf["serving_size"] == "2 capsules"
+        assert repaired_job.get_stage_status(PipelineStage.RESEARCH).value == \
+            "pending"
+        assert repaired_job.get_stage_status(PipelineStage.SOURCE_PACK).value == \
+            "pending"
 
         # Total claims should match first run only
         ledger = ClaimsLedger(db_path=pipeline_db)

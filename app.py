@@ -1565,6 +1565,55 @@ else:
     # PHASE 2: RESULTS DISPLAY — 4-Tab CRM Interface
     # ================================================================
 
+    # Self-heal reports produced by the pre-canonical-recovery path. Those
+    # jobs could contain verified label claims in the ledger while returning
+    # an empty structured product and zero ingredient research.
+    _stale_data = st.session_state.result_data
+    _stale_product = _stale_data.get("product", {})
+    _stale_sf = _stale_product.get("supplement_facts", {}) or {}
+    _repair_job_id = st.session_state.get("pipeline_job_id", "")
+    _repair_key = f"canonical_label_repair_v1_{_repair_job_id}"
+    if (_repair_job_id
+            and _stale_product.get("product_type", "").lower() == "supplement"
+            and not _stale_sf.get("ingredients")
+            and not st.session_state.get(_repair_key)):
+        st.session_state[_repair_key] = True
+        try:
+            from stage_handlers import repair_completed_job_from_verified_claims
+            from workflow import JobStatus, PipelineStage
+
+            with st.spinner(
+                "Repairing the report from the verified submitted label..."
+            ):
+                _repaired_job = repair_completed_job_from_verified_claims(
+                    _repair_job_id
+                )
+            if _repaired_job and _repaired_job.status == JobStatus.COMPLETED:
+                _repaired_pack = _repaired_job.get_stage_result(
+                    PipelineStage.SOURCE_PACK
+                )
+                st.session_state.result_data = _repaired_pack.get(
+                    "full_data", {}
+                )
+                st.session_state.result_report = _repaired_pack.get(
+                    "doc_text", ""
+                )
+                st.success(
+                    "Verified label facts were restored and ingredient "
+                    "research was regenerated."
+                )
+                st.rerun()
+            elif _repaired_job:
+                st.error(
+                    "The stale report was blocked during regeneration: "
+                    f"{_repaired_job.error or _repaired_job.status.value}"
+                )
+        except Exception as _repair_error:
+            st.error(
+                "The report was blocked because verified label facts could "
+                f"not be synchronized: {_repair_error}"
+            )
+
     data = st.session_state.result_data
     product = data.get("product", {})
     name = product.get("product_name", "Unknown")

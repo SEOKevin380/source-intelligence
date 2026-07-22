@@ -16,6 +16,7 @@ import os
 import re
 import tempfile
 import time
+from copy import deepcopy
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -544,12 +545,12 @@ def _extract_targeted_fact(fact_key: str, product_data: dict) -> list:
                 if isinstance(ing, dict):
                     name = ing.get("name", "")
                     amount = ing.get("amount", "")
-                    if name:
-                        text = f"{name}: {amount}" if amount else name
-                        terms = [name, amount] if amount else [name]
+                    # This mandatory fact is specifically ingredients WITH
+                    # amounts. Names alone and excipients cannot clear it.
+                    if name and amount:
+                        text = f"{name}: {amount}"
+                        terms = [name, amount]
                         results.append((text, terms))
-                elif isinstance(ing, str) and ing.strip():
-                    results.append((ing, [ing]))
             return results
         # Fallback: top-level or supplement_facts flat value
         val = product_data.get(fact_key, "") or supp.get(fact_key, "")
@@ -656,6 +657,127 @@ def _normalize_fact_value(fact_key: str, value) -> list:
                 items.append(f"{k}: {v}")
         return [f"{fact_key}: {'; '.join(items)}"] if items else []
     return [f"{fact_key}: {value}"] if value else []
+
+
+def _merge_product_data(base_product: dict, recovered_data: dict) -> dict:
+    """Merge recovered source-of-record facts into the canonical product.
+
+    Label OCR used to create ledger claims without updating the structured
+    product consumed by research, the results UI, and prompt builders.  This
+    deterministic merge keeps those consumers on the same snapshot.
+    """
+    merged = deepcopy(base_product or {})
+    recovered = recovered_data or {}
+    recovered_sf = recovered.get("supplement_facts", {})
+    if not isinstance(recovered_sf, dict):
+        recovered_sf = {}
+    current_sf = deepcopy(merged.get("supplement_facts", {}) or {})
+
+    existing = list(current_sf.get("ingredients", []) or [])
+    existing_keys = {
+        (str(item.get("name", "")).strip().lower(),
+         str(item.get("amount", "")).strip().lower())
+        for item in existing if isinstance(item, dict)
+    }
+    other_ingredients = list(current_sf.get("other_ingredients", []) or [])
+    other_names = {str(item).strip().lower() for item in other_ingredients}
+
+    for item in recovered_sf.get("ingredients", []) or []:
+        if isinstance(item, str):
+            item = {"name": item, "amount": ""}
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        amount = str(item.get("amount", "")).strip()
+        if not name:
+            continue
+        if str(item.get("form", "")).strip().lower() == "other ingredient":
+            if name.lower() not in other_names:
+                other_ingredients.append(name)
+                other_names.add(name.lower())
+            continue
+        key = (name.lower(), amount.lower())
+        if key not in existing_keys:
+            existing.append(deepcopy(item))
+            existing_keys.add(key)
+
+    if existing:
+        current_sf["ingredients"] = existing
+    if other_ingredients:
+        current_sf["other_ingredients"] = other_ingredients
+    for key in ("serving_size", "servings_per_container", "servings"):
+        value = recovered_sf.get(key)
+        if value not in (None, "", [], {}):
+            current_sf[key] = value
+    if recovered_sf.get("_extraction_model"):
+        current_sf["_extraction_model"] = recovered_sf["_extraction_model"]
+        current_sf["_source"] = "label_image_ocr"
+    if current_sf:
+        merged["supplement_facts"] = current_sf
+
+    # Merge other non-empty recovered fields without replacing identity data.
+    for key, value in recovered.items():
+        if key == "supplement_facts" or value in (None, "", [], {}):
+            continue
+        if key in ("product_name", "official_url") and merged.get(key):
+            continue
+        merged[key] = deepcopy(value)
+    return merged
+
+
+def _product_data_from_verified_claims(job: Job, base_product: dict) -> dict:
+    """Project verified label claims back into structured product data."""
+    from claims import ClaimsLedger, ReviewStatus
+
+    sf = {"ingredients": []}
+    for claim in ClaimsLedger().get_claims(job.offering_id):
+        if claim.review_status == ReviewStatus.REJECTED or not claim.source_artifact_id:
+            continue
+        meta = claim.metadata or {}
+        verified = bool(
+            meta.get("artifact_transcription_verified")
+            or claim.review_status == ReviewStatus.ACCEPTED
+        )
+        if not verified:
+            continue
+        fact_key = meta.get("fact_key", "")
+        if fact_key == "ingredients_with_amounts":
+            name = str(meta.get("ingredient_name", "")).strip()
+            amount = str(meta.get("amount", "")).strip()
+            if not name and ":" in claim.claim_text:
+                name, amount = [part.strip() for part in claim.claim_text.rsplit(":", 1)]
+            if name and amount:
+                sf["ingredients"].append({
+                    "name": name, "amount": amount,
+                    "form": meta.get("form", ""),
+                    "source": "label_image",
+                    "extraction_method": claim.extraction_method,
+                    "transcription_verified": True,
+                })
+        elif fact_key == "serving_size":
+            value = str(meta.get("serving_size", "")).strip()
+            if not value:
+                value = re.sub(r"^Serving size:\s*", "", claim.claim_text,
+                               flags=re.IGNORECASE).strip()
+            if value:
+                sf["serving_size"] = value
+        elif fact_key == "servings_per_container":
+            value = str(meta.get("servings_per_container", "")).strip()
+            if not value:
+                value = re.sub(r"^Servings per container:\s*", "",
+                               claim.claim_text, flags=re.IGNORECASE).strip()
+            if value:
+                sf["servings_per_container"] = value
+    return _merge_product_data(base_product, {"supplement_facts": sf})
+
+
+def _canonical_product_for_job(job: Job) -> dict:
+    """Return the latest structured product snapshot for downstream stages."""
+    extract_result = job.get_stage_result(PipelineStage.EXTRACT)
+    identify_result = job.get_stage_result(PipelineStage.IDENTIFY)
+    product = extract_result.get("merged_product_data") or \
+        identify_result.get("product_data", {})
+    return _product_data_from_verified_claims(job, product)
 
 
 def _extract_vsl_marketing_assertions(vsl_text: str) -> list:
@@ -926,6 +1048,10 @@ def handle_extract(job: Job) -> dict:
                     )
             except Exception as label_err:
                 extraction_errors.append(f"Label OCR failed: {label_err}")
+        if supplement_method == "machine_ocr" and supp_facts:
+            product_data = _merge_product_data(
+                product_data, {"supplement_facts": supp_facts}
+            )
         ingredients = supp_facts.get("ingredients", [])
 
         for ing in ingredients:
@@ -1352,11 +1478,9 @@ def handle_extract(job: Job) -> dict:
         ),
         "extraction_errors": extraction_errors,
     }
-    # In update mode, propagate the merged product snapshot so downstream
-    # stages (SOURCE_PACK etc.) see the complete picture, not just IDENTIFY's
-    # stale original.
-    if is_update:
-        result["merged_product_data"] = product_data
+    # Always propagate the canonical snapshot. Initial label OCR is just as
+    # important as update-mode extraction for downstream research and output.
+    result["merged_product_data"] = product_data
     return result
 
 
@@ -1461,8 +1585,9 @@ def recover_evidence(url: str, offering_id: str, job_id: str,
 
     # Validate authorization before any network activity
     try:
-        _validate_recovery_context(offering_id, job_id, target_facts,
-                                    db_path=db_path)
+        recovery_job = _validate_recovery_context(
+            offering_id, job_id, target_facts, db_path=db_path
+        )
     except RecoveryError as auth_err:
         _log_recovery_audit(
             "recovery_auth_failure", offering_id, job_id,
@@ -1676,6 +1801,26 @@ def recover_evidence(url: str, offering_id: str, job_id: str,
                     extraction_method=extraction_method,
                     metadata={
                         "fact_key": fact,
+                        "ingredient_name": (
+                            claim_text.rsplit(":", 1)[0].strip()
+                            if fact == "ingredients_with_amounts"
+                            and ":" in claim_text else ""
+                        ),
+                        "amount": (
+                            claim_text.rsplit(":", 1)[1].strip()
+                            if fact == "ingredients_with_amounts"
+                            and ":" in claim_text else ""
+                        ),
+                        "serving_size": (
+                            re.sub(r"^Serving size:\s*", "", claim_text,
+                                   flags=re.IGNORECASE).strip()
+                            if fact == "serving_size" else ""
+                        ),
+                        "servings_per_container": (
+                            re.sub(r"^Servings per container:\s*", "",
+                                   claim_text, flags=re.IGNORECASE).strip()
+                            if fact == "servings_per_container" else ""
+                        ),
                         "excerpt_is_literal": bool(excerpt),
                         "recovery_source": url,
                         "image_ocr": is_label_image,
@@ -1698,6 +1843,43 @@ def recover_evidence(url: str, offering_id: str, job_id: str,
         except Exception as e:
             errors.append(f"Failed to extract {fact}: {e}")
             facts_missing.append(fact)
+
+    # Recovery is a material product-data change, not merely a ledger append.
+    # Persist the canonical snapshot and invalidate every dependent stage so
+    # PubMed, safety, compliance, planning, and the source pack are regenerated.
+    if facts_found:
+        from workflow import JobStore, JobStatus, StageStatus
+
+        identify_result = recovery_job.get_stage_result(PipelineStage.IDENTIFY)
+        canonical = _merge_product_data(
+            identify_result.get("product_data", {}), new_data
+        )
+        identify_result["product_data"] = canonical
+        recovery_job.set_stage_result(PipelineStage.IDENTIFY, identify_result)
+
+        extract_result = recovery_job.get_stage_result(PipelineStage.EXTRACT)
+        extract_result["merged_product_data"] = canonical
+        extract_result["ingredients_found"] = len(
+            canonical.get("supplement_facts", {}).get("ingredients", [])
+        )
+        recovery_job.set_stage_result(PipelineStage.EXTRACT, extract_result)
+
+        dependent = False
+        for stage in recovery_job.get_stages():
+            if stage == PipelineStage.RECONCILE:
+                dependent = True
+            if dependent:
+                recovery_job.set_stage_status(stage, StageStatus.PENDING)
+        recovery_job.status = JobStatus.AWAITING_REVIEW
+        recovery_job.error = "Recovered source facts require downstream regeneration"
+        recovery_job.budget_seconds = max(
+            recovery_job.budget_seconds,
+            int(recovery_job.elapsed_seconds) + 600,
+        )
+        recovery_job.metadata["recovered_facts"] = sorted(set(
+            recovery_job.metadata.get("recovered_facts", []) + facts_found
+        ))
+        JobStore(db_path=effective_db).save(recovery_job)
 
     result = {
         "artifact_id": art_id,
@@ -1837,6 +2019,47 @@ def record_manual_entry(offering_id: str, fact_key: str, value: str,
     return claim_id
 
 
+def repair_completed_job_from_verified_claims(job_id: str, db_path: str = ""):
+    """Regenerate a stale completed job from verified recovery claims.
+
+    This repairs jobs completed by older code where label claims cleared the
+    gate but never reached ``full_data.product`` or ingredient research.
+    Returns the rerun Job, or None when no structured repair is possible.
+    """
+    from workflow import JobStore, JobStatus, StageStatus
+
+    store = JobStore(db_path=db_path or None)
+    job = store.load(job_id)
+    if not job or job.status != JobStatus.COMPLETED:
+        return None
+    identify_result = job.get_stage_result(PipelineStage.IDENTIFY)
+    old_product = identify_result.get("product_data", {})
+    repaired = _product_data_from_verified_claims(job, old_product)
+    repaired_sf = repaired.get("supplement_facts", {}) or {}
+    if not repaired_sf.get("ingredients") or not repaired_sf.get("serving_size"):
+        return None
+
+    identify_result["product_data"] = repaired
+    job.set_stage_result(PipelineStage.IDENTIFY, identify_result)
+    extract_result = job.get_stage_result(PipelineStage.EXTRACT)
+    extract_result["merged_product_data"] = repaired
+    extract_result["ingredients_found"] = len(repaired_sf["ingredients"])
+    job.set_stage_result(PipelineStage.EXTRACT, extract_result)
+
+    reset = False
+    for stage in job.get_stages():
+        if stage == PipelineStage.RECONCILE:
+            reset = True
+        if reset:
+            job.set_stage_status(stage, StageStatus.PENDING)
+    job.status = JobStatus.PAUSED
+    job.error = ""
+    job.completed_at = ""
+    job.budget_seconds = max(job.budget_seconds, int(job.elapsed_seconds) + 600)
+    store.save(job)
+    return create_default_pipeline(db_path=db_path or None).resume(job_id)
+
+
 def handle_reconcile(job: Job) -> dict:
     """Stage: RECONCILE — Detect conflicts between claims from different sources.
 
@@ -1870,7 +2093,7 @@ def handle_research(job: Job) -> dict:
     from research_product import phase2_pubmed_research, phase3_safety_research
 
     identify_result = job.get_stage_result(PipelineStage.IDENTIFY)
-    product_data = identify_result.get("product_data", {})
+    product_data = _canonical_product_for_job(job)
     offering_type_str = identify_result.get("offering_type", "unknown")
 
     # Check if this offering type needs ingredient research
@@ -1920,7 +2143,7 @@ def handle_comply(job: Job) -> dict:
     phase7_compliance_check() if the new engine is not available.
     """
     identify_result = job.get_stage_result(PipelineStage.IDENTIFY)
-    product_data = identify_result.get("product_data", {})
+    product_data = _canonical_product_for_job(job)
     offering_type_str = identify_result.get("offering_type", "unknown")
 
     try:
@@ -2006,8 +2229,7 @@ def handle_analyze_site(job: Job) -> dict:
     """
     from research_product import phase4_keyword_research
 
-    identify_result = job.get_stage_result(PipelineStage.IDENTIFY)
-    product_data = identify_result.get("product_data", {})
+    product_data = _canonical_product_for_job(job)
 
     keywords = phase4_keyword_research(product_data)
 
@@ -2021,8 +2243,7 @@ def handle_analyze_market(job: Job) -> dict:
     """
     from research_product import phase5_reputation_check, phase6_competitive_landscape
 
-    identify_result = job.get_stage_result(PipelineStage.IDENTIFY)
-    product_data = identify_result.get("product_data", {})
+    product_data = _canonical_product_for_job(job)
 
     reputation = phase5_reputation_check(product_data)
     competitive = phase6_competitive_landscape(product_data)
@@ -2326,8 +2547,7 @@ def handle_source_pack(job: Job) -> dict:
 
     # Prefer merged product from EXTRACT (includes new ingredients/prices
     # from update mode) over stale IDENTIFY data
-    product_data = extract_result.get("merged_product_data") or \
-        identify_result.get("product_data", {})
+    product_data = _canonical_product_for_job(job)
     product_name = product_data.get("product_name", "Unknown Product")
 
     # Load claims and evidence
@@ -2573,8 +2793,34 @@ def handle_source_pack(job: Job) -> dict:
                 mandatory_manual_only = mand_result.get("manual_only", [])
                 mandatory_provisional = mand_result.get("provisional", [])
                 mandatory_needs_review = mand_result.get("needs_review", [])
-    except (ValueError, ImportError):
-        pass  # Unknown type or module not available
+            # Defense in depth: ledger keys alone cannot clear a structured
+            # supplement requirement. The exact final product being emitted
+            # must contain usable amount/unit data and a serving size.
+            if offering_type_str == "supplement":
+                final_sf = product_data.get("supplement_facts", {}) or {}
+                has_amounted_ingredient = any(
+                    isinstance(item, dict)
+                    and str(item.get("name", "")).strip()
+                    and re.search(
+                        r"\d[\d,.]*\s*(?:mcg|mg|g|iu|cfu)\b",
+                        str(item.get("amount", "")), re.IGNORECASE,
+                    )
+                    for item in final_sf.get("ingredients", []) or []
+                )
+                if not has_amounted_ingredient:
+                    mandatory_missing.append("ingredients_with_amounts")
+                if not str(final_sf.get("serving_size", "")).strip():
+                    mandatory_missing.append("serving_size")
+                mandatory_missing = list(dict.fromkeys(mandatory_missing))
+    except (ValueError, ImportError) as gate_err:
+        raise ReviewBlockError(
+            "Cannot generate source pack: mandatory fact validation could "
+            f"not be completed ({gate_err}).",
+            details={
+                "blocked_facts": ["mandatory_validation"],
+                "validation_error": str(gate_err),
+            },
+        )
 
     if mandatory_missing:
         parts = []
