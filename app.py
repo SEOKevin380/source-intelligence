@@ -1724,12 +1724,19 @@ else:
     # ================================================================
     # Build a default prompt so the user can grab it immediately
     _health_ymyl_types = {
-        "supplement", "topical", "telehealth", "device", "cannabis",
-        "food", "professional_service",
+        "supplement", "topical", "telehealth", "cannabis",
+        "food", "professional_service", "financial",
+    }
+    _health_ymyl_categories = {
+        "health", "medical", "weight_loss", "brain_health", "blood_sugar",
+        "heart_health", "male_enhancement", "sleep", "joint_health",
+        "vision", "dental", "skin_care", "pain_relief", "telehealth",
     }
     _is_ymyl = (
         str(product.get("product_type", "")).strip().lower()
         in _health_ymyl_types
+        or str(product.get("category", "")).strip().lower()
+        in _health_ymyl_categories
         or str(compliance_data.get("risk_level", "")).strip().lower()
         in {"moderate", "high", "very high", "critical"}
     )

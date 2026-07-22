@@ -2132,6 +2132,17 @@ RULES:
 - Extract the company name, address, email, phone from any contact/about sections
 - For financial newsletters, investment research, trading alerts, or market
   analysis, use product_type "financial" and extract the service fields below.
+- For devices/electronics, extract specifications, power source, certifications,
+  independent testing, warranty, warnings, compatibility, and key features.
+- For software, extract features, supported platforms, integrations, security,
+  support, access, billing, renewal, cancellation, and privacy terms.
+- For services/professional offerings, extract the service scope, deliverables,
+  provider credentials, service area/jurisdictions, guarantees, and terms.
+- For programs, subscriptions, and information products, extract exactly what is
+  included, format, delivery/access method, provider/author credentials, duration,
+  billing frequency, renewal, and cancellation terms.
+- Do not create supplement_facts for a non-ingestible offering. Empty arrays are
+  correct when a vertical-specific fact was not present in the supplied source.
 - If information is NOT present, use empty string "" or empty array []
 
 Return ONLY valid JSON with this exact structure:
@@ -2145,6 +2156,53 @@ Return ONLY valid JSON with this exact structure:
     "topics_covered": [],
     "track_record_claims": [],
     "regulatory_registrations": [],
+    "key_features": [],
+    "specifications": {{}},
+    "power_source": "",
+    "certifications": [],
+    "independent_testing": [],
+    "warnings": [],
+    "services_offered": [],
+    "prescriber_credentials": [],
+    "states_available": [],
+    "consultation_process": "",
+    "whats_included": [],
+    "format": "",
+    "author_credentials": [],
+    "access_method": "",
+    "platform_support": [],
+    "integrations": [],
+    "data_security": "",
+    "support_options": [],
+    "service_description": "",
+    "service_area": "",
+    "credentials": [],
+    "guarantees": [],
+    "program_contents": [],
+    "program_structure": "",
+    "credentials_earned": [],
+    "instructor_credentials": [],
+    "delivery_method": "",
+    "duration": "",
+    "provider_credentials": [],
+    "billing_frequency": "",
+    "included_items": [],
+    "cancellation_policy": "",
+    "trial_period": "",
+    "renewal_terms": "",
+    "cancellation_terms": "",
+    "privacy_policy": "",
+    "terms_of_service": "",
+    "experience": "",
+    "pricing_structure": "",
+    "peptide_sequence": "",
+    "purity_percentage": "",
+    "molecular_weight": "",
+    "cas_number": "",
+    "form": "",
+    "amount_per_vial": "",
+    "storage_requirements": "",
+    "research_use_only_disclaimer": "",
     "supplement_facts": {{
         "serving_size": "",
         "servings_per_container": "",

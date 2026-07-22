@@ -404,6 +404,7 @@ def build_l3_safety_prompt(full_data, safety_data, site_config):
     """
     product = full_data.get("product", {})
     product = product if isinstance(product, dict) else {}
+    product_type = str(product.get("product_type", "unknown") or "unknown").lower()
     name = product.get("product_name", "Unknown")
     category = product.get("category", "")
     ingredients = product.get("supplement_facts", {}).get("ingredients", [])
@@ -1000,6 +1001,16 @@ def _build_cvd_source_block(full_data, platform=""):
 
     product = full_data.get("product", {})
     product = product if isinstance(product, dict) else {}
+    product_type = str(
+        product.get("product_type", "unknown") or "unknown"
+    ).lower()
+    ingestible_types = {"supplement", "food", "cannabis", "research_peptide"}
+    clinical_types = ingestible_types | {"topical", "telehealth"}
+    physical_types = ingestible_types | {"topical", "device"}
+    service_types = {
+        "telehealth", "info_product", "financial", "software", "service",
+        "program", "subscription", "professional", "unknown",
+    }
     name = product.get("product_name", "Unknown")
     compliance = full_data.get("compliance", {})
     compliance = compliance if isinstance(compliance, dict) else {}
@@ -1056,6 +1067,58 @@ def _build_cvd_source_block(full_data, platform=""):
     elif c1_source == "label_upload":
         c1_source = "uploaded label image OCR"
 
+    if product_type == "research_peptide":
+        block += f"C1 — {c1_label}\n"
+        block += "Source: supplied vendor specifications and research records\n"
+        peptide_fields = [
+            "peptide_sequence", "purity_percentage", "molecular_weight",
+            "cas_number", "form", "amount_per_vial", "storage_requirements",
+            "research_use_only_disclaimer",
+        ]
+        for key in peptide_fields:
+            value = product.get(key)
+            block += f"  {key.replace('_', ' ').title()}: {value or 'NOT ESTABLISHED'}\n"
+        block += "Do not present research-use material as approved for human use.\n"
+    elif product_type == "financial":
+        _incomplete_guidance = """HANDLING INCOMPLETE FINANCIAL DATA:
+This is a financial publication, research service, newsletter, or advisory—not
+an ingestible consumer product. Use only the financial evidence fields below.
+Missing pricing, performance history, publisher identity, terms, or regulatory
+information must be disclosed as unavailable and omitted from claims.
+Never invent returns, recommendations, endorsements, urgency, scarcity, or a
+specific security. Deliver a neutral, client-positive description using only
+the supplied financial source record and clearly label material limitations.
+"""
+    elif product_type not in clinical_types:
+        _incomplete_guidance = """HANDLING INCOMPLETE OFFERING DATA:
+Use the vertical-specific facts below for this offering. Missing specifications,
+features, deliverables, credentials, pricing, testing, access, privacy, or terms
+must be disclosed as unavailable and omitted from claims. Never substitute facts
+from a different product category. Deliver the strongest accurate client-positive
+draft supported by the supplied source records and document material limitations.
+"""
+    else:
+        _incomplete_guidance = """HANDLING INCOMPLETE DATA:
+Some CVD categories below may show "NO DATA" — this means the information
+was not available at research time. This is normal for first-to-market
+releases where source data is incomplete. Write the release using every
+fact that IS available:
+- No ingredients? Write from product positioning, claims, and category.
+- No pricing? Omit pricing references, direct reader to official site.
+- No guarantee details? Omit guarantee claims from draft.
+- No contact info? Use brand name only.
+- No clinical research? Write from claims and positioning, not studies.
+Never fabricate missing data. Note gaps in Material Limitations and
+deliver the finished draft.
+"""
+
+    if product_type in clinical_types:
+        _data_sources_label = (
+            "Live page fetch + submitted sources + applicable label/clinical research"
+        )
+    else:
+        _data_sources_label = "Live page fetch + submitted pages/VSLs + source records"
+
     block = f"""
 ═══════════════════════════════════════════════
 SOURCE INTELLIGENCE — PRE-RESEARCHED DATA
@@ -1063,7 +1126,7 @@ SOURCE INTELLIGENCE — PRE-RESEARCHED DATA
 
 Research Date: {today}
 Source Tool: MBK Source Intelligence Tool
-Data Sources: Live page fetch + PubMed API + Claude vision OCR
+Data Sources: {_data_sources_label}
 Official URL: {product.get('official_url', '')}
 
 PHASE 0.0 STATUS: DATA COLLECTION COMPLETE
@@ -1117,23 +1180,11 @@ NO-PAUSE DELIVERY RULE (GOVERNING RULE):
   authorization to repeat it as marketing copy. Use a safe shortened brand name
   in publishable copy when needed.
 - If a suggested synonym would preserve the prohibited meaning, do not use it.
-  Fall back to neutral terms such as men's vitality, men's wellness, general
-  well-being, or overall vitality, only where supported by the source record.
+  Omit it or use neutral platform-approved language supported by the source record.
 - Compliance friction changes the wording; it does not stop delivery. Produce
   the full draft and document material limitations without asking questions.
 
-HANDLING INCOMPLETE DATA:
-Some CVD categories below may show "NO DATA" — this means the information
-was not available at research time. This is normal for first-to-market
-releases where source data is incomplete. Write the release using every
-fact that IS available:
-- No ingredients? Write from product positioning, claims, and category.
-- No pricing? Omit pricing references, direct reader to official site.
-- No guarantee details? Omit guarantee claims from draft.
-- No contact info? Use brand name only.
-- No clinical research? Write from claims and positioning, not studies.
-Never fabricate missing data. Note gaps in Material Limitations and
-deliver the finished draft.
+{_incomplete_guidance}
 
 """
 
@@ -1184,7 +1235,6 @@ deliver the finished draft.
         block += "\n"
 
     # Telehealth/prescription product context — changes the safety calculus
-    product_type = product.get("product_type", "supplement")
     if product_type == "telehealth":
         block += """PRODUCT TYPE: TELEHEALTH / PRESCRIPTION
 This is a prescription product dispensed under licensed physician supervision,
@@ -1204,10 +1254,87 @@ provided for reader awareness, not as a contraindication for the product itself.
         "info_product": "PRODUCT CONTENTS",
         "food": "NUTRITION FACTS",
         "topical": "PRODUCT FORMULA",
+        "research_peptide": "RESEARCH COMPOUND SPECIFICATIONS",
+        "telehealth": "TELEHEALTH SERVICE FACTS",
+        "software": "SOFTWARE FEATURES / PLATFORM SUPPORT",
+        "service": "SERVICE SCOPE / DELIVERABLES",
+        "program": "PROGRAM CONTENTS / DELIVERY",
+        "subscription": "SUBSCRIPTION CONTENTS / ACCESS",
+        "professional": "PROFESSIONAL SERVICE / CREDENTIALS",
+        "unknown": "OFFERING FACTS",
     }
     c1_label = c1_type_labels.get(product_type, "SUPPLEMENT FACTS")
 
-    if ingredients:
+    if product_type == "research_peptide":
+        block += "C19 — VIAL / STORAGE / RESEARCH-USE DETAILS\n"
+        for key in ("amount_per_vial", "form", "storage_requirements", "research_use_only_disclaimer"):
+            block += f"  {key.replace('_', ' ').title()}: {product.get(key) or 'NOT ESTABLISHED'}\n"
+    elif product_type == "financial":
+        financial_fields = {
+            "Service Type": product.get("service_type", ""),
+            "Topics Covered": product.get("topics_covered", []),
+            "Track Record Claims": product.get("track_record_claims", []),
+            "Regulatory Registrations": product.get("regulatory_registrations", []),
+        }
+        block += "C1 — FINANCIAL SERVICE / PUBLICATION FACTS\n"
+        block += "Source: supplied official page and VSL records\n"
+        any_financial = False
+        for field_name, field_value in financial_fields.items():
+            if field_value:
+                any_financial = True
+                if isinstance(field_value, list):
+                    rendered = "; ".join(
+                        str(v.get("claim", v) if isinstance(v, dict) else v)
+                        for v in field_value
+                    )
+                else:
+                    rendered = str(field_value)
+                block += f"  {field_name}: {rendered}\n"
+            else:
+                block += f"  {field_name}: NOT ESTABLISHED\n"
+        if not any_financial:
+            block += "No service terms or performance facts were established. Do not invent them.\n"
+    elif product_type in service_types:
+        field_map = {
+            "telehealth": ["services_offered", "prescriber_credentials", "states_available", "consultation_process"],
+            "info_product": ["whats_included", "format", "author_credentials", "access_method"],
+            "software": ["key_features", "platform_support", "integrations", "data_security", "support_options"],
+            "service": ["service_description", "service_area", "credentials", "guarantees"],
+            "program": ["program_structure", "duration", "credentials_earned", "instructor_credentials"],
+            "subscription": ["included_items", "billing_frequency", "cancellation_policy", "trial_period"],
+            "professional": ["services_offered", "credentials", "experience", "service_area"],
+            "unknown": ["description", "key_features", "whats_included", "access_method"],
+        }
+        fields = field_map.get(product_type, [])
+        block += f"C1 — {c1_label}\n"
+        block += "Source: supplied official page, VSL, and intake records\n"
+        found = False
+        for key in fields:
+            value = product.get(key)
+            if value:
+                found = True
+                rendered = "; ".join(str(v) for v in value) if isinstance(value, list) else str(value)
+                block += f"  {key.replace('_', ' ').title()}: {rendered}\n"
+            else:
+                block += f"  {key.replace('_', ' ').title()}: NOT ESTABLISHED\n"
+        if not found:
+            block += "No detailed offering specifications were established. Use only verified identity and positioning.\n"
+    elif product_type == "device":
+        block += f"C1 — {c1_label}\n"
+        block += "Source: supplied official page, specifications, and intake records\n"
+        device_fields = ["key_features", "specifications", "power_source", "certifications", "warranty"]
+        found = False
+        for key in device_fields:
+            value = product.get(key)
+            if value:
+                found = True
+                rendered = "; ".join(str(v) for v in value) if isinstance(value, list) else str(value)
+                block += f"  {key.replace('_', ' ').title()}: {rendered}\n"
+            else:
+                block += f"  {key.replace('_', ' ').title()}: NOT ESTABLISHED\n"
+        if not found:
+            block += "No detailed specifications were established. Do not invent features or certifications.\n"
+    elif ingredients:
         block += f"C1 — {c1_label} {_verification_label(True, source=c1_source)}\n"
         block += f"Source: {c1_source}\n"
         # If sourced from DSLD, show the matched product for transparency
@@ -1243,9 +1370,11 @@ provided for reader awareness, not as a contraindication for the product itself.
             block += "For cannabis products, look for: THCA %, THC %, CBD %, terpene profile,\n"
             block += "strain type (indica/sativa/hybrid), and third-party lab testing (COA).\n"
             block += "Direct readers to official site for Certificate of Analysis.\n"
-        else:
+        elif product_type in clinical_types:
             block += "No ingredients extracted from available sources. Do not fabricate.\n"
             block += "Write from product positioning and available claims instead.\n"
+        else:
+            block += "No structured offering details were extracted. Do not fabricate.\n"
 
     # ── C2: PRICING ──
     block += "\n"
@@ -1319,7 +1448,37 @@ provided for reader awareness, not as a contraindication for the product itself.
 
     # ── C7: CLINICAL CITATIONS / RESEARCH ──
     block += "\n"
-    if ingredient_research:
+    if product_type == "financial":
+        track_record = product.get("track_record_claims", []) or []
+        block += "C7 — FINANCIAL CLAIM SUBSTANTIATION\n"
+        if track_record:
+            block += "Track-record statements captured from supplied sources (not independently verified):\n"
+            for claim in track_record:
+                block += f"  - {claim.get('claim', claim) if isinstance(claim, dict) else claim}\n"
+        else:
+            block += "No performance or track-record claims were established. Do not imply returns or results.\n"
+    elif product_type == "device":
+        certifications = product.get("certifications", []) or []
+        evidence = product.get("independent_testing", []) or product.get("evidence", []) or []
+        block += "C7 — PRODUCT TESTING / CERTIFICATIONS\n"
+        if certifications or evidence:
+            for item in list(certifications) + list(evidence):
+                block += f"  - {item}\n"
+        else:
+            block += "No independent testing or certification evidence was established. Do not imply certification.\n"
+    elif product_type not in clinical_types:
+        credentials = (
+            product.get("author_credentials") or product.get("credentials")
+            or product.get("provider_credentials") or []
+        )
+        block += "C7 — CREDENTIALS / INDEPENDENT SUBSTANTIATION\n"
+        if credentials:
+            values = credentials if isinstance(credentials, list) else [credentials]
+            for item in values:
+                block += f"  - {item}\n"
+        else:
+            block += "No independent credentials, testing, or outcome substantiation was established. Do not imply it.\n"
+    elif ingredient_research:
         total_studies = sum(
             len(d.get("studies", []))
             for d in ingredient_research.values() if isinstance(d, dict)
@@ -1348,12 +1507,41 @@ provided for reader awareness, not as a contraindication for the product itself.
     block += "\n"
     has_safety = False
     safety_lines = []
-    for ing_name, sdata in safety.items():
-        sblock = _format_safety_block(ing_name, safety)
-        if sblock:
-            has_safety = True
-            safety_lines.append(sblock)
-    if has_safety:
+    if product_type != "financial":
+        for ing_name, sdata in safety.items():
+            sblock = _format_safety_block(ing_name, safety)
+            if sblock:
+                has_safety = True
+                safety_lines.append(sblock)
+    if product_type == "financial":
+        registrations = product.get("regulatory_registrations", []) or []
+        block += "C6 — FINANCIAL DISCLOSURES / REGULATORY STATUS\n"
+        if registrations:
+            for item in registrations:
+                block += f"  - {item.get('status', item) if isinstance(item, dict) else item}\n"
+        else:
+            block += "No regulatory registration or publisher disclosure was established in the supplied record.\n"
+        block += "Do not imply SEC/FINRA registration, fiduciary status, or guaranteed performance.\n"
+    elif product_type == "device":
+        warnings = product.get("warnings", []) or product.get("safety_warnings", []) or []
+        block += "C6 — PRODUCT SAFETY / WARNINGS\n"
+        if warnings:
+            values = warnings if isinstance(warnings, list) else [warnings]
+            for item in values:
+                block += f"  - {item}\n"
+        else:
+            block += "No product warnings or safety certifications were established. Do not claim safety certification.\n"
+    elif product_type not in clinical_types:
+        block += "C6 — TERMS / PRIVACY / MATERIAL LIMITATIONS\n"
+        privacy = product.get("privacy_policy", "")
+        terms = product.get("terms", "") or product.get("terms_of_service", "")
+        if privacy:
+            block += f"  Privacy: {privacy}\n"
+        if terms:
+            block += f"  Terms: {terms}\n"
+        if not privacy and not terms:
+            block += "No verified privacy, data-use, or service terms were established. Omit claims about them.\n"
+    elif has_safety:
         block += f"C6 — DRUG INTERACTIONS {_verification_label(True, source='pubmed')}\n"
         block += "Source: PubMed safety queries + interaction databases\n"
         for sl in safety_lines:
@@ -1386,7 +1574,18 @@ provided for reader awareness, not as a contraindication for the product itself.
     # ── C10: SHIPPING ──
     block += "\n"
     shipping = product.get("shipping_policy", product.get("shipping", {}))
-    if shipping and any(shipping.values()):
+    shipping = shipping if isinstance(shipping, dict) else {}
+    if product_type == "financial":
+        block += "C10 — ACCESS / DELIVERY [NO VERIFIED DATA]\n"
+        block += "No delivery cadence, access method, or fulfillment terms were established. Omit them.\n"
+    elif product_type in service_types:
+        access_method = product.get("access_method", "") or product.get("delivery_method", "")
+        block += "C10 — ACCESS / DELIVERY\n"
+        if access_method:
+            block += f"  Verified Access Method: {access_method}\n"
+        else:
+            block += "No access or delivery method was established. Do not invent one.\n"
+    elif shipping and any(shipping.values()):
         block += f"C10 — SHIPPING / DELIVERY {_verification_label(True, source='live_page')}\n"
         block += "Source: live page extraction\n"
         for k, v in shipping.items():
@@ -1455,7 +1654,32 @@ provided for reader awareness, not as a contraindication for the product itself.
 
     # ── C19: SERVING SIZE / SUPPLY DURATION ──
     block += "\n"
-    if sf.get("serving_size") or sf.get("servings_per_container"):
+    if product_type == "financial":
+        block += "C19 — SUBSCRIPTION / ACCESS TERMS [NO VERIFIED DATA]\n"
+        block += "No subscription duration, renewal, cancellation, or access terms were established. Omit them.\n"
+    elif product_type == "device":
+        block += "C19 — MODEL / PACKAGE / WARRANTY DETAILS\n"
+        device_term_fields = ["model", "variants", "package_contents", "warranty"]
+        found = False
+        for key in device_term_fields:
+            value = product.get(key)
+            if value:
+                found = True
+                block += f"  {key.replace('_', ' ').title()}: {value}\n"
+        if not found:
+            block += "No model, package contents, variant, or warranty details were established. Omit them.\n"
+    elif product_type in service_types:
+        block += "C19 — TERM / ACCESS / CANCELLATION DETAILS\n"
+        term_fields = ["duration", "billing_frequency", "renewal_terms", "cancellation_terms", "access_method"]
+        found = False
+        for key in term_fields:
+            value = product.get(key)
+            if value:
+                found = True
+                block += f"  {key.replace('_', ' ').title()}: {value}\n"
+        if not found:
+            block += "No duration, renewal, cancellation, or access terms were established. Omit them.\n"
+    elif sf.get("serving_size") or sf.get("servings_per_container"):
         block += f"C19 — SERVING SIZE / SUPPLY DURATION {_verification_label(True, source=c1_source)}\n"
         if sf.get("serving_size"):
             block += f"  Serving Size: {sf['serving_size']}\n"
@@ -1596,10 +1820,11 @@ provided for reader awareness, not as a contraindication for the product itself.
         for _raw_cat, _safe_label in CATEGORY_DISPLAY_LABELS.items():
             _cat_phrase = _raw_cat.replace("_", " ")
             bc_notes = _re_bc.sub(_re_bc.escape(_cat_phrase), _safe_label, bc_notes, flags=_re_bc.IGNORECASE)
-        if bc.get("review_flag"):
-            block += f"Barchart B1-B4 Overlay: REVIEW — {bc_notes}\n"
+        if bc.get("passes"):
+            block += "Barchart B1-B4 Overlay: PASS\n"
         else:
-            block += f"Barchart B1-B4 Overlay: {'PASS' if bc.get('passes') else 'REVIEW — ' + bc_notes}\n"
+            block += "Barchart B1-B4 Overlay: AUTOMATIC COMPLIANT REWRITE\n"
+            block += "  Apply the platform rules in this brief automatically; this is not a stop or review request.\n"
     else:
         # Accesswire / Newswire.com
         block += f"R12 Blocklist (ACW): {'PASS' if aw.get('passes') else 'REWRITE REQUIRED'}\n"
@@ -1734,12 +1959,45 @@ provided for reader awareness, not as a contraindication for the product itself.
 
     # Assess data completeness
     _data_gaps = []
-    if not ingredients:
-        _data_gaps.append("ingredients")
-    if not ingredient_research:
-        _data_gaps.append("clinical research")
-    if not pricing:
-        _data_gaps.append("pricing")
+    if product_type == "financial":
+        if not product.get("service_type"):
+            _data_gaps.append("service description")
+        if not product.get("track_record_claims"):
+            _data_gaps.append("substantiated performance history")
+        if not product.get("regulatory_registrations"):
+            _data_gaps.append("publisher/regulatory disclosures")
+        if not pricing:
+            _data_gaps.append("pricing")
+    elif product_type == "device":
+        if not product.get("key_features") and not product.get("specifications"):
+            _data_gaps.append("product specifications")
+        if not product.get("certifications"):
+            _data_gaps.append("testing/certifications")
+        if not pricing:
+            _data_gaps.append("pricing")
+    elif product_type in service_types:
+        detail_keys = {
+            "telehealth": ("services_offered", "prescriber_credentials"),
+            "info_product": ("whats_included", "author_credentials"),
+            "software": ("key_features", "platform_support"),
+            "service": ("service_description", "credentials"),
+            "program": ("program_structure", "instructor_credentials"),
+            "subscription": ("included_items", "billing_frequency"),
+            "professional": ("services_offered", "credentials"),
+            "unknown": ("description", "key_features"),
+        }
+        for key in detail_keys.get(product_type, ()):
+            if not product.get(key):
+                _data_gaps.append(key.replace("_", " "))
+        if not pricing:
+            _data_gaps.append("pricing")
+    else:
+        if not ingredients:
+            _data_gaps.append("ingredients")
+        if not ingredient_research:
+            _data_gaps.append("clinical research")
+        if not pricing:
+            _data_gaps.append("pricing")
 
     if not standing_declines:
         block += "\n══ AUTHORIZATION ══\n"
@@ -1751,7 +2009,14 @@ provided for reader awareness, not as a contraindication for the product itself.
             block += "- Assume client good faith and lead with supportable positioning\n"
             block += "- Direct readers to official site for details you cannot verify\n"
             block += "- Note every data gap explicitly in the article body\n"
-            block += "- Do NOT fabricate ingredients, research, pricing, or mechanisms\n"
+            if product_type == "financial":
+                block += "- Do NOT fabricate recommendations, performance, pricing, endorsements, or regulatory status\n"
+            elif product_type == "device":
+                block += "- Do NOT fabricate features, specifications, certifications, testing, or pricing\n"
+            elif product_type in service_types:
+                block += "- Do NOT fabricate deliverables, credentials, outcomes, access terms, or pricing\n"
+            else:
+                block += "- Do NOT fabricate ingredients, research, pricing, or mechanisms\n"
             block += "- Attribute ALL claims to the brand ('the brand states...')\n"
             block += "- Push SEO and conversion framing to the strongest compliant boundary\n"
             block += "Deliver a complete, publish-ready draft.\n"
@@ -1829,6 +2094,65 @@ provided for reader awareness, not as a contraindication for the product itself.
 
     # ── KEYWORD & CONTENT STRATEGY ──
     keywords = full_data.get("keywords", {})
+    if product_type == "financial":
+        safe_name = name.replace("|", " ").strip()
+        keywords = {
+            "primary": [
+                f"{safe_name} review",
+                f"Forecasts & Strategies review",
+                f"Jim Woods newsletter review",
+            ],
+            "buyer_intent": [
+                f"{safe_name} official website",
+                "Forecasts & Strategies subscription cost",
+                "is Forecasts & Strategies worth it",
+            ],
+            "informational": [
+                "how Forecasts & Strategies works",
+                "what Forecasts & Strategies includes",
+                "investment newsletter due diligence",
+            ],
+            "comparison": [
+                "Forecasts & Strategies alternatives",
+                "investment research newsletter comparison",
+            ],
+            "safety_queries": [],
+            "people_also_ask": [
+                "What is Forecasts & Strategies?",
+                "Who publishes Forecasts & Strategies?",
+                "What information does Forecasts & Strategies provide?",
+                "How much does Forecasts & Strategies cost?",
+                "Does Forecasts & Strategies publish a verified track record?",
+                "How do subscribers access or cancel Forecasts & Strategies?",
+            ],
+        }
+    elif product_type not in clinical_types:
+        safe_name = name.replace("|", " ").strip()
+        kind = {
+            "device": "product",
+            "info_product": "information product",
+            "software": "software",
+            "service": "service",
+            "program": "program",
+            "subscription": "subscription",
+            "professional": "professional service",
+            "unknown": "offering",
+        }.get(product_type, "product")
+        keywords = {
+            "primary": [f"{safe_name} review", f"{safe_name} {kind} review"],
+            "buyer_intent": [f"{safe_name} official website", f"{safe_name} pricing", f"is {safe_name} worth it"],
+            "informational": [f"how {safe_name} works", f"what {safe_name} includes", f"{kind} features and limitations"],
+            "comparison": [f"{safe_name} alternatives", f"{safe_name} vs competitors"],
+            "safety_queries": [],
+            "people_also_ask": [
+                f"What is {safe_name}?",
+                f"How does {safe_name} work?",
+                f"What does {safe_name} include?",
+                f"How much does {safe_name} cost?",
+                f"Who is {safe_name} designed for?",
+                f"What are the limitations of {safe_name}?",
+            ],
+        }
     if keywords:
         # Filter keywords containing R12 blocklist terms (e.g., "male enhancement" is R12)
         def _kw_safe(kw):

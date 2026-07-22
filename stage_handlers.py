@@ -57,6 +57,17 @@ def _same_site(first_url: str, second_url: str) -> bool:
     return first == second or first.endswith("." + second) or second.endswith("." + first)
 
 
+def _looks_like_marketing_offer(url: str) -> bool:
+    """Recognize a submitted offer/VSL page without requiring a second field."""
+    parsed = urlparse(url or "")
+    haystack = f"{parsed.path} {parsed.query}".lower()
+    return bool(re.search(
+        r"(?:^|[/_?&=.-])(vsl|video-sales|sales-letter|offer|presentation|webinar)(?:$|[/_?&=.-])"
+        r"|(?:^|[?&])step=\d+",
+        haystack,
+    ))
+
+
 def _log_recovery_audit(event_type: str, offering_id: str, job_id: str,
                         db_path: str = "", **kwargs) -> None:
     """Log an immutable recovery audit event.
@@ -223,6 +234,7 @@ def handle_acquire(job: Job) -> dict:
     stored_artifacts = []
     source_manifest = []
     errors = []
+    marketing_artifact_id = ""
 
     try:
         from evidence import EvidenceLake, SourceClass
@@ -234,10 +246,34 @@ def handle_acquire(job: Job) -> dict:
         # Store official page if we have a URL
         if job.url:
             try:
-                aid, _ = acq.fetch_official_page(job.url, phase="ACQUIRE")
+                if _looks_like_marketing_offer(job.url):
+                    aid, primary_text = acq.fetch_with_browser(
+                        job.url,
+                        source_class=SourceClass.OFFICIAL_VENDOR,
+                        phase="ACQUIRE_OFFER",
+                    )
+                    marketing_artifact_id = aid
+                else:
+                    aid, primary_text = acq.fetch_official_page(
+                        job.url, phase="ACQUIRE"
+                    )
                 stored_artifacts.append({"artifact_id": aid, "type": "official_page"})
                 source_manifest.append({"type": "product_page", "url": job.url,
-                                        "status": "captured", "artifact_id": aid})
+                                        "status": "captured", "artifact_id": aid,
+                                        "marketing_offer_detected": bool(marketing_artifact_id),
+                                        "captured_characters": len(primary_text or "")})
+                if marketing_artifact_id:
+                    source_manifest.append({
+                        "type": "vsl",
+                        "url": job.url,
+                        "status": "captured",
+                        "artifact_id": aid,
+                        "auto_detected_from_primary_url": True,
+                        "capture_scope": "rendered_page_html",
+                        "spoken_transcript_status": "not_confirmed",
+                        "captured_characters": len(primary_text or ""),
+                        "source_class": SourceClass.OFFICIAL_VENDOR.value,
+                    })
             except Exception as e:
                 errors.append(f"Official page fetch failed: {e}")
                 source_manifest.append({"type": "product_page", "url": job.url,
@@ -258,6 +294,7 @@ def handle_acquire(job: Job) -> dict:
                     phase="ACQUIRE_VSL",
                 )
                 stored_artifacts.append({"artifact_id": aid, "type": "vsl_page"})
+                marketing_artifact_id = aid
                 source_manifest.append({
                     "type": "vsl",
                     "url": vsl_url,
@@ -375,6 +412,7 @@ def handle_acquire(job: Job) -> dict:
         "evidence_lake_available": True,
         "errors": errors,
         "source_manifest": source_manifest,
+        "marketing_artifact_id": marketing_artifact_id,
         "intake_complete": not any(
             s.get("status") == "failed" for s in source_manifest
         ),
@@ -1022,7 +1060,7 @@ def handle_extract(job: Job) -> dict:
             (a.get("artifact_id") for a in acquire_result.get("artifacts", [])
              if a.get("type") == "vsl_page"),
             None,
-        )
+        ) or acquire_result.get("marketing_artifact_id")
         if vsl_artifact_id:
             try:
                 vsl_text = lake.get_content(vsl_artifact_id)
@@ -1062,7 +1100,7 @@ def handle_extract(job: Job) -> dict:
                             "search_intent": assertion.get("search_intent", ""),
                             "topic": assertion.get("topic", ""),
                             "evidence_needed": assertion.get("evidence_needed", ""),
-                            "vsl_url": job.metadata.get("vsl_url", ""),
+                            "vsl_url": job.metadata.get("vsl_url", "") or job.url,
                         },
                     ))
             except Exception as vsl_err:

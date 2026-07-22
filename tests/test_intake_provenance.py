@@ -54,6 +54,32 @@ def test_vsl_is_separate_marketing_source_and_does_not_fail_acquisition():
     assert result["intake_complete"] is True
 
 
+def test_primary_offer_url_is_automatically_treated_as_marketing_evidence():
+    from stage_handlers import handle_acquire, _looks_like_marketing_offer
+    from workflow import Job, PipelineStage
+
+    url = "https://stockinvestor.com/offer/fs-americas-1-stock-vsl/?step=1"
+    assert _looks_like_marketing_offer(url) is True
+    assert _looks_like_marketing_offer("https://example.com/about") is False
+
+    job = Job.create(url=url, product_name="Forecasts & Strategies")
+    job.offering_id = "off-financial-vsl"
+    job.set_stage_result(PipelineStage.IDENTIFY, {"product_data": {}})
+    fake_acquirer = MagicMock()
+    fake_acquirer.fetch_with_browser.return_value = (
+        "offer-artifact", "Rendered stock research offer page text " * 10,
+    )
+    with patch("acquire.Acquirer", return_value=fake_acquirer), \
+         patch("evidence.EvidenceLake"):
+        result = handle_acquire(job)
+
+    assert result["marketing_artifact_id"] == "offer-artifact"
+    assert fake_acquirer.fetch_with_browser.called
+    assert not fake_acquirer.fetch_official_page.called
+    vsl = next(s for s in result["source_manifest"] if s["type"] == "vsl")
+    assert vsl["auto_detected_from_primary_url"] is True
+
+
 def test_channel_display_names_reach_compliance_as_engine_keys():
     from stage_handlers import _normalize_publishing_channel
 
@@ -320,6 +346,98 @@ def test_press_release_prompt_degrades_invalid_legacy_sections_without_crash():
 
     assert "SOURCE INTELLIGENCE" in prompt
     assert "FINAL OUTPUT CONTRACT" in prompt
+
+
+def test_financial_press_release_uses_financial_vertical_only():
+    from prompt_builders import build_l6_press_release_prompt
+
+    name = "Forecasts & Strategies America's #1 Stock | Jim Woods"
+    prompt = build_l6_press_release_prompt(
+        {
+            "product": {
+                "product_name": name,
+                "official_url": "https://jimwoodsinvesting.stockinvestor.com/offer/stock-vsl/",
+                "product_type": "financial",
+                "category": "financial",
+                "service_type": "investment research publication",
+                "topics_covered": ["equity research"],
+                "track_record_claims": [],
+                "regulatory_registrations": [],
+                "pricing": [],
+                "claims": [],
+            },
+            "ingredient_research": {},
+            "safety": {"reason": "Not required for financial"},
+            "compliance": {
+                "risk_level": "low",
+                "barchart_compliance": {
+                    "passes": False,
+                    "review_flag": True,
+                    "notes": "Manual editorial review required",
+                },
+            },
+            "keywords": {
+                "primary": [f"{name} supplement"],
+                "safety_queries": [f"{name} side effects"],
+            },
+        },
+        {"platform": "Barchart Advertorial", "ymyl_category": "Yes"},
+    )
+
+    assert "C1 — FINANCIAL SERVICE / PUBLICATION FACTS" in prompt
+    assert "C7 — FINANCIAL CLAIM SUBSTANTIATION" in prompt
+    assert "C6 — FINANCIAL DISCLOSURES / REGULATORY STATUS" in prompt
+    assert "C19 — SUBSCRIPTION / ACCESS TERMS" in prompt
+    assert "Barchart B1-B4 Overlay: AUTOMATIC COMPLIANT REWRITE" in prompt
+    assert "investment newsletter due diligence" in prompt
+    forbidden = [
+        "C1 — SUPPLEMENT FACTS", "CLINICAL CITATIONS / RESEARCH",
+        "DRUG INTERACTIONS [PUBMED DATA]", "SERVING SIZE / SUPPLY DURATION",
+        "financial supplements", "FDA approved?", "side effects?",
+        "buy " + name + " on Amazon",
+        "Manual editorial review required",
+    ]
+    for text in forbidden:
+        assert text.lower() not in prompt.lower()
+
+
+def test_every_nonclinical_vertical_excludes_supplement_template_leakage():
+    from prompt_builders import build_l6_press_release_prompt
+
+    verticals = {
+        "device": {"key_features": ["Feature A"], "specifications": {"size": "compact"}},
+        "info_product": {"whats_included": ["Guide"], "format": "digital"},
+        "software": {"key_features": ["Dashboard"], "platform_support": ["Web"]},
+        "service": {"service_description": "Consulting", "credentials": ["Verified credential"]},
+        "program": {"program_contents": ["Module 1"], "delivery_method": "online"},
+        "subscription": {"whats_included": ["Monthly issue"], "access_method": "email"},
+        "professional": {"service_description": "Professional advice", "credentials": ["License"]},
+        "unknown": {"description": "New category offering", "key_features": ["Feature"]},
+    }
+    forbidden = [
+        "supplement facts", "clinical citations / research", "drug interactions",
+        "serving size / supply duration", "pubmed api", "fda approved?",
+        "side effects?", " on amazon?", "best financial supplements",
+    ]
+    for offering_type, fields in verticals.items():
+        product = {
+            "product_name": f"Example {offering_type}",
+            "official_url": "https://example.com/offering",
+            "product_type": offering_type,
+            "category": "general",
+            "pricing": [],
+            "claims": [],
+            **fields,
+        }
+        prompt = build_l6_press_release_prompt(
+            {"product": product, "compliance": {}, "safety": {},
+             "ingredient_research": {}},
+            {"platform": "Accesswire", "ymyl_category": "No"},
+        )
+        lowered = prompt.lower()
+        for phrase in forbidden:
+            assert phrase not in lowered, (offering_type, phrase)
+        assert "FINAL OUTPUT CONTRACT" in prompt
 
 
 def test_verified_label_ocr_satisfies_strict_mandatory_gate(tmp_path):
