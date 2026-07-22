@@ -1301,6 +1301,7 @@ elif show_form:
                     url=_upd_url or "",
                     product_name=product_name_upd,
                     quick=False,
+                    budget_seconds=1800,
                     is_update=True,
                     offering_id=existing_offering_id,
                 )
@@ -1347,6 +1348,13 @@ elif show_form:
                     }
                     progress_container.update(label="Awaiting review", state="running")
                     st.rerun()
+                elif completed_job.status == JobStatus.PAUSED:
+                    st.session_state.pipeline_job_id = completed_job.job_id
+                    progress_container.update(label="Update paused", state="error")
+                    st.warning(
+                        "The update reached its 30-minute safety limit and was paused. "
+                        "Completed stages and checkpoints were saved."
+                    )
                 else:
                     progress_container.update(label="Update failed", state="error")
                     st.error(f"Update failed: {completed_job.error}")
@@ -1362,6 +1370,7 @@ elif show_form:
                     url=product_url or "",
                     product_name=product_name or "",
                     quick=False,
+                    budget_seconds=1800,
                     label_image=label_path or "",
                     vsl_url=vsl_url or "",
                 )
@@ -1419,6 +1428,14 @@ elif show_form:
                         label="Awaiting human review", state="error"
                     )
                     st.rerun()
+                elif completed_job.status == JobStatus.PAUSED:
+                    st.session_state.pipeline_job_id = completed_job.job_id
+                    progress_container.update(label="Research paused", state="error")
+                    st.warning(
+                        "Research reached its 30-minute safety limit and was paused; "
+                        "completed stages were saved. You can safely retry without "
+                        "losing the completed research."
+                    )
                 else:
                     progress_container.update(label="Research failed", state="error")
                     st.error(

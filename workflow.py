@@ -332,6 +332,11 @@ class Pipeline:
         self._store.save(job)
 
         start_time = time.time()
+        # Preserve elapsed time from earlier runs exactly once.  The previous
+        # implementation added the full current-run duration to the already
+        # cumulative value before every stage, causing triangular/double
+        # counting and premature budget pauses.
+        elapsed_before_run = job.elapsed_seconds
         resumed = False
 
         for stage in stages:
@@ -354,7 +359,7 @@ class Pipeline:
                 continue
 
             # Budget check
-            job.elapsed_seconds = time.time() - start_time + job.elapsed_seconds
+            job.elapsed_seconds = elapsed_before_run + (time.time() - start_time)
             if job.is_budget_exceeded():
                 self._emit(f"  Budget exceeded at {stage.value} "
                           f"({job.elapsed_seconds:.0f}s / {job.budget_seconds}s)")
@@ -372,6 +377,7 @@ class Pipeline:
             try:
                 result = handler(job)
                 stage_elapsed = time.time() - stage_start
+                job.elapsed_seconds = elapsed_before_run + (time.time() - start_time)
 
                 job.set_stage_status(stage, StageStatus.COMPLETED)
                 job.set_stage_result(stage, result or {})
@@ -386,6 +392,7 @@ class Pipeline:
                 # Human review required — pause, don't fail.
                 # Stage stays PENDING so it re-runs after approval.
                 stage_elapsed = time.time() - stage_start
+                job.elapsed_seconds = elapsed_before_run + (time.time() - start_time)
                 job.set_stage_status(stage, StageStatus.PENDING)
                 block_result = {"blocked": True, "reason": str(e),
                                 **e.details}
@@ -403,6 +410,7 @@ class Pipeline:
 
             except Exception as e:
                 stage_elapsed = time.time() - stage_start
+                job.elapsed_seconds = elapsed_before_run + (time.time() - start_time)
                 error_msg = f"{stage.value} failed: {e}"
                 job.set_stage_status(stage, StageStatus.FAILED)
                 job.status = JobStatus.FAILED
@@ -417,7 +425,7 @@ class Pipeline:
                 return job
 
         # All stages completed
-        job.elapsed_seconds = time.time() - start_time + job.elapsed_seconds
+        job.elapsed_seconds = elapsed_before_run + (time.time() - start_time)
         job.status = JobStatus.COMPLETED
         job.completed_at = datetime.now(timezone.utc).isoformat()
         self._store.save(job)

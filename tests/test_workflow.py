@@ -241,6 +241,28 @@ class TestPipeline:
 
         assert result.status == JobStatus.PAUSED
 
+    def test_elapsed_budget_is_not_double_counted(self, store, monkeypatch):
+        """Cumulative elapsed time is added once per run, not once per stage."""
+        clock = {"now": 0.0}
+        monkeypatch.setattr("workflow.time.time", lambda: clock["now"])
+
+        def ten_second_handler(job):
+            clock["now"] += 10.0
+            return {}
+
+        pipeline = Pipeline(store)
+        pipeline.register(PipelineStage.IDENTIFY, ten_second_handler)
+        pipeline.register(PipelineStage.ACQUIRE, ten_second_handler)
+        pipeline.register(PipelineStage.EXTRACT, ten_second_handler)
+
+        # Three 10-second stages should reach completion. The old triangular
+        # accounting paused before stage three despite only 20 seconds passing.
+        job = Job.create(quick=True, budget_seconds=25)
+        result = pipeline.run(job)
+
+        assert result.status == JobStatus.COMPLETED
+        assert result.elapsed_seconds == 30.0
+
     def test_cancel(self, store):
         pipeline = Pipeline(store)
         job = Job.create()
