@@ -2130,15 +2130,21 @@ RULES:
 - For pricing: capture ALL pricing tiers/bundles/packages (1-pack, 2-pack, 3-pack, etc.). For EACH tier extract: package name, total price, per-unit price, original/strikethrough price if shown, shipping cost, and any savings/discount percentage. Most product pages show 2-4 pricing options — extract every one
 - For policies: capture EXACT refund duration, conditions, contact methods
 - Extract the company name, address, email, phone from any contact/about sections
+- For financial newsletters, investment research, trading alerts, or market
+  analysis, use product_type "financial" and extract the service fields below.
 - If information is NOT present, use empty string "" or empty array []
 
 Return ONLY valid JSON with this exact structure:
 {{
     "product_name": "",
     "brand_name": "",
-    "product_type": "supplement|peptide|research_chemical|telehealth|device|info_product|food|topical|cannabis",
+    "product_type": "supplement|research_peptide|telehealth|device|info_product|food|topical|cannabis|financial|software|service|program|subscription|professional|unknown",
     "category": "weight_loss|brain_health|blood_sugar|male_enhancement|heart_health|anti_aging|sleep|joint_health|vision|dental|skin_care|immune_health|gut_health|nerve_health|respiratory|pain_relief|telehealth|financial|device|info_product|cannabis",
     "official_url": "{url or ''}",
+    "service_type": "",
+    "topics_covered": [],
+    "track_record_claims": [],
+    "regulatory_registrations": [],
     "supplement_facts": {{
         "serving_size": "",
         "servings_per_container": "",
@@ -2207,11 +2213,19 @@ Return ONLY valid JSON with this exact structure:
     data.setdefault("claims", [])
 
     # FAIL-CLOSED: Validate product type — unknown types must not proceed unchecked
+    TYPE_ALIASES = {
+        "peptide": "research_peptide",
+        "research_chemical": "research_peptide",
+    }
     KNOWN_PRODUCT_TYPES = {
-        "supplement", "peptide", "research_chemical", "telehealth",
-        "device", "info_product", "food", "topical", "cannabis",
+        "supplement", "research_peptide", "telehealth", "device",
+        "info_product", "food", "topical", "cannabis", "financial",
+        "software", "service", "program", "subscription", "professional",
+        "unknown",
     }
     detected_type = data.get("product_type", "").strip().lower()
+    detected_type = TYPE_ALIASES.get(detected_type, detected_type)
+    data["product_type"] = detected_type or "unknown"
     if detected_type not in KNOWN_PRODUCT_TYPES:
         _emit(f"  ⚠️ UNKNOWN PRODUCT TYPE: '{detected_type}' — requires human classification")
         _emit(f"  The system does not have a validated intelligence pack for this product type.")
@@ -2426,7 +2440,7 @@ def _empty_product_data(url=None, product_name=None):
     return {
         "product_name": product_name or "Unknown",
         "brand_name": "",
-        "product_type": "supplement",
+        "product_type": "unknown",
         "category": "",
         "official_url": url or "",
         "supplement_facts": {"serving_size": "", "servings_per_container": "", "ingredients": [], "other_ingredients": [], "proprietary_blend": False, "proprietary_blend_total": None, "allergen_warnings": []},

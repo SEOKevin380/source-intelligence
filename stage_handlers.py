@@ -97,6 +97,60 @@ def _log_recovery_audit(event_type: str, offering_id: str, job_id: str,
         pass  # Audit logging must never block the operation
 
 
+def _apply_offering_type_guard(product_data: dict, job: Job) -> dict:
+    """Correct obvious category/type mismatches without guessing product facts.
+
+    Two independent financial signals plus no physical-product evidence are
+    required before overriding an extractor's supplement classification.
+    Ambiguous inputs remain UNKNOWN and therefore stop for human review.
+    """
+    import re
+
+    data = dict(product_data or {})
+    sf = data.get("supplement_facts", {}) or {}
+    ingredients = sf.get("ingredients", []) or []
+    identity_text = " ".join(str(value or "") for value in (
+        job.product_name, job.url, job.metadata.get("vsl_url", ""),
+        data.get("product_name", ""), data.get("brand_name", ""),
+        data.get("category", ""), data.get("service_type", ""),
+    )).lower()
+    financial_patterns = {
+        "stock": r"\bstocks?\b",
+        "investing": r"\binvest(?:ing|ment|or|ors|ments)?\b",
+        "newsletter": r"\bnewsletter\b",
+        "trading": r"\btrad(?:e|es|ing)\b",
+        "portfolio": r"\bportfolio\b",
+        "securities": r"\bsecurities\b",
+        "market": r"\bmarket (?:research|analysis|alerts?|strategy)\b",
+        "stockinvestor_domain": r"stockinvestor\.com",
+    }
+    signals = [name for name, pattern in financial_patterns.items()
+               if re.search(pattern, identity_text)]
+    physical = bool(ingredients or sf.get("serving_size") or re.search(
+        r"\b(?:capsules?|tablets?|softgels?|gummies|servings?|\d+\s*(?:mg|mcg|iu))\b",
+        identity_text,
+    ))
+    current = str(data.get("product_type", "") or "unknown").lower()
+    if len(signals) >= 2 and not physical:
+        data["product_type"] = "financial"
+        if not data.get("category"):
+            data["category"] = "financial"
+        data["_type_classification"] = {
+            "method": "deterministic_identity_guard_v1",
+            "signals": signals,
+            "overrode": current,
+        }
+    elif len(signals) >= 2 and physical and current not in (
+            "supplement", "food", "topical", "cannabis"):
+        data["product_type"] = "unknown"
+        data["_type_classification"] = {
+            "method": "deterministic_identity_guard_v1",
+            "signals": signals,
+            "conflict": "financial_and_physical_signals",
+        }
+    return data
+
+
 def handle_identify(job: Job) -> dict:
     """Stage: IDENTIFY — Classify entity type, extract product data.
 
@@ -122,6 +176,8 @@ def handle_identify(job: Job) -> dict:
     if not product_data:
         raise ValueError("Could not extract product data from URL")
 
+    product_data = _apply_offering_type_guard(product_data, job)
+
     # Bridge to new entity model
     from entities import Offering, OfferingType
     offering = Offering.from_legacy_product_data(product_data)
@@ -133,8 +189,11 @@ def handle_identify(job: Job) -> dict:
     except Exception:
         pass  # Non-fatal — table may not exist in test environments
 
-    # Fail early for unclassified entities — don't waste research budget
-    if offering.offering_type == OfferingType.UNKNOWN:
+    # Interactive diagnostics may pause for classification.  The production
+    # VA workflow is unattended: it produces an evidence-limited generic pack
+    # instead of asking an operator to classify the offering.
+    if (offering.offering_type == OfferingType.UNKNOWN
+            and not job.metadata.get("unattended", False)):
         from workflow import ReviewBlockError
         raise ReviewBlockError(
             f"Cannot classify entity type for '{product_data.get('product_name', 'unknown')}'. "
@@ -2412,7 +2471,8 @@ def handle_review(job: Job) -> dict:
                 f"explaining which values are correct"
             )
 
-    if offering_type == "unknown":
+    if (offering_type == "unknown"
+            and not job.metadata.get("unattended", False)):
         if not rule_resolutions.get("UNKNOWN_TYPE"):
             reasons.append("offering type not classified")
 
@@ -2467,7 +2527,7 @@ def handle_review(job: Job) -> dict:
                     "substitutions_applied": substitution_audit,
                     "reason": f"All {len(resolved_rules)} compliance findings resolved by reviewer",
                 }
-        else:
+        elif not job.metadata.get("unattended", False):
             # Risk is elevated but no specific results to resolve
             if not rule_resolutions:
                 reasons.append(f"risk level: {risk}")
@@ -2831,14 +2891,18 @@ def handle_source_pack(job: Job) -> dict:
         offering_type_str = identify_result.get("offering_type", "")
         if offering_type_str:
             ot = OfferingType(offering_type_str)
-            req_facts = get_required_facts(ot)
+            if ot == OfferingType.UNKNOWN:
+                req_facts = []
+                mand_facts = []
+            else:
+                req_facts = get_required_facts(ot)
+                mand_facts = get_mandatory_facts(ot)
             required_facts_result = ledger.check_required_facts(
                 job.offering_id, req_facts
             )
             # Enforce mandatory facts — these block source pack generation
             # strict=True: manual entries, provisional legacy coverage,
             # and non-literal inferred claims do NOT satisfy mandatory
-            mand_facts = get_mandatory_facts(ot)
             if mand_facts:
                 mand_result = ledger.check_required_facts(
                     job.offering_id, mand_facts, strict=True
@@ -2876,7 +2940,7 @@ def handle_source_pack(job: Job) -> dict:
             },
         )
 
-    if mandatory_missing:
+    if mandatory_missing and not job.metadata.get("unattended", False):
         parts = []
         truly_absent = [f for f in mandatory_missing
                         if f not in mandatory_manual_only
@@ -2911,6 +2975,17 @@ def handle_source_pack(job: Job) -> dict:
                 "provisional": mandatory_provisional,
             },
         )
+
+    if mandatory_missing:
+        sections.append("MANDATORY SOURCE GAPS — OUTPUT LIMITED")
+        sections.append("-" * 40)
+        sections.append(
+            "  The supplied sources did not establish the following facts. "
+            "They are omitted from publishable factual claims:"
+        )
+        for fact_name in mandatory_missing:
+            sections.append(f"  - {fact_name}")
+        sections.append("")
 
     if required_facts_result and required_facts_result["missing"]:
         sections.append("MISSING REQUIRED FACTS")

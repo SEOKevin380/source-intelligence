@@ -209,7 +209,7 @@ from prompt_builders import (
 
 # CRM imports (graceful — don't break if DB not ready)
 try:
-    from database import ProductDatabase, _slugify
+    from database import ProductDatabase, _slugify, persist_completed_pack
     from product_manager import (
         get_coverage_report, get_serp_strategy, get_previous_releases,
         get_prompt_completeness, get_stale_products, get_low_quality_products,
@@ -970,7 +970,12 @@ if st.session_state.get("awaiting_review") and st.session_state.get("review_cont
                     )
                     if result_job and result_job.status == JobStatus.COMPLETED:
                         sp_result = result_job.get_stage_result(PipelineStage.SOURCE_PACK)
-                        st.session_state.result_data = sp_result.get("full_data", {})
+                        _completed_data = sp_result.get("full_data", {})
+                        _completed_key = persist_completed_pack(
+                            _completed_data,
+                            st.session_state.get("selected_product_key") or "",
+                        )
+                        st.session_state.result_data = _completed_data
                         st.session_state.result_report = sp_result.get("doc_text", "")
                         st.session_state.result_json_path = sp_result.get("json_path", "")
                         st.session_state.show_form = False
@@ -978,9 +983,7 @@ if st.session_state.get("awaiting_review") and st.session_state.get("review_cont
                         st.session_state.pop("review_context", None)
                         st.session_state.pop("update_mode", None)
                         st.session_state.pop("rule_resolutions", None)
-                        pname = sp_result.get("full_data", {}).get("product", {}).get("product_name", "")
-                        if pname and CRM_AVAILABLE:
-                            st.session_state.selected_product_key = _slugify(pname)
+                        st.session_state.selected_product_key = _completed_key
                         st.success("Approved! Generating source pack...")
                         st.rerun()
                     elif result_job and result_job.status == JobStatus.AWAITING_REVIEW:
@@ -1400,6 +1403,7 @@ elif show_form:
                     channel=rd_platform or "",
                     client_locked_title=rd_client_title or "",
                     operator_notes=(update_notes or rd_notes or ""),
+                    unattended=True,
                 )
                 completed_job = pipeline.run(job)
 
@@ -1409,14 +1413,16 @@ elif show_form:
                     full_data = sp_result.get("full_data", {})
                     doc_text = sp_result.get("doc_text", "")
 
+                    _completed_key = persist_completed_pack(
+                        full_data,
+                        st.session_state.get("selected_product_key") or "",
+                    )
                     st.session_state.result_data = full_data
                     st.session_state.result_report = doc_text
                     st.session_state.show_form = False
                     st.session_state.pop("update_mode", None)
                     st.session_state.pipeline_job_id = completed_job.job_id
-                    pname = full_data.get("product", {}).get("product_name", "")
-                    if pname and CRM_AVAILABLE:
-                        st.session_state.selected_product_key = _slugify(pname)
+                    st.session_state.selected_product_key = _completed_key
                     progress_container.update(label="Update complete!", state="complete")
                     progress_bar.progress(1.0, text="Update complete!")
                     st.rerun()
@@ -1479,6 +1485,7 @@ elif show_form:
                     channel=rd_platform or "",
                     client_locked_title=rd_client_title or "",
                     operator_notes=rd_notes or "",
+                    unattended=True,
                 )
                 completed_job = pipeline.run(job)
 
@@ -1489,6 +1496,7 @@ elif show_form:
                     doc_text = sp_result.get("doc_text", "")
                     json_path = sp_result.get("json_path", "")
 
+                    _completed_key = persist_completed_pack(full_data)
                     st.session_state.result_data = full_data
                     st.session_state.result_report = doc_text
                     st.session_state.result_json_path = json_path
@@ -1496,9 +1504,7 @@ elif show_form:
                     st.session_state.pop("update_mode", None)
                     # Store job_id for pipeline tracking
                     st.session_state.pipeline_job_id = completed_job.job_id
-                    pname = full_data.get("product", {}).get("product_name", "")
-                    if pname and CRM_AVAILABLE:
-                        st.session_state.selected_product_key = _slugify(pname)
+                    st.session_state.selected_product_key = _completed_key
                     progress_container.update(label="Research complete!", state="complete")
                     progress_bar.progress(1.0, text="Research complete!")
                     st.rerun()
@@ -1572,10 +1578,22 @@ else:
     _stale_product = _stale_data.get("product", {})
     _stale_sf = _stale_product.get("supplement_facts", {}) or {}
     _repair_job_id = st.session_state.get("pipeline_job_id", "")
-    _repair_key = f"canonical_label_repair_v1_{_repair_job_id}"
+    _stale_research = _stale_data.get("ingredient_research", {}) or {}
+    if (not _repair_job_id and _stale_data.get("offering_id")):
+        try:
+            from workflow import JobStore
+            _matching_jobs = JobStore().list_jobs(
+                offering_id=_stale_data.get("offering_id"), limit=1
+            )
+            if _matching_jobs:
+                _repair_job_id = _matching_jobs[0].job_id
+                st.session_state.pipeline_job_id = _repair_job_id
+        except Exception:
+            pass
+    _repair_key = f"canonical_label_repair_v2_{_repair_job_id}"
     if (_repair_job_id
             and _stale_product.get("product_type", "").lower() == "supplement"
-            and not _stale_sf.get("ingredients")
+            and (not _stale_sf.get("ingredients") or not _stale_research)
             and not st.session_state.get(_repair_key)):
         st.session_state[_repair_key] = True
         try:
@@ -1592,9 +1610,13 @@ else:
                 _repaired_pack = _repaired_job.get_stage_result(
                     PipelineStage.SOURCE_PACK
                 )
-                st.session_state.result_data = _repaired_pack.get(
-                    "full_data", {}
+                _repaired_data = _repaired_pack.get("full_data", {})
+                _repaired_key = persist_completed_pack(
+                    _repaired_data,
+                    st.session_state.get("selected_product_key") or "",
                 )
+                st.session_state.result_data = _repaired_data
+                st.session_state.selected_product_key = _repaired_key
                 st.session_state.result_report = _repaired_pack.get(
                     "doc_text", ""
                 )

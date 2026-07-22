@@ -376,3 +376,43 @@ def test_label_vision_retries_empty_response_and_transcribes(tmp_path):
     assert result["servings_per_container"] == "30"
     assert len(result["ingredients"]) == 2
     assert result["_extraction_attempt"] == 2
+
+
+def test_financial_identity_guard_corrects_supplement_misclassification():
+    from stage_handlers import _apply_offering_type_guard
+    from workflow import Job
+
+    job = Job.create(
+        url="https://jimwoodsinvesting.stockinvestor.com/offer/stock-vsl/",
+        product_name="Forecasts & Strategies America's #1 Stock",
+        vsl_url="https://jimwoodsinvesting.stockinvestor.com/offer/stock-vsl/",
+    )
+    result = _apply_offering_type_guard({
+        "product_name": job.product_name,
+        "product_type": "supplement",
+        "category": "financial",
+        "supplement_facts": {"ingredients": []},
+    }, job)
+
+    assert result["product_type"] == "financial"
+    assert "stockinvestor_domain" in result["_type_classification"]["signals"]
+
+
+def test_financial_words_do_not_override_a_physical_supplement():
+    from stage_handlers import _apply_offering_type_guard
+    from workflow import Job
+
+    job = Job.create(
+        url="https://example.com/market-support-capsules",
+        product_name="Stock Market Stress Support Capsules",
+    )
+    result = _apply_offering_type_guard({
+        "product_name": job.product_name,
+        "product_type": "supplement",
+        "supplement_facts": {
+            "serving_size": "2 capsules",
+            "ingredients": [{"name": "Magnesium", "amount": "100 mg"}],
+        },
+    }, job)
+
+    assert result["product_type"] == "supplement"

@@ -49,6 +49,39 @@ class TestSchemaVersion:
         assert version == CURRENT_SCHEMA_VERSION
 
 
+def test_persist_completed_pack_replaces_stale_shared_report(tmp_path):
+    from database import persist_completed_pack
+
+    db_path = str(tmp_path / "crm.db")
+    stale = {
+        "product": {
+            "product_name": "T-Max",
+            "product_type": "supplement",
+            "supplement_facts": {"ingredients": []},
+        },
+        "ingredient_research": {},
+    }
+    repaired = {
+        "product": {
+            "product_name": "T-Max",
+            "product_type": "supplement",
+            "supplement_facts": {
+                "ingredients": [{"name": "Vitamin B12", "amount": "2500 mcg"}],
+            },
+        },
+        "ingredient_research": {
+            "Vitamin B12": {"studies": [{"pmid": "123"}, {"pmid": "456"}]},
+        },
+    }
+    ProductDatabase(db_path=db_path).upsert_product("t-max", stale)
+    key = persist_completed_pack(repaired, "t-max", db_path=db_path)
+    saved = ProductDatabase(db_path=db_path).get_product(key)
+
+    assert key == "t-max"
+    assert saved["study_count"] == 2
+    assert saved["research_data"]["ingredient_research"]["Vitamin B12"]["studies"]
+
+
 class TestMigrationIdempotency:
     def test_migration_can_run_twice(self, tmp_db):
         """Migrations should be safe to re-run."""

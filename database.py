@@ -30,6 +30,26 @@ def _slugify(name: str) -> str:
     return s.strip("-")
 
 
+def persist_completed_pack(research_data: dict, preferred_key: str = "",
+                           db_path: str = None) -> str:
+    """Durably store a completed source pack and return its CRM key.
+
+    Completion is not considered durable until the shared CRM row contains the
+    same ``full_data`` that the UI displays.  ``preferred_key`` preserves the
+    identity of an existing product during an update or repair.
+    """
+    if not isinstance(research_data, dict) or not research_data:
+        raise ValueError("Cannot persist an empty completed source pack")
+    product = research_data.get("product", {}) or {}
+    product_name = str(product.get("product_name", "")).strip()
+    product_key = (preferred_key or _slugify(product_name)).strip()
+    if not product_key:
+        raise ValueError("Completed source pack has no product identity")
+    db = ProductDatabase(db_path=db_path)
+    db.upsert_product(product_key, research_data)
+    return product_key
+
+
 class ProductDatabase:
     """SQLite-backed product intelligence database."""
 
@@ -877,7 +897,7 @@ class ProductDatabase:
                     """, (
                         product.get("product_name", product_key),
                         product.get("brand_name", ""),
-                        product.get("product_type", "supplement"),
+                        product.get("product_type", "unknown"),
                         product.get("category", ""),
                         product.get("official_url", ""),
                         research_data.get("compliance", {}).get("risk_level", "Unknown"),
@@ -908,7 +928,7 @@ class ProductDatabase:
                     product_key,
                     product.get("product_name", product_key),
                     product.get("brand_name", ""),
-                    product.get("product_type", "supplement"),
+                    product.get("product_type", "unknown"),
                     product.get("category", ""),
                     product.get("official_url", ""),
                     research_data.get("compliance", {}).get("risk_level", "Unknown"),
