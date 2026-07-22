@@ -664,7 +664,7 @@ if st.session_state.get("awaiting_review") and st.session_state.get("review_cont
             # at the review gate. Attempt one automatic, resumable recovery per
             # job/URL; the manual control remains available if it fails.
             _auto_recovery_key = (
-                f"auto_evidence_local_ocr_v2_{ctx.get('job_id', '')}_"
+                f"auto_evidence_local_ocr_v3_{ctx.get('job_id', '')}_"
                 f"{hash(default_evidence_url)}"
             )
             if (default_evidence_url
