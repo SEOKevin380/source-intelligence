@@ -1681,12 +1681,22 @@ else:
     # QUICK EXPORT — Always visible, zero clicks
     # ================================================================
     # Build a default prompt so the user can grab it immediately
+    _health_ymyl_types = {
+        "supplement", "topical", "telehealth", "device", "cannabis",
+        "food", "professional_service",
+    }
+    _is_ymyl = (
+        str(product.get("product_type", "")).strip().lower()
+        in _health_ymyl_types
+        or str(compliance_data.get("risk_level", "")).strip().lower()
+        in {"moderate", "high", "very high", "critical"}
+    )
     _quick_intake = {
         "platform": rd_platform,
         "affiliate_link": rd_affiliate or "TRAFFIC-FIRST",
         "previous_releases": rd_previous or "FIRST RELEASE",
         "release_type": "Single Product",
-        "ymyl_category": "Yes" if compliance_data.get("risk_level") in ["High", "Very High", "Moderate"] else "No",
+        "ymyl_category": "Yes" if _is_ymyl else "No",
         "competitor_release": rd_competitor or "",
         "editor_title": rd_client_title or "",
         "notes": rd_notes or "",
@@ -1934,7 +1944,7 @@ else:
             "affiliate_link": rd_affiliate or "TRAFFIC-FIRST",
             "previous_releases": rd_previous or "FIRST RELEASE",
             "release_type": "Single Product",
-            "ymyl_category": "Yes" if compliance_data.get("risk_level") in ["High", "Very High", "Moderate"] else "No",
+            "ymyl_category": "Yes" if _is_ymyl else "No",
             "competitor_release": rd_competitor or "",
             "editor_title": rd_client_title or "",
             "notes": rd_notes or "",
