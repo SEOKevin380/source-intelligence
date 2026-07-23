@@ -1085,53 +1085,56 @@ elif show_form:
                 key=f"rd_platform_{fk}",
             )
 
-        # ── Optional Fields (collapsed by default) ──
-        with st.expander("Optional Fields", expanded=False):
-            opt_col1, opt_col2 = st.columns(2)
-            with opt_col1:
-                vsl_url = st.text_input(
-                    "VSL URL",
-                    value=saved_form.get("vsl_url", ""),
-                    placeholder="https://product.com/vsl-page",
-                    help="Video sales letter page if separate from main product page",
-                    key=f"vsl_url_{fk}",
-                )
-                label_url = st.text_input(
-                    "Label Image URL",
-                    value=saved_form.get("label_url", ""),
-                    placeholder="https://example.com/supplement-facts-label.png",
-                    help="Direct URL to a supplement facts label image for OCR extraction",
-                    key=f"label_url_{fk}",
-                )
-                rd_previous = st.text_input(
-                    "Previous Release(s)",
-                    value=saved_form.get("rd_previous", "FIRST RELEASE"),
-                    help="URLs of your previous articles about this product (comma-separated)",
-                    key=f"rd_previous_{fk}",
-                )
-            with opt_col2:
-                rd_competitor = st.text_input(
-                    "Competitor Release(s)",
-                    value=saved_form.get("rd_competitor", ""),
-                    placeholder="https://competitor.com/their-review",
-                    help="URLs of competitor articles about this product",
-                    key=f"rd_competitor_{fk}",
-                )
-                rd_client_title = st.text_input(
-                    "Client Locked Title",
-                    value=saved_form.get("rd_client_title", ""),
-                    placeholder="Leave blank unless client requires a specific title",
-                    help="If the client mandates a specific headline",
-                    key=f"rd_client_title_{fk}",
-                )
-                rd_notes = st.text_area(
-                    "Notes",
-                    value=saved_form.get("rd_notes", ""),
-                    placeholder="Verified contact info, special instructions, extra context...",
-                    height=100,
-                    help="Any additional context for the research engine",
-                    key=f"rd_notes_{fk}",
-                )
+        # ── Source and editorial inputs — always visible ──
+        st.markdown(
+            '<p class="form-section-header">Source & Editorial Details</p>',
+            unsafe_allow_html=True,
+        )
+        opt_col1, opt_col2 = st.columns(2)
+        with opt_col1:
+            vsl_url = st.text_input(
+                "VSL URL",
+                value=saved_form.get("vsl_url", ""),
+                placeholder="https://product.com/vsl-page",
+                help="Video sales letter page if separate from main product page",
+                key=f"vsl_url_{fk}",
+            )
+            label_url = st.text_input(
+                "Label Image URL",
+                value=saved_form.get("label_url", ""),
+                placeholder="https://example.com/supplement-facts-label.png",
+                help="Direct URL to a product or supplement facts label image",
+                key=f"label_url_{fk}",
+            )
+            rd_previous = st.text_input(
+                "Previous Release(s)",
+                value=saved_form.get("rd_previous", "FIRST RELEASE"),
+                help="URLs of your previous articles about this product (comma-separated)",
+                key=f"rd_previous_{fk}",
+            )
+        with opt_col2:
+            rd_competitor = st.text_input(
+                "Competitor Release(s)",
+                value=saved_form.get("rd_competitor", ""),
+                placeholder="https://competitor.com/their-review",
+                help="URLs of competitor articles about this product",
+                key=f"rd_competitor_{fk}",
+            )
+            rd_client_title = st.text_input(
+                "Client Locked Title",
+                value=saved_form.get("rd_client_title", ""),
+                placeholder="Leave blank unless client requires a specific title",
+                help="If the client mandates a specific headline",
+                key=f"rd_client_title_{fk}",
+            )
+            rd_notes = st.text_area(
+                "Notes",
+                value=saved_form.get("rd_notes", ""),
+                placeholder="Verified contact info, special instructions, extra context...",
+                height=100,
+                help="Any additional context for the research engine",
+                key=f"rd_notes_{fk}",
+            )
 
         # ── Update Mode: Additional Data Fields ──
         if is_update and "result_data" in st.session_state:
