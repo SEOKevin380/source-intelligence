@@ -2393,6 +2393,32 @@ cannibalizes the existing coverage.
 COMPETITOR RELEASE(S): {competitor}
 """
 
+    # Retrieve proven same-platform structures from MBK's published archive.
+    # This is deterministic and local: no API call, no added generation cost.
+    # Historical facts are explicitly excluded from the current source record.
+    try:
+        from exemplar_corpus import (
+            format_exemplar_guidance,
+            infer_vertical,
+            retrieve_exemplars,
+        )
+        _product_type = str(product.get("product_type", "") or "")
+        _category = str(product.get("category", "") or "")
+        _vertical = infer_vertical(name, _product_type, _category)
+        _approved_examples = retrieve_exemplars(
+            product_name=name,
+            platform=platform,
+            vertical=_vertical,
+            source_url=product.get("official_url", ""),
+            previous_releases=previous,
+            limit=5,
+        )
+        _approved_guidance = format_exemplar_guidance(_approved_examples)
+        if _approved_guidance:
+            prompt += "\n" + _approved_guidance
+    except Exception:
+        pass  # Corpus is an intelligence enhancement, never a production stop.
+
     # ── PRE-RESEARCHED SOURCE DATA (CVD-organized) ──
     prompt += _build_cvd_source_block(full_data, platform=platform)
     prompt += """
