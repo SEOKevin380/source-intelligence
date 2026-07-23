@@ -360,7 +360,8 @@ class Pipeline:
 
             # Budget check
             job.elapsed_seconds = elapsed_before_run + (time.time() - start_time)
-            if job.is_budget_exceeded():
+            if (job.is_budget_exceeded()
+                    and not job.metadata.get("unattended", False)):
                 self._emit(f"  Budget exceeded at {stage.value} "
                           f"({job.elapsed_seconds:.0f}s / {job.budget_seconds}s)")
                 job.status = JobStatus.PAUSED
@@ -389,6 +390,33 @@ class Pipeline:
                 self._emit(f"  {stage.value} completed ({stage_elapsed:.1f}s)")
 
             except ReviewBlockError as e:
+                # Production VA runs never open an editorial questionnaire.
+                # Any ReviewBlockError that survives the unattended handlers is
+                # a genuine source/system repair condition, not a human choice.
+                if job.metadata.get("unattended", False):
+                    stage_elapsed = time.time() - stage_start
+                    job.elapsed_seconds = elapsed_before_run + (time.time() - start_time)
+                    failure_result = {
+                        "blocked": True,
+                        "repair_required": True,
+                        "reason": str(e),
+                        **e.details,
+                    }
+                    job.set_stage_status(stage, StageStatus.FAILED)
+                    job.set_stage_result(stage, failure_result)
+                    job.status = JobStatus.FAILED
+                    job.error = f"Source repair required: {e}"
+                    self._store.save_checkpoint(
+                        job, stage, StageStatus.FAILED,
+                        result={**failure_result,
+                                "elapsed_ms": stage_elapsed * 1000},
+                    )
+                    self._store.save(job)
+                    self._emit(
+                        f"  {stage.value} requires source/system repair: {e}",
+                        "error",
+                    )
+                    return job
                 # Human review required — pause, don't fail.
                 # Stage stays PENDING so it re-runs after approval.
                 stage_elapsed = time.time() - stage_start

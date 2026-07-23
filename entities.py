@@ -29,6 +29,8 @@ class OfferingType(Enum):
     PROGRAM = "program"
     SUBSCRIPTION = "subscription"
     PROFESSIONAL = "professional"
+    GAMING = "gaming"
+    COLLECTIBLE = "collectible"
     RESEARCH_PEPTIDE = "research_peptide"
     UNKNOWN = "unknown"
 

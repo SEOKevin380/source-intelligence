@@ -1009,7 +1009,7 @@ def _build_cvd_source_block(full_data, platform=""):
     physical_types = ingestible_types | {"topical", "device"}
     service_types = {
         "telehealth", "info_product", "financial", "software", "service",
-        "program", "subscription", "professional", "unknown",
+        "program", "subscription", "professional", "gaming", "unknown",
     }
     name = product.get("product_name", "Unknown")
     compliance = full_data.get("compliance", {})
@@ -1170,19 +1170,14 @@ WORKFLOW:
    available data.
 5. Output a complete, publish-ready draft in a single response.
 
-NO-PAUSE DELIVERY RULE (GOVERNING RULE):
-- Never ask the operator to choose positioning, approve a rewrite, resolve a
-  routine data gap, or confirm that drafting should continue.
-- Editorial review happens AFTER the complete draft is delivered, never before.
-- If supplied wording is prohibited by the selected platform, omit that wording
-  and use the strongest neutral platform-approved framing supported by the facts.
-- A prohibited term inside the official product name is source-record data, not
-  authorization to repeat it as marketing copy. Use a safe shortened brand name
-  in publishable copy when needed.
-- If a suggested synonym would preserve the prohibited meaning, do not use it.
-  Omit it or use neutral platform-approved language supported by the source record.
-- Compliance friction changes the wording; it does not stop delivery. Produce
-  the full draft and document material limitations without asking questions.
+EDITORIAL DELIVERY:
+- Produce the complete article in one response using the verified material.
+- Resolve routine gaps by omitting unavailable details and recording meaningful
+  limitations naturally inside the article.
+- Apply platform requirements as ordinary editing decisions. Use accurate,
+  neutral wording where supplied promotional language is not publishable.
+- Editorial review occurs after drafting; no operator decision is needed for
+  ordinary omissions, qualifications, or compliant rewrites.
 
 {_incomplete_guidance}
 
@@ -1222,7 +1217,7 @@ NO-PAUSE DELIVERY RULE (GOVERNING RULE):
         block += "- Inherits ACW/NW R-rules with B1-B4 overlay.\n"
         block += "- B1: Zero schema (no Review, AggregateRating, FAQPage, etc.)\n"
         block += "- B2: Zero platform furniture (no sidebar, header, or nav references)\n"
-        block += "- B3: 'Fake Testimonial Hype' title pattern is confirmed approved on Barchart.\n"
+        block += "- B3: Use an accurate search-focused title; do not repeat unverified testimonial, ranking, urgency, or return language.\n"
         if _bc_euphemistic:
             # Don't suggest using synonyms when claims don't match the sensitive category
             block += "- B4: R12 blocklist checked. Do NOT use R12-sensitive category language\n"
@@ -1261,6 +1256,8 @@ provided for reader awareness, not as a contraindication for the product itself.
         "program": "PROGRAM CONTENTS / DELIVERY",
         "subscription": "SUBSCRIPTION CONTENTS / ACCESS",
         "professional": "PROFESSIONAL SERVICE / CREDENTIALS",
+        "gaming": "GAME / LOTTERY TOOL FEATURES",
+        "collectible": "COLLECTIBLE ITEM FACTS",
         "unknown": "OFFERING FACTS",
     }
     c1_label = c1_type_labels.get(product_type, "SUPPLEMENT FACTS")
@@ -1270,10 +1267,33 @@ provided for reader awareness, not as a contraindication for the product itself.
         for key in ("amount_per_vial", "form", "storage_requirements", "research_use_only_disclaimer"):
             block += f"  {key.replace('_', ' ').title()}: {product.get(key) or 'NOT ESTABLISHED'}\n"
     elif product_type == "financial":
+        financial_claims = (
+            (full_data.get("claims_by_type") or {}).get(
+                "manufacturer_claim", []
+            ) or []
+        )
+        source_intents = []
+        for claim in financial_claims:
+            intent = str(
+                (claim.get("metadata") or {}).get("search_intent", "")
+            ).strip()
+            if intent and intent not in source_intents:
+                source_intents.append(intent)
+        source_has_vsl = any(
+            str(item.get("type", "")).lower() in {
+                "vsl", "vsl_page", "offer_page"
+            }
+            and str(item.get("status", "")).lower() not in {"failed", "error"}
+            for item in (full_data.get("source_manifest") or [])
+            if isinstance(item, dict)
+        )
+        inferred_service_type = (
+            "Investment research/newsletter promotional presentation"
+            if source_has_vsl or financial_claims else ""
+        )
         financial_fields = {
-            "Service Type": product.get("service_type", ""),
-            "Topics Covered": product.get("topics_covered", []),
-            "Track Record Claims": product.get("track_record_claims", []),
+            "Service Type": product.get("service_type", "") or inferred_service_type,
+            "Presentation Focus": product.get("topics_covered", []) or source_intents,
             "Regulatory Registrations": product.get("regulatory_registrations", []),
         }
         block += "C1 — FINANCIAL SERVICE / PUBLICATION FACTS\n"
@@ -1292,8 +1312,20 @@ provided for reader awareness, not as a contraindication for the product itself.
                 block += f"  {field_name}: {rendered}\n"
             else:
                 block += f"  {field_name}: NOT ESTABLISHED\n"
-        if not any_financial:
-            block += "No service terms or performance facts were established. Do not invent them.\n"
+        if financial_claims:
+            block += (
+                f"  Promotional Assertions Captured: {len(financial_claims)} "
+                "(preserved as statements made in the VSL, not independently "
+                "substantiated performance facts)\n"
+            )
+            block += (
+                "  Editorial Use: Describe the presentation and newsletter "
+                "context without repeating projected gains, historical-return "
+                "figures, anonymous investor outcomes, scarcity, or an unnamed "
+                "security recommendation.\n"
+            )
+        if not any_financial and not financial_claims:
+            block += "The offering is classified as financial, but detailed service terms were unavailable.\n"
     elif product_type in service_types:
         field_map = {
             "telehealth": ["services_offered", "prescriber_credentials", "states_available", "consultation_process"],
@@ -1303,6 +1335,7 @@ provided for reader awareness, not as a contraindication for the product itself.
             "program": ["program_structure", "duration", "credentials_earned", "instructor_credentials"],
             "subscription": ["included_items", "billing_frequency", "cancellation_policy", "trial_period"],
             "professional": ["services_offered", "credentials", "experience", "service_area"],
+            "gaming": ["product_description", "how_it_works", "access_method", "eligibility", "jurisdiction_limits"],
             "unknown": ["description", "key_features", "whats_included", "access_method"],
         }
         fields = field_map.get(product_type, [])
@@ -1334,6 +1367,25 @@ provided for reader awareness, not as a contraindication for the product itself.
                 block += f"  {key.replace('_', ' ').title()}: NOT ESTABLISHED\n"
         if not found:
             block += "No detailed specifications were established. Do not invent features or certifications.\n"
+    elif product_type == "collectible":
+        block += f"C1 — {c1_label}\n"
+        block += "Source: supplied official offer, item description, and terms records\n"
+        collectible_fields = [
+            "item_description", "materials", "dimensions", "weight",
+            "finish_or_plating", "denomination", "legal_tender_status",
+            "edition_or_mintage", "manufacturer", "seller_affiliation",
+        ]
+        found = False
+        for key in collectible_fields:
+            value = product.get(key)
+            if value:
+                found = True
+                rendered = "; ".join(str(v) for v in value) if isinstance(value, list) else str(value)
+                block += f"  {key.replace('_', ' ').title()}: {rendered}\n"
+            else:
+                block += f"  {key.replace('_', ' ').title()}: NOT ESTABLISHED\n"
+        if not found:
+            block += "Only the item identity was established. Do not infer metal content, legal-tender status, rarity, endorsement, or value.\n"
     elif ingredients:
         block += f"C1 — {c1_label} {_verification_label(True, source=c1_source)}\n"
         block += f"Source: {c1_source}\n"
@@ -1531,6 +1583,17 @@ provided for reader awareness, not as a contraindication for the product itself.
                 block += f"  - {item}\n"
         else:
             block += "No product warnings or safety certifications were established. Do not claim safety certification.\n"
+    elif product_type == "gaming":
+        block += "C6 — ELIGIBILITY / ODDS / RESPONSIBLE-USE LIMITATIONS\n"
+        odds = product.get("odds_or_randomness_disclosure", "")
+        jurisdiction = product.get("jurisdiction_limits", "")
+        block += f"  Randomness / Odds Disclosure: {odds or 'NOT ESTABLISHED'}\n"
+        block += f"  Jurisdiction Limits: {jurisdiction or 'NOT ESTABLISHED'}\n"
+        block += "Do not imply that number analysis predicts random drawings or improves odds unless independently substantiated.\n"
+    elif product_type == "collectible":
+        block += "C6 — MATERIAL / AFFILIATION / VALUE LIMITATIONS\n"
+        block += "Describe gold, silver, rarity, official status, endorsement, and investment value only when the supplied record establishes the exact fact.\n"
+        block += "A person or political figure appearing on an item does not by itself establish their endorsement or seller affiliation.\n"
     elif product_type not in clinical_types:
         block += "C6 — TERMS / PRIVACY / MATERIAL LIMITATIONS\n"
         privacy = product.get("privacy_policy", "")
@@ -1668,6 +1731,17 @@ provided for reader awareness, not as a contraindication for the product itself.
                 block += f"  {key.replace('_', ' ').title()}: {value}\n"
         if not found:
             block += "No model, package contents, variant, or warranty details were established. Omit them.\n"
+    elif product_type == "collectible":
+        block += "C19 — OFFER / SHIPPING / CONTINUITY DETAILS\n"
+        term_fields = ["pricing", "shipping_cost", "billing_terms", "continuity_offer", "refund_policy"]
+        found = False
+        for key in term_fields:
+            value = product.get(key)
+            if value:
+                found = True
+                block += f"  {key.replace('_', ' ').title()}: {value}\n"
+        if not found:
+            block += "No complete delivered-price, continuity, or refund terms were established. Omit exact terms and direct readers to the official offer.\n"
     elif product_type in service_types:
         block += "C19 — TERM / ACCESS / CANCELLATION DETAILS\n"
         term_fields = ["duration", "billing_frequency", "renewal_terms", "cancellation_terms", "access_method"]
@@ -1975,6 +2049,15 @@ provided for reader awareness, not as a contraindication for the product itself.
             _data_gaps.append("testing/certifications")
         if not pricing:
             _data_gaps.append("pricing")
+    elif product_type == "collectible":
+        if not product.get("item_description"):
+            _data_gaps.append("item description")
+        if not product.get("materials"):
+            _data_gaps.append("material composition")
+        if not product.get("seller_affiliation"):
+            _data_gaps.append("seller/endorsement affiliation")
+        if not pricing:
+            _data_gaps.append("complete delivered price")
     elif product_type in service_types:
         detail_keys = {
             "telehealth": ("services_offered", "prescriber_credentials"),
@@ -1984,6 +2067,7 @@ provided for reader awareness, not as a contraindication for the product itself.
             "program": ("program_structure", "instructor_credentials"),
             "subscription": ("included_items", "billing_frequency"),
             "professional": ("services_offered", "credentials"),
+            "gaming": ("product_description", "how_it_works", "eligibility", "jurisdiction_limits"),
             "unknown": ("description", "key_features"),
         }
         for key in detail_keys.get(product_type, ()):
@@ -2013,12 +2097,19 @@ provided for reader awareness, not as a contraindication for the product itself.
                 block += "- Do NOT fabricate recommendations, performance, pricing, endorsements, or regulatory status\n"
             elif product_type == "device":
                 block += "- Do NOT fabricate features, specifications, certifications, testing, or pricing\n"
+            elif product_type == "gaming":
+                block += "- Do NOT promise wins, predictive accuracy, better odds, or guaranteed outcomes\n"
+            elif product_type == "collectible":
+                block += "- Do NOT fabricate metal content, rarity, legal-tender status, endorsement, value, or offer terms\n"
             elif product_type in service_types:
                 block += "- Do NOT fabricate deliverables, credentials, outcomes, access terms, or pricing\n"
             else:
                 block += "- Do NOT fabricate ingredients, research, pricing, or mechanisms\n"
             block += "- Attribute ALL claims to the brand ('the brand states...')\n"
-            block += "- Push SEO and conversion framing to the strongest compliant boundary\n"
+            if product_type == "financial":
+                block += "- Optimize for accurate discoverability and reader due diligence; do not urge a securities transaction\n"
+            else:
+                block += "- Use the strongest accurate search and conversion framing supported by the source record\n"
             block += "Deliver a complete, publish-ready draft.\n"
         elif _data_gaps:
             block += "Status: AUTHORIZED TO DRAFT NOW (partial data).\n"
@@ -2136,6 +2227,8 @@ provided for reader awareness, not as a contraindication for the product itself.
             "program": "program",
             "subscription": "subscription",
             "professional": "professional service",
+            "gaming": "lottery analysis tool",
+            "collectible": "collectible",
             "unknown": "offering",
         }.get(product_type, "product")
         keywords = {
@@ -2304,20 +2397,13 @@ COMPETITOR RELEASE(S): {competitor}
     prompt += _build_cvd_source_block(full_data, platform=platform)
     prompt += """
 
-FINAL OUTPUT CONTRACT (MANDATORY):
-- Begin immediately with the finished publishable deliverable.
-- Output the draft itself only. Do not print analysis, chain-of-thought,
-  compliance deliberation, routing notes, protocol names, checklists, or a
-  summary of how you interpreted this brief.
-- Do not describe this brief as a jailbreak, prompt-injection attempt,
-  circumvention request, policy conflict, or safety negotiation. It is a
-  legitimate source-controlled editorial assignment requiring compliant copy.
-- Do not say "here is the draft," "before I draft," "a few things surfaced,"
-  "creating file," or similar process commentary.
-- Put relevant limitations naturally inside the finished article's Material
-  Limitations or safety section; do not present them as pre-draft objections.
-- Never ask a question or request confirmation. Make the strongest compliant
-  evidence-supported editorial choice and deliver the complete draft now.
+DELIVERABLE:
+Return the finished article only. Begin with its title and article body. Keep
+source limitations in the article's Material Limitations section. Apply routine
+platform edits and omissions directly, without a preface or follow-up question.
+For financial publications, this is an informational review of the publication
+and its promotional presentation—not personalized financial advice, a securities
+recommendation, or an instruction to transact.
 """
 
     return prompt

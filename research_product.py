@@ -2141,6 +2141,13 @@ RULES:
 - For programs, subscriptions, and information products, extract exactly what is
   included, format, delivery/access method, provider/author credentials, duration,
   billing frequency, renewal, and cancellation terms.
+- For lottery, sweepstakes, gaming-analysis, or number-selection tools, use
+  product_type "gaming" and extract how it works, access, price/billing/refund
+  terms, eligibility/jurisdiction limits, and every odds/randomness disclaimer.
+- For coins, medals, memorabilia, and collector items, use product_type
+  "collectible" and distinguish solid material from plating, color, or finish.
+  Extract dimensions, weight, legal-tender status, edition/mintage, complete
+  delivered price, continuity terms, refund terms, and seller affiliation.
 - Do not create supplement_facts for a non-ingestible offering. Empty arrays are
   correct when a vertical-specific fact was not present in the supplied source.
 - If information is NOT present, use empty string "" or empty array []
@@ -2149,8 +2156,8 @@ Return ONLY valid JSON with this exact structure:
 {{
     "product_name": "",
     "brand_name": "",
-    "product_type": "supplement|research_peptide|telehealth|device|info_product|food|topical|cannabis|financial|software|service|program|subscription|professional|unknown",
-    "category": "weight_loss|brain_health|blood_sugar|male_enhancement|heart_health|anti_aging|sleep|joint_health|vision|dental|skin_care|immune_health|gut_health|nerve_health|respiratory|pain_relief|telehealth|financial|device|info_product|cannabis",
+    "product_type": "supplement|research_peptide|telehealth|device|info_product|food|topical|cannabis|financial|software|service|program|subscription|professional|gaming|collectible|unknown",
+    "category": "weight_loss|brain_health|blood_sugar|male_enhancement|heart_health|anti_aging|sleep|joint_health|vision|dental|skin_care|immune_health|gut_health|nerve_health|respiratory|pain_relief|telehealth|financial|device|info_product|gaming|collectible|cannabis",
     "official_url": "{url or ''}",
     "service_type": "",
     "topics_covered": [],
@@ -2162,6 +2169,24 @@ Return ONLY valid JSON with this exact structure:
     "certifications": [],
     "independent_testing": [],
     "warnings": [],
+    "product_description": "",
+    "how_it_works": "",
+    "access_method": "",
+    "eligibility": "",
+    "jurisdiction_limits": "",
+    "odds_or_randomness_disclosure": "",
+    "item_description": "",
+    "materials": "",
+    "dimensions": "",
+    "weight": "",
+    "finish_or_plating": "",
+    "denomination": "",
+    "legal_tender_status": "",
+    "edition_or_mintage": "",
+    "seller_affiliation": "",
+    "shipping_cost": "",
+    "billing_terms": "",
+    "continuity_offer": "",
     "services_offered": [],
     "prescriber_credentials": [],
     "states_available": [],
@@ -2279,6 +2304,7 @@ Return ONLY valid JSON with this exact structure:
         "supplement", "research_peptide", "telehealth", "device",
         "info_product", "food", "topical", "cannabis", "financial",
         "software", "service", "program", "subscription", "professional",
+        "gaming", "collectible",
         "unknown",
     }
     detected_type = data.get("product_type", "").strip().lower()

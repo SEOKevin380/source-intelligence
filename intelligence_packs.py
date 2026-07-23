@@ -303,6 +303,58 @@ INTELLIGENCE_PACKS = {
         },
         "content_opportunities": ["profile", "comparison"],
     },
+
+    OfferingType.GAMING: {
+        "required_facts": [
+            "product_description", "how_it_works", "access_method",
+            "pricing", "billing_terms", "refund_policy", "eligibility",
+            "jurisdiction_limits", "odds_or_randomness_disclosure",
+        ],
+        "mandatory_facts": ["product_description", "how_it_works"],
+        "authoritative_sources": [
+            {"type": "vendor_page", "priority": 1},
+            {"type": "terms_page", "priority": 1},
+            {"type": "refund_page", "priority": 2},
+        ],
+        "compliance_rules": [
+            "no_guaranteed_wins", "no_improved_odds_without_substantiation",
+            "eligibility_and_jurisdiction_disclosure", "pricing_and_renewal_disclosure",
+        ],
+        "evidence_requirements": {
+            "product_details": "required",
+            "terms": "recommended",
+        },
+        "content_opportunities": [
+            "L6_product_review", "how_it_works", "comparison", "buyer_guide",
+        ],
+    },
+
+    OfferingType.COLLECTIBLE: {
+        "required_facts": [
+            "item_description", "materials", "dimensions", "weight",
+            "finish_or_plating", "denomination", "legal_tender_status",
+            "edition_or_mintage", "manufacturer", "seller_affiliation",
+            "pricing", "shipping_cost", "billing_terms", "refund_policy",
+        ],
+        "mandatory_facts": ["item_description"],
+        "authoritative_sources": [
+            {"type": "vendor_page", "priority": 1},
+            {"type": "terms_page", "priority": 1},
+            {"type": "refund_page", "priority": 2},
+        ],
+        "compliance_rules": [
+            "material_composition_accuracy", "no_unverified_rarity_or_value",
+            "no_unverified_endorsement", "total_price_and_continuity_disclosure",
+        ],
+        "evidence_requirements": {
+            "item_identity": "required",
+            "materials": "recommended",
+            "offer_terms": "recommended",
+        },
+        "content_opportunities": [
+            "L6_product_review", "collector_guide", "comparison", "offer_explainer",
+        ],
+    },
 }
 
 

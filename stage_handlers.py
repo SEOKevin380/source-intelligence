@@ -142,7 +142,38 @@ def _apply_offering_type_guard(product_data: dict, job: Job) -> dict:
         identity_text,
     ))
     current = str(data.get("product_type", "") or "unknown").lower()
-    if len(signals) >= 2 and not physical:
+    gaming_patterns = {
+        "lottery": r"\b(?:lottery|lotto)\b",
+        "number_picker": r"\b(?:number (?:picker|generator)|winning numbers?)\b",
+        "lotto_domain": r"lotto(?:champ)?\.com",
+    }
+    gaming_signals = [name for name, pattern in gaming_patterns.items()
+                      if re.search(pattern, identity_text)]
+    collectible_patterns = {
+        "coin": r"\b(?:commemorative|collector|survivor|challenge)?\s*coins?\b",
+        "memorabilia": r"\bmemorabilia\b",
+        "collectible": r"\bcollect(?:ible|able|or(?:'s)?)\b",
+        "coin_offer_domain": r"(?:magastore|commemorative).*\.com",
+    }
+    collectible_signals = [name for name, pattern in collectible_patterns.items()
+                           if re.search(pattern, identity_text)]
+    if gaming_signals and not physical:
+        data["product_type"] = "gaming"
+        data["category"] = data.get("category") or "Lottery Tools"
+        data["_type_classification"] = {
+            "method": "deterministic_identity_guard_v2",
+            "signals": gaming_signals,
+            "overrode": current,
+        }
+    elif collectible_signals and not ingredients:
+        data["product_type"] = "collectible"
+        data["category"] = data.get("category") or "Collectibles & Memorabilia"
+        data["_type_classification"] = {
+            "method": "deterministic_identity_guard_v2",
+            "signals": collectible_signals,
+            "overrode": current,
+        }
+    elif len(signals) >= 2 and not physical:
         data["product_type"] = "financial"
         if not data.get("category"):
             data["category"] = "financial"
@@ -2495,6 +2526,46 @@ def handle_review(job: Job) -> dict:
     # Per-rule resolutions — no blanket approval path
     rule_resolutions = job.metadata.get("rule_resolutions", {})
     reviewer = job.metadata.get("review_approved_by", "")
+
+    # VA/automation jobs never require an operator to adjudicate routine
+    # compliance findings. Unsafe/conflicted material is quarantined from the
+    # publication pack; safe rule-provided substitutions are applied now.
+    if job.metadata.get("unattended", False):
+        compliance = comply_result.get("compliance", {}) or {}
+        results = compliance.get("results", []) or []
+        automatic_substitutions = []
+        quarantined_rules = []
+        for result in results:
+            rule_id = result.get("rule_id", "")
+            safe_text = str(result.get("safe_alternative", "")).strip()
+            if safe_text:
+                automatic_substitutions.append({
+                    "rule_id": rule_id,
+                    "action": "substitute",
+                    "substitute_text": safe_text,
+                    "note": "Automatic platform-safe substitution",
+                    "reviewer": "source-intelligence-automation",
+                })
+            else:
+                quarantined_rules.append(rule_id or "unnamed_rule")
+        substitution_audit = []
+        if automatic_substitutions:
+            substitution_audit = _apply_substitutions(
+                job, automatic_substitutions, results,
+                "source-intelligence-automation",
+            )
+        return {
+            "auto_approved": True,
+            "needs_human_review": False,
+            "unattended": True,
+            "conflicts_quarantined": conflicts,
+            "rules_quarantined": quarantined_rules,
+            "substitutions_applied": substitution_audit,
+            "reason": (
+                "Automation continued with unsafe or conflicting statements "
+                "excluded from publication"
+            ),
+        }
 
     # Build unresolved reasons
     reasons = []

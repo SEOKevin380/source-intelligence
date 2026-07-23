@@ -1070,6 +1070,49 @@ class TestRealHandlerPipeline:
             review_result = job.get_stage_result(PipelineStage.REVIEW)
             assert review_result.get("auto_approved") is True
 
+    def test_unattended_jobs_quarantine_findings_without_stopping(self, pipeline_db):
+        """VA automation continues while conflicts/risky rules are excluded."""
+        from workflow import Pipeline, JobStore, Job, PipelineStage, JobStatus
+        from stage_handlers import handle_review
+
+        pipeline = Pipeline(JobStore(db_path=pipeline_db))
+        pipeline.register(PipelineStage.IDENTIFY, lambda job: {
+            "offering_type": "financial",
+        })
+        pipeline.register(PipelineStage.ACQUIRE, lambda job: {"artifacts": []})
+        pipeline.register(PipelineStage.EXTRACT, lambda job: {})
+        pipeline.register(PipelineStage.RECONCILE, lambda job: {
+            "conflicts_found": 2,
+        })
+        pipeline.register(PipelineStage.RESEARCH, lambda job: {})
+        pipeline.register(PipelineStage.COMPLY, lambda job: {
+            "risk_level": "high",
+            "compliance": {
+                "state": "blocked",
+                "results": [{
+                    "rule_id": "UNSUBSTANTIATED_RETURN",
+                    "state": "blocked",
+                    "matched_text": "100x return",
+                    "description": "Unsubstantiated return projection",
+                }],
+            },
+        })
+        pipeline.register(PipelineStage.ANALYZE_SITE, lambda job: {})
+        pipeline.register(PipelineStage.ANALYZE_MARKET, lambda job: {})
+        pipeline.register(PipelineStage.PLAN, lambda job: {})
+        pipeline.register(PipelineStage.REVIEW, handle_review)
+        pipeline.register(PipelineStage.SOURCE_PACK, lambda job: {"done": True})
+
+        result = pipeline.run(Job.create(
+            url="https://example.com/financial",
+            unattended=True,
+        ))
+        assert result.status == JobStatus.COMPLETED
+        review = result.get_stage_result(PipelineStage.REVIEW)
+        assert review["needs_human_review"] is False
+        assert review["conflicts_quarantined"] == 2
+        assert review["rules_quarantined"] == ["UNSUBSTANTIATED_RETURN"]
+
     def test_approve_and_complete_real_handlers(self, pipeline_db):
         """Pipeline must complete after approval when using real handlers."""
         from workflow import JobStatus

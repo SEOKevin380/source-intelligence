@@ -48,6 +48,23 @@ def assess_readiness(full_data: dict) -> tuple:
 def seal_source_pack(full_data: dict) -> dict:
     """Return an immutable-style copy with contract metadata and content hash."""
     pack = copy.deepcopy(full_data)
+    compliance = pack.get("compliance") or {}
+    blocked_texts = set()
+    for key in (
+        "cvd9_blocked_claims", "deceptive_blocked_claims",
+    ):
+        for item in compliance.get(key, []) or []:
+            if isinstance(item, dict):
+                blocked_texts.add(str(item.get("claim", "")).strip().casefold())
+    for check_key in (
+        "accesswire_blocklist_check", "barchart_compliance",
+        "globe_compliance",
+    ):
+        check = compliance.get(check_key) or {}
+        for item in check.get("blocked_claims", []) or []:
+            if isinstance(item, dict):
+                blocked_texts.add(str(item.get("claim", "")).strip().casefold())
+
     publication_claims = {}
     excluded_claims = []
     for claim_type, items in (pack.get("claims_by_type") or {}).items():
@@ -56,7 +73,8 @@ def seal_source_pack(full_data: dict) -> dict:
             metadata = claim.get("metadata") or {}
             literal = metadata.get("excerpt_is_literal", True)
             has_artifact = bool(claim.get("artifact_id"))
-            safe = (
+            compliance_blocked = str(claim.get("text", "")).strip().casefold() in blocked_texts
+            safe = not compliance_blocked and (
                 status == "accepted"
                 or (status == "unreviewed" and literal and has_artifact)
             )
@@ -67,7 +85,11 @@ def seal_source_pack(full_data: dict) -> dict:
                     "claim_type": claim_type,
                     "text": claim.get("text", ""),
                     "review_status": status,
-                    "reason": "not_accepted_or_literal_artifact_backed",
+                    "reason": (
+                        "blocked_by_compliance"
+                        if compliance_blocked
+                        else "not_accepted_or_literal_artifact_backed"
+                    ),
                 })
     pack["publication_claims"] = publication_claims
     pack["excluded_publication_claims"] = excluded_claims

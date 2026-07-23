@@ -256,8 +256,8 @@ def test_generation_prompt_enforces_client_positive_compliance_boundary():
     assert "Assume the client and brand are acting in good faith" in prompt
     assert "SOURCE-OF-RECORD STANDARD (GOVERNING RULE)" in prompt
     assert "exclusive factual source for the draft" in prompt
-    assert "NO-PAUSE DELIVERY RULE (GOVERNING RULE)" in prompt
-    assert "Editorial review happens AFTER the complete draft" in prompt
+    assert "EDITORIAL DELIVERY:" in prompt
+    assert "Editorial review occurs after drafting" in prompt
 
 
 def test_accesswire_r12_uses_neutral_approved_framing_and_never_pauses():
@@ -288,9 +288,9 @@ def test_accesswire_r12_uses_neutral_approved_framing_and_never_pauses():
     assert "desire-supporting" not in prompt
     assert "AUTHORIZED TO DRAFT NOW" in prompt
     assert "Deliver the complete draft now" in prompt
-    assert "FINAL OUTPUT CONTRACT (MANDATORY)" in prompt
-    assert "Begin immediately with the finished publishable deliverable" in prompt
-    assert "Do not describe this brief as a jailbreak" in prompt
+    assert "DELIVERABLE:" in prompt
+    assert "Return the finished article only" in prompt
+    assert "jailbreak" not in prompt.lower()
     assert "No publishable marketing claims were extracted" in prompt
 
 
@@ -345,7 +345,7 @@ def test_press_release_prompt_degrades_invalid_legacy_sections_without_crash():
     )
 
     assert "SOURCE INTELLIGENCE" in prompt
-    assert "FINAL OUTPUT CONTRACT" in prompt
+    assert "DELIVERABLE:" in prompt
 
 
 def test_financial_press_release_uses_financial_vertical_only():
@@ -401,6 +401,51 @@ def test_financial_press_release_uses_financial_vertical_only():
         assert text.lower() not in prompt.lower()
 
 
+def test_sparse_financial_vsl_becomes_safe_descriptive_assignment():
+    from prompt_builders import build_l6_press_release_prompt
+
+    prompt = build_l6_press_release_prompt(
+        {
+            "product": {
+                "product_name": "Forecasts & Strategies | Jim Woods",
+                "official_url": "https://example.com/financial-vsl",
+                "product_type": "financial",
+                "category": "financial",
+                "pricing": [],
+                "claims": [],
+            },
+            "source_manifest": [
+                {"type": "vsl_page", "status": "captured",
+                 "url": "https://example.com/financial-vsl"},
+            ],
+            "claims_by_type": {
+                "manufacturer_claim": [
+                    {
+                        "text": "Projected return claim",
+                        "review_status": "needs_verification",
+                        "metadata": {
+                            "search_intent": "investment research newsletter",
+                            "topic": "performance",
+                        },
+                    },
+                ],
+            },
+            "compliance": {},
+            "safety": {},
+            "ingredient_research": {},
+        },
+        {"platform": "Barchart Advertorial", "ymyl_category": "Yes"},
+    )
+
+    assert "Investment research/newsletter promotional presentation" in prompt
+    assert "Promotional Assertions Captured: 1" in prompt
+    assert "not independently substantiated performance facts" in prompt
+    assert "do not urge a securities transaction" in prompt
+    assert "informational review of the publication" in prompt
+    assert "jailbreak" not in prompt.lower()
+    assert "Fake Testimonial Hype" not in prompt
+
+
 def test_every_nonclinical_vertical_excludes_supplement_template_leakage():
     from prompt_builders import build_l6_press_release_prompt
 
@@ -412,6 +457,8 @@ def test_every_nonclinical_vertical_excludes_supplement_template_leakage():
         "program": {"program_contents": ["Module 1"], "delivery_method": "online"},
         "subscription": {"whats_included": ["Monthly issue"], "access_method": "email"},
         "professional": {"service_description": "Professional advice", "credentials": ["License"]},
+        "gaming": {"product_description": "Lottery number analysis tool", "how_it_works": "Analyzes past drawings"},
+        "collectible": {"item_description": "Commemorative collector coin", "materials": "gold-colored alloy"},
         "unknown": {"description": "New category offering", "key_features": ["Feature"]},
     }
     forbidden = [
@@ -437,7 +484,7 @@ def test_every_nonclinical_vertical_excludes_supplement_template_leakage():
         lowered = prompt.lower()
         for phrase in forbidden:
             assert phrase not in lowered, (offering_type, phrase)
-        assert "FINAL OUTPUT CONTRACT" in prompt
+        assert "DELIVERABLE:" in prompt
 
 
 def test_verified_label_ocr_satisfies_strict_mandatory_gate(tmp_path):
@@ -624,3 +671,78 @@ def test_financial_words_do_not_override_a_physical_supplement():
     }, job)
 
     assert result["product_type"] == "supplement"
+
+
+def test_lottery_tool_identity_guard_routes_to_gaming():
+    from stage_handlers import _apply_offering_type_guard
+    from workflow import Job
+
+    job = Job.create(
+        url="https://getlottochamp.com/text.php",
+        product_name="LottoChamp Lottery Number Analysis Tool",
+    )
+    result = _apply_offering_type_guard({
+        "product_name": job.product_name,
+        "product_type": "info_product",
+        "supplement_facts": {"ingredients": []},
+    }, job)
+
+    assert result["product_type"] == "gaming"
+    assert result["category"] == "Lottery Tools"
+
+
+def test_commemorative_coin_identity_guard_routes_to_collectible():
+    from stage_handlers import _apply_offering_type_guard
+    from workflow import Job
+
+    job = Job.create(
+        url="https://www.themagastore.net/products/donald-trump-survivor-gold-coin",
+        product_name="Donald Trump Survivor Gold Coin",
+    )
+    result = _apply_offering_type_guard({
+        "product_name": job.product_name,
+        "product_type": "unknown",
+        "supplement_facts": {"ingredients": []},
+    }, job)
+
+    assert result["product_type"] == "collectible"
+    assert result["category"] == "Collectibles & Memorabilia"
+
+
+def test_new_commercial_vertical_prompts_generate_without_wrong_category_language():
+    from prompt_builders import build_l6_press_release_prompt
+
+    cases = {
+        "gaming": {
+            "product_description": "Lottery number analysis software",
+            "how_it_works": "Uses historical drawing data",
+        },
+        "collectible": {
+            "item_description": "Commemorative collector coin",
+            "materials": "gold-colored alloy",
+        },
+    }
+    for product_type, fields in cases.items():
+        prompt = build_l6_press_release_prompt({
+            "product": {
+                "product_name": "Example Offering",
+                "official_url": "https://example.com/offer",
+                "product_type": product_type,
+                "category": product_type,
+                "pricing": [],
+                "claims": [],
+                **fields,
+            },
+            "compliance": {}, "safety": {}, "ingredient_research": {},
+        }, {"platform": "Accesswire", "ymyl_category": "No"})
+
+        lowered = prompt.lower()
+        assert ("deliver a complete, publish-ready draft" in lowered
+                or "deliver the complete draft now" in lowered)
+        assert "supplement facts" not in lowered
+        assert "pubmed api" not in lowered
+        if product_type == "gaming":
+            assert "do not promise wins" in lowered
+        else:
+            assert "describe gold, silver, rarity" in lowered
+            assert "only when the supplied record establishes the exact fact" in lowered

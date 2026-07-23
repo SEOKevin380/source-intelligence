@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from workflow import (
     Job, JobStore, Pipeline, PipelineStage, StageStatus, JobStatus,
+    ReviewBlockError,
 )
 
 
@@ -240,6 +241,27 @@ class TestPipeline:
         result = pipeline.run(job)
 
         assert result.status == JobStatus.PAUSED
+
+    def test_unattended_review_condition_becomes_repair_failure(self, store):
+        """VA jobs never open the human-review workflow."""
+        def repair_required(job):
+            raise ReviewBlockError(
+                "source validation dependency unavailable",
+                details={"validation_error": "dependency unavailable"},
+            )
+
+        pipeline = Pipeline(store)
+        pipeline.register(PipelineStage.IDENTIFY, repair_required)
+        job = Job.create(quick=True)
+        job.metadata["unattended"] = True
+
+        result = pipeline.run(job)
+
+        assert result.status == JobStatus.FAILED
+        assert result.status != JobStatus.AWAITING_REVIEW
+        assert result.error.startswith("Source repair required:")
+        stage_result = result.get_stage_result(PipelineStage.IDENTIFY)
+        assert stage_result["repair_required"] is True
 
     def test_elapsed_budget_is_not_double_counted(self, store, monkeypatch):
         """Cumulative elapsed time is added once per run, not once per stage."""

@@ -16,7 +16,7 @@ class TestOfferingType:
             "supplement", "topical", "device", "food", "cannabis",
             "telehealth", "info_product", "financial", "software",
             "service", "program", "subscription", "professional",
-            "research_peptide", "unknown",
+            "gaming", "collectible", "research_peptide", "unknown",
         ]
         for t in expected:
             assert OfferingType(t) is not None
