@@ -251,6 +251,32 @@ class WorkbenchEngine:
                 (source_hash, platform),
             ).fetchone()
         if existing:
+            existing_project = self.get(existing["id"])
+            blockers = []
+            if existing_project["stage"] == "package_ready":
+                findings = deterministic_findings(
+                    existing_project.get("article_text") or "",
+                    existing_project["platform"],
+                    existing_project["vertical"],
+                )
+                blockers, _ = partition_findings(findings)
+            approval_hash_mismatch = (
+                existing_project["stage"] == "package_ready"
+                and existing_project.get("last_report", {}).get(
+                    "reviewed_article_hash"
+                ) != existing_project.get("article_hash")
+            )
+            if (
+                not force_new
+                and (
+                    existing_project["stage"] == "admin_review"
+                    or blockers
+                    or approval_hash_mismatch
+                )
+            ):
+                return self.create_project_from_pack(
+                    pack, platform, vertical=resolved_vertical, force_new=True
+                )
             return existing["id"]
         pid = self.create_project(
             title, platform, source_text, resolved_vertical

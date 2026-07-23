@@ -131,6 +131,43 @@ def test_explicit_rebuild_creates_new_project_and_preserves_source(tmp_path):
     assert "EXPLICIT REBUILD RUN:" in engine.get(rebuilt)["source_text"]
 
 
+def test_invalid_legacy_package_is_automatically_rebuilt(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": {},
+        "required_facts": {"missing": []},
+    })
+    legacy = engine.create_project_from_pack(pack, "Barchart Advertorial")
+    engine._set_article(
+        engine.get(legacy),
+        "<p>**Paid Advertorial:** Compensation may be received.</p>",
+        "package_ready",
+        "legacy.html",
+    )
+    current = engine.get(legacy)
+    approval = {
+        "verdict": "approved",
+        "mandatory_count": 0,
+        "mandatory_edits": [],
+        "recommended_edits": [],
+        "approved_elements": [],
+        "notes": [],
+        "reviewed_article_hash": current["article_hash"],
+    }
+    engine._set_report(
+        current, approval, "package_ready", "legacy-approval.json"
+    )
+    rebuilt = engine.create_project_from_pack(pack, "Barchart Advertorial")
+    assert rebuilt != legacy
+    assert engine.get(rebuilt)["stage"] == "source_ready"
+    assert "EXPLICIT REBUILD RUN:" in engine.get(rebuilt)["source_text"]
+
+
 def test_wordpress_draft_inheritance_rejects_cross_product_state(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     old = engine.create_project(
