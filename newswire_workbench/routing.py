@@ -110,6 +110,15 @@ def route_for(stage: str, vertical: str = "general_consumer") -> ModelRoute:
             5000, 3, 2.5 if risk_tier(vertical) >= 2 else 0.75,
             15.0 if risk_tier(vertical) >= 2 else 4.5,
         ),
+        # If the normal independent reviewer has rejected three materially
+        # different revisions, escalate the exact artifact and its latest
+        # objections to the strongest editorial adjudicator. This is a
+        # separate bounded job, not a fourth call to an exhausted route.
+        "executive_rescue_signoff": ModelRoute(
+            "openai-direct",
+            os.environ.get("NEWSWIRE_EXECUTIVE_MODEL", "gpt-5.4"),
+            7000, 3, 2.5, 15.0,
+        ),
     }
     if stage not in routes:
         raise KeyError(f"No model route for stage: {stage}")

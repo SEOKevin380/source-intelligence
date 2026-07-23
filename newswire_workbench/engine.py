@@ -914,9 +914,19 @@ class WorkbenchEngine:
                 f"Automated {stage} call ceiling reached; routed to admin review instead of repeating paid work"
             )
         ceiling = float(os.environ.get("NEWSWIRE_PROJECT_BUDGET_USD", "1.50"))
-        if stage in {"quality_rescue", "independent_rescue_signoff"}:
+        if stage in {
+            "quality_rescue",
+            "independent_rescue_signoff",
+            "executive_rescue_signoff",
+        }:
             ceiling += float(
                 os.environ.get("NEWSWIRE_QUALITY_RESCUE_BUDGET_USD", "4.50")
+            )
+        if stage == "executive_rescue_signoff":
+            ceiling += float(
+                os.environ.get(
+                    "NEWSWIRE_EXECUTIVE_RESCUE_BUDGET_USD", "6.00"
+                )
             )
         if spent >= ceiling:
             raise RuntimeError(
@@ -1295,12 +1305,45 @@ class WorkbenchEngine:
         # Passing regex/mechanical gates is necessary, never sufficient.
         # A semantic rescue or adjudicated rewrite must be approved by the
         # independent reviewer on the exact final article hash.
+        independent_route = route_for(
+            "independent_rescue_signoff", p["vertical"]
+        )
+        review_purpose = (
+            "independent_rescue_signoff"
+            if self._billable_call_count(
+                project_id, "independent_rescue_signoff"
+            ) < independent_route.max_calls
+            else "executive_rescue_signoff"
+        )
         report = self._openai_review(
-            p, final=True, purpose="independent_rescue_signoff"
+            p, final=True, purpose=review_purpose
         )
         if report.get("verdict") == "approved":
             self._set_report(p, report, target_stage, filename)
             return True
+
+        # Apply exact safe replacements from the independent reviewer before
+        # paying another writer to regenerate the whole article. If those
+        # bounded edits changed the artifact, review that exact new hash now.
+        self._set_report(p, report, p["stage"], filename)
+        p = self.get(project_id)
+        if self._adjudicate_current(p, report, target_stage=p["stage"]):
+            self._event(
+                project_id,
+                "independent_reviewer_edits_applied",
+                p["stage"],
+                self.get(project_id)["article_hash"],
+                {
+                    "review_purpose": review_purpose,
+                    "mandatory_count": len(
+                        report.get("mandatory_edits", [])
+                    ),
+                },
+            )
+            return self._complete_adjudicated_signoff(
+                project_id, target_stage, filename
+            )
+
         repair_stage = (
             "seo_repair_needed"
             if target_stage == "post_seo_signed_off"

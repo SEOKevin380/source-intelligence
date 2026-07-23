@@ -817,6 +817,60 @@ def test_adjudicated_article_requires_independent_rescue_signoff(tmp_path):
     assert updated["last_report"]["verdict"] == "approved"
 
 
+def test_exhausted_independent_signoff_escalates_to_executive_review(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Device", "Barchart Advertorial", "device source", "device"
+    )
+    engine.import_manual_article(
+        pid,
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>",
+    )
+    route = route_for("independent_rescue_signoff", "device")
+    for _ in range(route.max_calls):
+        engine._record_llm_call(
+            pid, "independent_rescue_signoff", route, 100, 100
+        )
+
+    purposes = []
+
+    def approve(_p, final=None, purpose=None):
+        purposes.append(purpose)
+        return _independent_approval(engine, pid)
+
+    with patch(
+        "newswire_workbench.engine.deterministic_findings", return_value=[]
+    ), patch.object(engine, "_openai_review", side_effect=approve):
+        assert engine._complete_adjudicated_signoff(
+            pid, "signed_off", "executive-signoff.json"
+        ) is True
+    assert purposes == ["executive_rescue_signoff"]
+    assert engine.get(pid)["stage"] == "signed_off"
+
+
+def test_executive_signoff_has_protected_budget_after_normal_rescue(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Device", "Barchart Advertorial", "device source", "device"
+    )
+    normal = route_for("quality_rescue", "device")
+    with engine._connect() as conn:
+        conn.execute(
+            """INSERT INTO llm_calls(
+                project_id,stage,provider,model,input_tokens,output_tokens,
+                estimated_cost,status,error,created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (
+                pid, "quality_rescue", normal.provider, normal.model,
+                100, 100, 6.25, "success", "", "2026-07-23T00:00:00+00:00",
+            ),
+        )
+    executive = route_for("executive_rescue_signoff", "device")
+    engine._assert_call_budget(
+        pid, "executive_rescue_signoff", executive
+    )
+
+
 def test_independent_rescue_rejection_cannot_be_synthetically_approved(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     pid = engine.create_project(
