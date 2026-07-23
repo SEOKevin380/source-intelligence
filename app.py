@@ -1889,9 +1889,24 @@ else:
                     _prior_project = _workbench.get(_prior_project_id)
                 except KeyError:
                     _prior_project_id = None
+            _prior_diagnostics = None
+            if _prior_project:
+                try:
+                    _prior_diagnostics = _workbench.article_diagnostics(
+                        _prior_project_id
+                    )
+                except Exception:
+                    _prior_diagnostics = None
             _is_rebuild = bool(
                 _prior_project
-                and _prior_project["stage"] == "package_ready"
+                and (
+                    _prior_project["stage"] in {"package_ready", "admin_review"}
+                    or (
+                        _prior_diagnostics
+                        and _prior_diagnostics.get("workflow_version")
+                        != "serp-differentiation-depth-v5"
+                    )
+                )
             )
             if st.button(
                 (
@@ -1907,7 +1922,11 @@ else:
                     _publication_pack, _newswire_platform, vertical="auto",
                     force_new=_is_rebuild,
                 )
-                if _is_rebuild and _prior_project_id:
+                if (
+                    _is_rebuild
+                    and _prior_project_id
+                    and _workbench.wordpress_draft(_prior_project_id)
+                ):
                     _workbench.inherit_wordpress_draft(
                         _project_id, _prior_project_id
                     )
@@ -1972,10 +1991,22 @@ else:
                             use_container_width=True,
                         )
                 elif _active_project["stage"] == "admin_review":
+                    _failed_diagnostics = _workbench.article_diagnostics(
+                        _active_project_id
+                    )
                     st.warning(
-                        "The workflow hit a technical publication-gate failure that could not "
-                        "be repaired automatically. Source disagreements are resolved by the "
-                        "system and do not require VA review."
+                        "This run did not pass the publication gates. Click "
+                        "**Rebuild With Latest Workflow** above; a clean, "
+                        "product-scoped run will be created automatically."
+                    )
+                    st.caption(
+                        "Remaining gates: "
+                        + ", ".join(
+                            _failed_diagnostics.get("blocker_ids") or
+                            ["semantic editorial review"]
+                        )
+                        + " · Workflow "
+                        + str(_failed_diagnostics.get("workflow_version", "legacy"))
                     )
                 else:
                     st.info(
