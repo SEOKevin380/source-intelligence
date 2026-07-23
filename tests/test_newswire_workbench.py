@@ -471,6 +471,41 @@ def test_adjudicated_article_advances_without_third_paid_signoff(tmp_path):
     assert updated["last_report"]["verdict"] == "approved"
 
 
+def test_nonblocking_house_format_target_cannot_strand_va(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Test", "AccessNewsWire", "financial source", "financial"
+    )
+    engine.import_manual_article(
+        pid,
+        "<p><strong>Paid Advertorial</strong></p>"
+        "<p>Investments carry risk, including loss of principal.</p>",
+    )
+    persistent_style_finding = [{
+        "id": "D15",
+        "category": "MBK multi-speed reading gate",
+        "issue": "Scan-path phrase target was not exact.",
+        "exact_text": "",
+        "replacement": "Improve emphasis distribution.",
+    }]
+    from unittest.mock import patch
+    with patch(
+        "newswire_workbench.engine.deterministic_findings",
+        return_value=persistent_style_finding,
+    ), patch(
+        "newswire_workbench.engine.repair_publication_gates",
+        side_effect=lambda article, *_args: article,
+    ):
+        assert engine._complete_adjudicated_signoff(
+            pid, "signed_off", "style-warning-signoff.json"
+        ) is True
+    updated = engine.get(pid)
+    assert updated["stage"] == "signed_off"
+    assert "Non-blocking house-format recommendations" in " ".join(
+        updated["last_report"]["notes"]
+    )
+
+
 def test_deterministic_publication_defects_self_repair_without_admin(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     source = (

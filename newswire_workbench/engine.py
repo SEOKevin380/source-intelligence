@@ -31,6 +31,21 @@ from .routing import estimated_cost, route_for
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = "approved-exemplars-v1"
 
+# Only defects that can materially mislead a reader or expose internal
+# production data may stop packaging.  House formatting and conversion targets
+# remain visible quality findings, but a non-exact count must never strand a VA.
+PUBLICATION_BLOCKER_IDS = {
+    "D1",  # paid advertorial label
+    "D2",  # internal production language
+    "D3",  # misleading official-destination CTA
+    "D4",  # first-person affiliate disclosure
+    "D5",  # missing passive affiliate disclosure
+    "D6",  # financial outcome-guarantee wording
+    "D7",  # missing investment-loss warning
+    "D8",  # exposed raw affiliate URL
+    "D9",  # exposed intermediary-routing mechanics
+}
+
 
 STAGES = (
     "source_ready",
@@ -1040,11 +1055,22 @@ class WorkbenchEngine:
         findings = deterministic_findings(
             p["article_text"], p["platform"], p["vertical"]
         )
-        if findings:
+        blockers = [
+            item for item in findings
+            if item.get("id") in PUBLICATION_BLOCKER_IDS
+        ]
+        quality_warnings = [
+            item for item in findings
+            if item.get("id") not in PUBLICATION_BLOCKER_IDS
+        ]
+        if blockers:
             self._set_stage(project_id, "admin_review")
             self._event(
                 project_id, "adjudication_unresolved", "admin_review",
-                p["article_hash"], {"findings": findings},
+                p["article_hash"], {
+                    "blockers": blockers,
+                    "quality_warnings": quality_warnings,
+                },
             )
             return False
         approval = {
@@ -1056,7 +1082,17 @@ class WorkbenchEngine:
                 "All actionable reviewer edits were applied exactly",
                 "Deterministic publication gates passed after adjudication",
             ],
-            "notes": ["Approved by bounded deterministic adjudication; no extra paid review required."],
+            "notes": [
+                "Approved by bounded deterministic adjudication; no extra paid review required.",
+                *(
+                    [
+                        "Non-blocking house-format recommendations retained for "
+                        "continuous improvement: " +
+                        json.dumps(quality_warnings, ensure_ascii=False)
+                    ]
+                    if quality_warnings else []
+                ),
+            ],
             "reviewed_article_hash": p["article_hash"],
             "prompt_version": PROMPT_VERSION,
         }
