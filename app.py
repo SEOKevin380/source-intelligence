@@ -1867,7 +1867,10 @@ else:
             for _secret_name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
                 if not os.environ.get(_secret_name) and _secret_name in st.secrets:
                     os.environ[_secret_name] = str(st.secrets[_secret_name])
-            from newswire_workbench import WorkbenchEngine
+            from newswire_workbench import (
+                WORKBENCH_SOURCE_CONTEXT_VERSION,
+                WorkbenchEngine,
+            )
             _workbench = WorkbenchEngine()
             _workbench_caps = _workbench.capabilities()
             _ready_to_run = (
@@ -1904,7 +1907,7 @@ else:
                     or (
                         _prior_diagnostics
                         and _prior_diagnostics.get("workflow_version")
-                        != "serp-differentiation-depth-v7-objection-audit"
+                        != WORKBENCH_SOURCE_CONTEXT_VERSION
                     )
                 )
             )
@@ -2018,14 +2021,6 @@ else:
                     _publication_pack, _newswire_platform, vertical="auto",
                     force_new=_is_rebuild,
                 )
-                if (
-                    _is_rebuild
-                    and _prior_project_id
-                    and _workbench.wordpress_draft(_prior_project_id)
-                ):
-                    _workbench.inherit_wordpress_draft(
-                        _project_id, _prior_project_id
-                    )
                 _project_map[_workflow_key] = _project_id
                 st.session_state["source_newswire_project_ids"] = _project_map
                 _master_path = os.path.join(

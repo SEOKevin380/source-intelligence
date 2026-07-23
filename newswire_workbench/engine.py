@@ -31,7 +31,9 @@ from .routing import estimated_cost, route_for
 from .audit import audit_article
 
 
-WORKBENCH_SOURCE_CONTEXT_VERSION = "serp-differentiation-depth-v7-objection-audit"
+WORKBENCH_SOURCE_CONTEXT_VERSION = (
+    "serp-differentiation-depth-v8-attributed-source-contract"
+)
 
 STAGES = (
     "source_ready",
@@ -367,8 +369,10 @@ class WorkbenchEngine:
         )
         return result
 
-    def inherit_wordpress_draft(self, new_project_id, old_project_id):
-        """Let an explicit rebuild update the same WordPress draft."""
+    def inherit_wordpress_draft(
+        self, new_project_id, old_project_id, confirmed_post_id=None
+    ):
+        """Inherit only a WordPress draft whose post ID was explicitly confirmed."""
         new_project = self.get(new_project_id)
         old_project = self.get(old_project_id)
         if (
@@ -380,12 +384,19 @@ class WorkbenchEngine:
                 "A WordPress draft can only be inherited by a rebuild of the "
                 "same product and platform"
             )
+        if confirmed_post_id is None:
+            raise ValueError(
+                "WordPress draft inheritance requires an explicitly confirmed "
+                "post ID"
+            )
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM wordpress_drafts WHERE project_id=?",
                 (old_project_id,),
             ).fetchall()
             for row in rows:
+                if int(row["post_id"]) != int(confirmed_post_id):
+                    continue
                 conn.execute(
                     """INSERT INTO wordpress_drafts
                     (project_id,site_url,post_id,article_hash,edit_url,updated_at)

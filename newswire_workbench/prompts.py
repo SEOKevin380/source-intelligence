@@ -65,6 +65,11 @@ Operating rules:
   or industry-statistic assertions from memory.
 - Treat supplied sales pages and VSLs as records of what the advertiser says,
   not automatic proof that a claim is true.
+- In a sealed JSON pack, `publication_claims` are the only claim-ledger items
+  available for publication. Items marked
+  `publication_treatment: seller_attribution_required` may be described only
+  as seller/offer statements. Never use `excluded_publication_claims`, even
+  with attribution.
 - For device specifications, setup, placement, operation, optimization time,
   and functions taken from seller or third-party descriptions, use explicit
   attribution such as “seller materials state” or “the offer describes.”
@@ -217,6 +222,12 @@ Review all applicable categories:
     utility-billing, competitor-pricing, or industry-statistic assertions not
     present in the sealed record. General knowledge cannot inflate word count
     or prosecute the product category.
+16. Sealed-pack claim policy: `publication_claims` are usable according to
+    their treatment. A claim marked
+    `publication_treatment: seller_attribution_required` is permitted only
+    with explicit seller/offer attribution. `excluded_publication_claims`
+    remain prohibited. Do not demand deletion of a permitted attributed claim
+    merely because independent verification is unavailable.
 
 Return JSON only matching this shape:
 {{
@@ -269,6 +280,9 @@ compliance report below.
 - Attribute every device specification, setup direction, placement suggestion,
   operational function, and claimed mechanism to the seller/offer unless the
   sealed record explicitly identifies independent verification.
+- Preserve permitted `publication_claims` marked
+  `publication_treatment: seller_attribution_required` with explicit
+  seller/offer attribution. Never restore an `excluded_publication_claim`.
 - Return the complete revised article HTML only.
 - Begin the model response with the revised release headline in H1 so the
   workbench can store it in WordPress's separate title field; the saved article

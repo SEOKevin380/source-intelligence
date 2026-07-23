@@ -73,3 +73,67 @@ def test_unverified_claims_are_excluded_from_publication_context():
     claims = pack["publication_claims"]["manufacturer_claim"]
     assert [c["text"] for c in claims] == ["Literal brand statement"]
     assert pack["excluded_publication_claims"][0]["text"] == "Inferred outcome"
+
+
+def test_literal_device_seller_claim_requires_attribution_but_is_publishable():
+    raw = _pack()
+    raw["product"]["product_type"] = "device"
+    raw["claims_by_type"] = {
+        "specification": [
+            {
+                "text": "Seller states a 90V–250V operating range",
+                "artifact_id": "official-page-artifact",
+                "source_class": "official_vendor",
+                "review_status": "needs_verification",
+                "metadata": {"excerpt_is_literal": True},
+            },
+        ],
+        "certification": [
+            {
+                "text": "Safety certified",
+                "artifact_id": "official-page-artifact",
+                "source_class": "official_vendor",
+                "review_status": "needs_verification",
+                "metadata": {"excerpt_is_literal": True},
+            },
+        ],
+    }
+
+    pack = seal_source_pack(raw)
+
+    specification = pack["publication_claims"]["specification"][0]
+    assert specification["publication_treatment"] == (
+        "seller_attribution_required"
+    )
+    assert "certification" not in pack["publication_claims"]
+    assert pack["excluded_publication_claims"][0]["text"] == "Safety certified"
+
+
+def test_device_attribution_needs_explicit_literal_seller_provenance():
+    raw = _pack()
+    raw["product"]["product_type"] = "device"
+    raw["claims_by_type"] = {
+        "feature": [
+            {
+                "text": "Inferred seller feature",
+                "artifact_id": "official-page-artifact",
+                "source_class": "official_vendor",
+                "review_status": "needs_verification",
+                "metadata": {},
+            },
+            {
+                "text": "Competitor description",
+                "artifact_id": "news-artifact",
+                "source_class": "news_media",
+                "review_status": "needs_verification",
+                "metadata": {"excerpt_is_literal": True},
+            },
+        ],
+    }
+
+    pack = seal_source_pack(raw)
+
+    assert "feature" not in pack["publication_claims"]
+    assert {
+        item["text"] for item in pack["excluded_publication_claims"]
+    } == {"Inferred seller feature", "Competitor description"}

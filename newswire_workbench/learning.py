@@ -4,7 +4,7 @@ import hashlib
 import re
 
 
-PROMPT_VERSION = "newswire-v1.3-objection-audit"
+PROMPT_VERSION = "newswire-v1.4-attributed-source-contract"
 
 PUBLICATION_BLOCKER_IDS = frozenset({
     "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9",

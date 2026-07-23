@@ -109,7 +109,8 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     project = engine.get(first)
     assert project["stage"] == "source_ready"
     assert (
-        "AUTOMATION CONTEXT VERSION: serp-differentiation-depth-v7-objection-audit"
+        "AUTOMATION CONTEXT VERSION: "
+        "serp-differentiation-depth-v8-attributed-source-contract"
         in project["source_text"]
     )
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
@@ -182,6 +183,39 @@ def test_wordpress_draft_inheritance_rejects_cross_product_state(tmp_path):
     )
     with pytest.raises(ValueError, match="same product and platform"):
         engine.inherit_wordpress_draft(new, old)
+
+
+def test_wordpress_draft_inheritance_requires_confirmed_post_id(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    old = engine.create_project(
+        "EcoWatt Power Saver", "Barchart Advertorial", "old device source"
+    )
+    new = engine.create_project(
+        "EcoWatt Power Saver", "Barchart Advertorial", "new device source"
+    )
+    with engine._connect() as conn:
+        conn.execute(
+            """INSERT INTO wordpress_drafts
+            (project_id,site_url,post_id,article_hash,edit_url,updated_at)
+            VALUES(?,?,?,?,?,?)""",
+            (
+                old,
+                "https://publisher.example",
+                912,
+                "old-hash",
+                "https://publisher.example/wp-admin/post.php?post=912&action=edit",
+                "2026-07-23T00:00:00+00:00",
+            ),
+        )
+
+    with pytest.raises(ValueError, match="explicitly confirmed post ID"):
+        engine.inherit_wordpress_draft(new, old)
+    assert engine.wordpress_draft(new) is None
+
+    engine.inherit_wordpress_draft(new, old, confirmed_post_id=912)
+    inherited = engine.wordpress_draft(new)
+    assert inherited["post_id"] == 912
+    assert inherited["article_hash"] == ""
 
 
 def test_article_diagnostics_proves_html_contract(tmp_path):

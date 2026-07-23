@@ -9,6 +9,20 @@ from datetime import datetime, timezone
 CONTRACT_NAME = "mbk.source-intelligence.publication-pack"
 CONTRACT_VERSION = 1
 
+DEVICE_ATTRIBUTABLE_CLAIM_TYPES = frozenset({
+    "feature",
+    "specification",
+    "pricing",
+    "refund_policy",
+    "shipping_policy",
+    "company_info",
+    "manufacturer_claim",
+})
+SELLER_SOURCE_CLASSES = frozenset({
+    "official_vendor",
+    "authorized_reseller",
+})
+
 
 PLATFORM_LABELS = {
     "accessnewswire": "Accesswire",
@@ -114,19 +128,50 @@ def seal_source_pack(full_data: dict) -> dict:
 
     publication_claims = {}
     excluded_claims = []
+    product_type = str(
+        (pack.get("product") or {}).get("product_type", "")
+    ).strip().casefold()
+    artifacts = pack.get("all_artifacts") or {}
     for claim_type, items in (pack.get("claims_by_type") or {}).items():
         for claim in items or []:
             status = str(claim.get("review_status", "unreviewed")).lower()
             metadata = claim.get("metadata") or {}
             literal = metadata.get("excerpt_is_literal", True)
             has_artifact = bool(claim.get("artifact_id"))
+            artifact = (
+                artifacts.get(claim.get("artifact_id"), {})
+                if isinstance(artifacts, dict)
+                else {}
+            )
+            source_class = str(
+                claim.get("source_class")
+                or artifact.get("source_class")
+                or ""
+            ).strip().casefold()
             compliance_blocked = str(claim.get("text", "")).strip().casefold() in blocked_texts
+            attribution_required = bool(
+                product_type == "device"
+                and claim_type in DEVICE_ATTRIBUTABLE_CLAIM_TYPES
+                and status == "needs_verification"
+                and metadata.get("excerpt_is_literal") is True
+                and has_artifact
+                and source_class in SELLER_SOURCE_CLASSES
+                and not compliance_blocked
+            )
             safe = not compliance_blocked and (
                 status == "accepted"
                 or (status == "unreviewed" and literal and has_artifact)
+                or attribution_required
             )
             if safe:
-                publication_claims.setdefault(claim_type, []).append(claim)
+                publication_claim = copy.deepcopy(claim)
+                if attribution_required:
+                    publication_claim["publication_treatment"] = (
+                        "seller_attribution_required"
+                    )
+                publication_claims.setdefault(claim_type, []).append(
+                    publication_claim
+                )
             else:
                 excluded_claims.append({
                     "claim_type": claim_type,
