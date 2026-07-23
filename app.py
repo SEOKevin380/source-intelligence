@@ -1752,11 +1752,30 @@ else:
     }
     _quick_prompt = build_l6_press_release_prompt(data, _quick_intake)
     _quick_slug = name.lower().replace(" ", "-")
-    _quick_json = json.dumps(data, indent=2, default=str)
+    from source_pack_contract import seal_source_pack
+    _publication_pack = seal_source_pack(data)
+    _quick_json = json.dumps(_publication_pack, indent=2, default=str)
+    _pack_contract = _publication_pack["source_pack_contract"]
+    _pack_readiness = _pack_contract["readiness"]
 
     st.markdown("#### Copy Prompt for Claude")
     st.caption("Click the copy icon (top-right of the box) → paste into [claude.ai](https://claude.ai)")
     st.code(_quick_prompt, language="text", wrap_lines=True)
+    if _pack_readiness == "complete":
+        st.success(
+            "Ready for automated publishing. The verified source pack is "
+            "complete and integrity-protected."
+        )
+    elif _pack_readiness == "limited":
+        st.warning(
+            "Ready for automated publishing with documented gaps. Automation "
+            "will omit unavailable facts and continue without questions."
+        )
+    else:
+        st.error(
+            "Not ready for automation because source material was not captured. "
+            "Run Update Report after fixing the source URL or attachment."
+        )
     with st.expander("Download files", expanded=False):
         dl_col1, dl_col2, dl_col3 = st.columns(3)
         with dl_col1:
@@ -1769,9 +1788,9 @@ else:
             )
         with dl_col2:
             st.download_button(
-                "Source Data (.json)",
+                "Publication Source Pack (.json)",
                 data=_quick_json,
-                file_name=f"{_quick_slug}_source_data.json",
+                file_name=f"{_quick_slug}_source_pack.json",
                 mime="application/json",
                 use_container_width=True,
             )

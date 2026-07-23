@@ -40,6 +40,8 @@ def persist_completed_pack(research_data: dict, preferred_key: str = "",
     """
     if not isinstance(research_data, dict) or not research_data:
         raise ValueError("Cannot persist an empty completed source pack")
+    from source_pack_contract import seal_source_pack
+    research_data = seal_source_pack(research_data)
     product = research_data.get("product", {}) or {}
     product_name = str(product.get("product_name", "")).strip()
     product_key = (preferred_key or _slugify(product_name)).strip()

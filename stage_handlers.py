@@ -3154,6 +3154,8 @@ def handle_source_pack(job: Job) -> dict:
         "total_artifacts": len(all_artifacts),
         "required_facts": required_facts_result,
     }
+    from source_pack_contract import seal_source_pack
+    full_data = seal_source_pack(full_data)
 
     return {
         "doc_text": doc_text,
