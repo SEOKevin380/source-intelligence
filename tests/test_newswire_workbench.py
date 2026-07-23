@@ -3,7 +3,7 @@ import zipfile
 
 import pytest
 
-from newswire_workbench.engine import WorkbenchEngine
+from newswire_workbench.engine import WorkbenchEngine, _source_affiliate_link
 from newswire_workbench.prompts import detect_vertical
 from newswire_workbench.prompts import generation_prompt
 from newswire_workbench.learning import deterministic_findings, partition_findings
@@ -192,6 +192,39 @@ def test_barchart_affiliate_links_are_added_and_bolded():
     )
     assert repaired.count('href="https://example.com/product"') == 4
     assert '<a href="https://example.com/product"><strong>' in repaired
+
+
+def test_affiliate_link_is_read_from_sealed_pack_json():
+    source = (
+        'AUTOMATION CONTEXT VERSION: test\n'
+        '{"intake_manifest":{"affiliate_link":'
+        '"https://seriouslifemagazine.com/ecowatt-power-saver"}}'
+    )
+    assert _source_affiliate_link(source) == (
+        "https://seriouslifemagazine.com/ecowatt-power-saver"
+    )
+
+
+def test_barchart_set_article_uses_sealed_pack_affiliate_link(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    source = (
+        '{"intake_manifest":{"affiliate_link":'
+        '"https://partner.example/device"}}'
+    )
+    pid = engine.create_project(
+        "Device", "Barchart Advertorial", source, "device"
+    )
+    article = (
+        "<p>Paid Advertorial: Compensation may be received.</p>"
+        + "".join(
+            f"<h2>Section {i}</h2><p>Useful verified product detail {i}.</p>"
+            for i in range(1, 9)
+        )
+        + ("<p>Additional sourced detail for the buyer.</p>" * 260)
+    )
+    engine.import_manual_article(pid, article)
+    saved = engine.get(pid)["article_text"]
+    assert saved.count('href="https://partner.example/device"') == 4
 
 
 def test_routing_uses_stronger_final_review_only_for_higher_risk():

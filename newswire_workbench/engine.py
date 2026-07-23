@@ -55,6 +55,24 @@ def _hash(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _source_affiliate_link(source_text):
+    """Read the affiliate destination from legacy text or a sealed JSON pack."""
+    source_text = str(source_text or "")
+    legacy = re.search(
+        r"(?im)^AFFILIATE LINK:\s*(https?://\S+)", source_text
+    )
+    if legacy:
+        return legacy.group(1).rstrip(".,;)")
+    sealed = re.search(
+        r'"affiliate_link"\s*:\s*"(https?://[^"]+)"',
+        source_text,
+        re.I,
+    )
+    if sealed:
+        return sealed.group(1).replace("\\/", "/")
+    return ""
+
+
 class WorkbenchEngine:
     def __init__(self, root=None):
         self.root = Path(root or os.environ.get(
@@ -354,10 +372,7 @@ class WorkbenchEngine:
             p["article_text"],
             p["platform"],
             p["vertical"],
-            (
-                re.search(r"(?im)^AFFILIATE LINK:\s*(\S+)", p["source_text"])
-                or [None, ""]
-            )[1],
+            _source_affiliate_link(p["source_text"]),
         )
         if repaired != p["article_text"]:
             digest = _hash(
@@ -925,11 +940,11 @@ class WorkbenchEngine:
         plain = re.sub(r"<[^>]+>", " ", article)
         word_count = len(re.findall(r"\b[\w’'-]+\b", plain))
         article = normalize_master_html(article, word_count)
-        affiliate_match = re.search(r"(?im)^AFFILIATE LINK:\s*(\S+)", p["source_text"])
-        if word_count >= 1200 and affiliate_match:
+        affiliate_href = _source_affiliate_link(p["source_text"])
+        if word_count >= 1200 and affiliate_href:
             target = 5 if p["platform"] == "AccessNewsWire" else 4
             article = ensure_affiliate_links(
-                article, affiliate_match.group(1), target=target
+                article, affiliate_href, target=target
             )
         digest = _hash(title + "\n" + article)
         round_no = p["revision_round"] + (1 if bump else 0)
@@ -1126,14 +1141,12 @@ class WorkbenchEngine:
             )
             if not findings:
                 break
-            affiliate_match = re.search(
-                r"(?im)^AFFILIATE LINK:\s*(\S+)", p["source_text"]
-            )
+            affiliate_href = _source_affiliate_link(p["source_text"])
             repaired = repair_publication_gates(
                 p["article_text"],
                 p["platform"],
                 p["vertical"],
-                affiliate_match.group(1) if affiliate_match else "",
+                affiliate_href,
             )
             if repaired != p["article_text"]:
                 digest = _hash((p.get("release_title") or p["title"]) + "\n" + repaired)
