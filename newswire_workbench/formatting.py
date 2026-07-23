@@ -163,11 +163,11 @@ def ensure_affiliate_links(html, href, target=5):
     soup = BeautifulSoup(html, "html.parser")
     matching = [a for a in soup.find_all("a") if a.get("href") == href]
     texts = (
-        "Review the current offer details and subscription terms",
-        "See current subscription pricing and included reports",
-        "Check the current package and refund terms",
-        "Explore what is included with the subscription",
-        "View the current Forecasts & Strategies offer",
+        "Review the current product details",
+        "See current pricing and available package options",
+        "Check the current offer terms",
+        "Explore the product features and ordering information",
+        "View the current product offer",
     )
 
     def cta(index):
@@ -316,8 +316,11 @@ def repair_publication_gates(html, platform, vertical, affiliate_href=""):
             anchor.append(strong)
 
     normalized = normalize_master_html(str(soup), word_count)
-    if platform == "AccessNewsWire" and affiliate_href and affiliate_href.upper() != "TRAFFIC-FIRST":
-        normalized = ensure_affiliate_links(normalized, affiliate_href, target=5)
+    if affiliate_href and affiliate_href.upper() != "TRAFFIC-FIRST":
+        target = 5 if platform == "AccessNewsWire" else 4
+        normalized = ensure_affiliate_links(
+            normalized, affiliate_href, target=target
+        )
         # Link insertion can create new nodes, so normalize once more.
         normalized = normalize_master_html(normalized, word_count)
     return normalized

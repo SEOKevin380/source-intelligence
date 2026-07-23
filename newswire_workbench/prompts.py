@@ -34,6 +34,14 @@ def generation_prompt(source_text: str, platform: str, vertical: str,
         "generic investing advice."
         if platform == "AccessNewsWire" and vertical == "financial"
         else
+        "For a Barchart device review, target 2,200–2,800 useful words when "
+        "the supplied official, prior-release, and competitor records support "
+        "it. Answer what it is, how the claimed mechanism works, what evidence "
+        "supports or limits the claims, price, setup, best fit, poor fit, "
+        "warranty/returns/contact availability, trust questions, and practical "
+        "alternatives. Do not pad with generic consumer advice."
+        if platform == "Barchart Advertorial" and vertical == "device"
+        else
         "Use the length needed to answer the reader's material questions fully; "
         "never add filler merely to reach a word count."
     )
@@ -73,9 +81,16 @@ Operating rules:
   without naming their publishers. Select a distinct primary intent, title,
   opening angle, and section architecture so the new release complements and
   SERP-stacks with prior coverage instead of cannibalizing it.
+- When a valid previous-release URL is supplied, include one natural contextual
+  backlink using a descriptive anchor. Do not name its publisher. The current
+  release must have a different primary intent, title promise, opening thesis,
+  and H2 question spine.
 - Place the first clean affiliate CTA near the start of the release, then
   distribute additional CTAs naturally and evenly through long copy. Do not
   cluster links, expose raw URLs, or repeat identical surrounding sentences.
+- For Barchart long-form device copy, use 4–5 varied, bold, product-specific
+  affiliate CTAs. For AccessNewsWire long-form copy, use 5–6. A prior-release
+  editorial backlink does not count as an affiliate CTA.
 - Follow the MBK WordPress HTML contract exactly: article-body headings use
   `<h2><strong>…</strong></h2>` and `<h3><strong>…</strong></h3>` (no H1 in
   the body); every CTA anchor wraps its anchor text in `<strong>`; distribute
@@ -219,6 +234,8 @@ compliance report below.
   through a third-party partner or contrast it with the official domain.
 - Preserve or improve prior-release differentiation. Do not name the publishers
   of previous releases or collapse the new article back onto their main intent.
+- Preserve a natural contextual backlink to each valid supplied prior-release
+  URL.
 - Keep one clean CTA near the opening and distribute later CTAs naturally.
 - Preserve the exact MBK HTML contract: no body H1; every H2/H3 and CTA anchor
   contains STRONG; 10–14 additional STRONG.key-takeaway phrases; 5–6 strategic links for
@@ -226,6 +243,9 @@ compliance report below.
 - If this is an AccessNewsWire financial newsletter/research review, build
   toward 2,200–3,000 useful, source-grounded words. Expand missing reader
   questions and product-specific analysis, never generic investment filler.
+- If this is a Barchart device review, build toward 2,200–2,800 useful,
+  source-grounded words and fully answer mechanism, evidence, price, setup,
+  fit/not-fit, limitations, trust, current terms, and practical alternatives.
 
 LEARNED ISSUE MEMORY:
 {memory}
@@ -265,6 +285,8 @@ for maximum defensible SEO and conversion performance.
 - Compare against supplied previous releases without naming their publishers.
   Strengthen a distinct keyword intent and angle; do not imitate their headline,
   opening, or section sequence.
+- Keep one natural contextual backlink to each valid supplied prior release.
+  Make the new title promise, opening thesis, and H2 spine visibly complementary.
 - Keep the first affiliate CTA near the opening and space later CTAs naturally
   across the article. Output no body H1. Explicitly bold every H2/H3 and CTA
   anchor with STRONG, preserve 10–14 STRONG.key-takeaway phrases, and use 5–6

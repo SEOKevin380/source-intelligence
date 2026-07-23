@@ -29,9 +29,32 @@ def _parse_intake_urls(raw_value: str) -> list:
         return []
     return [
         value.strip()
-        for value in re.split(r"[,\n\r]+", raw_value)
+        for value in re.split(r"[,;\n\r|]+", raw_value)
         if value.strip().startswith(("http://", "https://"))
     ]
+
+
+def _contextual_page_profile(source_type: str, source_url: str, content: str) -> dict:
+    """Preserve safe structural intelligence from prior/competitor releases."""
+    raw = str(content or "")
+    title_match = re.search(r"<title\b[^>]*>(.*?)</title>", raw, re.I | re.S)
+    headings = re.findall(r"<h[1-3]\b[^>]*>(.*?)</h[1-3]>", raw, re.I | re.S)
+
+    def clean(value):
+        value = re.sub(r"<[^>]+>", " ", value or "")
+        return re.sub(r"\s+", " ", value).strip()
+
+    plain = clean(raw)
+    return {
+        "source_type": source_type,
+        "url": source_url,
+        "title": clean(title_match.group(1)) if title_match else "",
+        "headings": [clean(item) for item in headings if clean(item)][:24],
+        "opening_excerpt": plain[:1800],
+        "captured_characters": len(plain),
+        "content_sha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+        "usable_for_differentiation": len(plain) >= 500,
+    }
 
 
 def _normalize_publishing_channel(value: str) -> str:
@@ -359,6 +382,7 @@ def handle_acquire(job: Job) -> dict:
         # Affiliate, previous, and competitor pages are contextual sources.
         # Capture them separately and never let them satisfy mandatory facts.
         contextual_sources = []
+        contextual_source_profiles = []
         affiliate_url = job.metadata.get("affiliate_link", "")
         if affiliate_url:
             contextual_sources.append(("affiliate_page", affiliate_url))
@@ -372,13 +396,22 @@ def handle_acquire(job: Job) -> dict:
         )
         for source_type, source_url in contextual_sources:
             try:
-                aid, _ = acq.fetch_third_party(
+                aid, contextual_text = acq.fetch_third_party(
                     source_url, phase="ACQUIRE_CONTEXT",
                     notes=f"Intake source: {source_type}",
                 )
+                profile = _contextual_page_profile(
+                    source_type, source_url, contextual_text
+                )
+                profile["artifact_id"] = aid
+                contextual_source_profiles.append(profile)
                 stored_artifacts.append({"artifact_id": aid, "type": source_type})
                 source_manifest.append({"type": source_type, "url": source_url,
-                                        "status": "captured", "artifact_id": aid})
+                                        "status": "captured", "artifact_id": aid,
+                                        "captured_characters": profile["captured_characters"],
+                                        "content_sha256": profile["content_sha256"],
+                                        "usable_for_differentiation":
+                                            profile["usable_for_differentiation"]})
             except Exception as e:
                 errors.append(f"{source_type} capture failed: {e}")
                 source_manifest.append({"type": source_type, "url": source_url,
@@ -459,6 +492,7 @@ def handle_acquire(job: Job) -> dict:
         "errors": errors,
         "source_manifest": source_manifest,
         "marketing_artifact_id": marketing_artifact_id,
+        "contextual_source_profiles": contextual_source_profiles,
         "intake_complete": not any(
             s.get("status") == "failed" for s in source_manifest
         ),
@@ -3236,6 +3270,8 @@ def handle_source_pack(job: Job) -> dict:
         "intake_manifest": intake_manifest,
         "intake_manifest_hash": intake_manifest_hash,
         "source_manifest": source_manifest,
+        "contextual_source_profiles":
+            acquire_result.get("contextual_source_profiles", []),
         "intake_complete": acquire_result.get("intake_complete", False),
         "ingredient_research": ingredient_research,
         "safety": safety_data,

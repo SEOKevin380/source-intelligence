@@ -82,7 +82,7 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert first == second
     project = engine.get(first)
     assert project["stage"] == "source_ready"
-    assert "AUTOMATION CONTEXT VERSION: approved-exemplars-html-depth-scoped-v4" in project["source_text"]
+    assert "AUTOMATION CONTEXT VERSION: serp-differentiation-depth-v5" in project["source_text"]
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
     assert any(e["event_type"] == "sealed_source_pack_imported" for e in engine.events(first))
 
@@ -133,6 +133,41 @@ def test_article_diagnostics_proves_html_contract(tmp_path):
     assert diagnostics["workflow_version"] == "test-v1"
     assert diagnostics["has_code_fence"] is False
     assert diagnostics["has_article_html"] is True
+
+
+def test_barchart_device_cannot_package_thin_long_form():
+    article = (
+        "<p>Paid Advertorial: A commission may be earned.</p>"
+        "<h2><strong>What It Is</strong></h2>"
+        + "<p>Useful source-grounded product detail.</p>" * 120
+    )
+    findings = deterministic_findings(
+        article, "Barchart Advertorial", "device"
+    )
+    ids = {item["id"] for item in findings}
+    assert "D18" in ids
+    blockers, _ = partition_findings(findings)
+    assert "D18" in {item["id"] for item in blockers}
+
+
+def test_barchart_affiliate_links_are_added_and_bolded():
+    html = "".join(
+        [
+            "<p>Paid Advertorial: Compensation may be received if a purchase "
+            "is made through links in this advertorial.</p>",
+            *(
+                f"<h2><strong>Section {i}</strong></h2>"
+                f"<p>This is useful product-specific detail number {i}.</p>"
+                for i in range(1, 8)
+            ),
+        ]
+    )
+    repaired = repair_publication_gates(
+        html, "Barchart Advertorial", "device",
+        "https://example.com/product",
+    )
+    assert repaired.count('href="https://example.com/product"') == 4
+    assert '<a href="https://example.com/product"><strong>' in repaired
 
 
 def test_routing_uses_stronger_final_review_only_for_higher_risk():
@@ -357,7 +392,7 @@ def test_affiliate_link_formatter_adds_early_varied_ctas_to_five():
     body += f'<p><a href="{href}"><strong>Existing CTA</strong></a></p>'
     normalized = ensure_affiliate_links(body, href, target=5)
     assert normalized.count(f'href="{href}"') == 5
-    assert "See current subscription pricing" in normalized
+    assert "See current pricing and available package options" in normalized
 
 
 def test_recurring_review_issues_become_memory(tmp_path):
@@ -436,7 +471,7 @@ def test_legacy_reviewer_admin_state_recovers_without_global_counters(tmp_path):
         pid,
         "<p><strong>Paid Advertorial</strong></p>"
         "<p>Investing involves risk, including loss of principal.</p>"
-        + ("<p>Useful sourced newsletter information for readers.</p>" * 320),
+            + ("<p>Useful sourced newsletter information for readers.</p>" * 450),
     )
     p = engine.get(pid)
     report = {
@@ -504,7 +539,7 @@ def test_structured_source_conflict_is_autoresolved_not_sent_to_admin(tmp_path):
         "<p><strong>Paid Advertorial</strong></p>"
         "<p>Investing involves risk, including loss of principal.</p>"
         "<h2>Review</h2><p>The offer costs $77.</p>"
-        + ("<p>Useful sourced newsletter information for readers.</p>" * 320),
+            + ("<p>Useful sourced newsletter information for readers.</p>" * 450),
         "revised", "test-source-conflict.html",
     )
     p = engine.get(pid)
@@ -639,7 +674,7 @@ def test_deterministic_publication_defects_self_repair_without_admin(tmp_path):
     article = (
         "<h1>Newsletter Review</h1><h2>What Readers Receive</h2>"
         "<p>Source Intelligence summary for this guaranteed trial.</p>"
-        + ("<p>Useful sourced newsletter discussion for readers.</p>" * 320)
+            + ("<p>Useful sourced newsletter discussion for readers.</p>" * 450)
     )
     engine.import_manual_article(pid, article)
     assert engine._complete_adjudicated_signoff(
@@ -659,7 +694,7 @@ def test_publication_gate_repair_hides_raw_url_and_adds_required_structure():
         "<p>Source Intelligence says this is a guaranteed trial.</p>"
         '<p><a href="https://partner.example/offer">'
         "https://partner.example/offer</a></p>"
-        + ("<p>Useful sourced discussion for readers.</p>" * 320)
+        + ("<p>Useful sourced discussion for readers.</p>" * 450)
     )
     repaired = repair_publication_gates(
         article,
@@ -686,7 +721,7 @@ def test_legacy_mechanical_admin_project_recovers_and_resumes(tmp_path):
     engine.import_manual_article(
         pid,
         "<h2>Newsletter Details</h2>"
-        + ("<p>Useful sourced newsletter discussion for readers.</p>" * 320),
+            + ("<p>Useful sourced newsletter discussion for readers.</p>" * 450),
     )
     p = engine.get(pid)
     findings = deterministic_findings(

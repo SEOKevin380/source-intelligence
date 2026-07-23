@@ -30,7 +30,7 @@ from .formatting import (
 from .routing import estimated_cost, route_for
 
 
-WORKBENCH_SOURCE_CONTEXT_VERSION = "approved-exemplars-html-depth-scoped-v4"
+WORKBENCH_SOURCE_CONTEXT_VERSION = "serp-differentiation-depth-v5"
 
 STAGES = (
     "source_ready",
@@ -922,8 +922,11 @@ class WorkbenchEngine:
         word_count = len(re.findall(r"\b[\w’'-]+\b", plain))
         article = normalize_master_html(article, word_count)
         affiliate_match = re.search(r"(?im)^AFFILIATE LINK:\s*(\S+)", p["source_text"])
-        if p["platform"] == "AccessNewsWire" and word_count >= 1200 and affiliate_match:
-            article = ensure_affiliate_links(article, affiliate_match.group(1), target=5)
+        if word_count >= 1200 and affiliate_match:
+            target = 5 if p["platform"] == "AccessNewsWire" else 4
+            article = ensure_affiliate_links(
+                article, affiliate_match.group(1), target=target
+            )
         digest = _hash(title + "\n" + article)
         round_no = p["revision_round"] + (1 if bump else 0)
         with self._connect() as conn:
