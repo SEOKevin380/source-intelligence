@@ -112,7 +112,7 @@ ARTICLE:
 
 
 def revision_prompt(source_text: str, article: str, report: dict,
-                    platform: str, vertical: str) -> str:
+                    platform: str, vertical: str, memory: str = "") -> str:
     return f"""Revise the {platform} {vertical} advertorial using the independent
 compliance report below.
 
@@ -122,6 +122,13 @@ compliance report below.
 - Do not refuse, debate the assignment, ask questions, or print process notes.
 - Do not fabricate facts or first-hand experience.
 - Return the complete revised article HTML only.
+- The publishing platform is not the affiliate. Never say AccessNewsWire or
+  Barchart earns or receives the affiliate compensation.
+- Use the house-standard passive disclosure: “Compensation may be received if
+  a subscription is purchased through links in this advertorial.”
+
+LEARNED ISSUE MEMORY:
+{memory}
 
 SOURCE RECORD:
 {source_text}

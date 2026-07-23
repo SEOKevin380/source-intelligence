@@ -16,6 +16,10 @@ from .prompts import (
     revision_prompt,
     seo_prompt,
 )
+from .learning import (
+    PROMPT_VERSION, deterministic_findings, issue_fingerprint,
+    learned_guidance,
+)
 
 
 STAGES = (
@@ -25,6 +29,8 @@ STAGES = (
     "revised",
     "signed_off",
     "seo_optimized",
+    "seo_repair_needed",
+    "seo_repaired",
     "post_seo_signed_off",
     "package_ready",
     "admin_review",
@@ -84,6 +90,27 @@ class WorkbenchEngine:
                     payload TEXT DEFAULT '{}',
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS issue_observations (
+                    event_id INTEGER NOT NULL,
+                    project_id TEXT NOT NULL,
+                    platform TEXT NOT NULL,
+                    vertical TEXT NOT NULL,
+                    fingerprint TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    issue TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(event_id, fingerprint)
+                );
+                CREATE TABLE IF NOT EXISTS adjudications (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id TEXT NOT NULL,
+                    source_article_hash TEXT NOT NULL,
+                    result_article_hash TEXT DEFAULT '',
+                    applied_count INTEGER DEFAULT 0,
+                    skipped_count INTEGER DEFAULT 0,
+                    payload TEXT DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
                 CREATE TRIGGER IF NOT EXISTS trg_events_no_update
                 BEFORE UPDATE ON events BEGIN
                   SELECT RAISE(ABORT, 'workbench events are immutable');
@@ -93,6 +120,7 @@ class WorkbenchEngine:
                   SELECT RAISE(ABORT, 'workbench events are immutable');
                 END;
             """)
+        self._backfill_issue_memory()
 
     def create_project(self, title, platform, source_text, vertical="auto"):
         source_text = source_text.strip()
@@ -150,6 +178,8 @@ class WorkbenchEngine:
             "revised": "Run ChatGPT sign-off",
             "signed_off": "Run Claude SEO optimization",
             "seo_optimized": "Run post-SEO ChatGPT regression",
+            "seo_repair_needed": "Repair SEO compliance regressions with Claude",
+            "seo_repaired": "Recheck repaired SEO article with ChatGPT",
             "post_seo_signed_off": "Build submission package",
             "package_ready": "Complete",
             "admin_review": "Kevin review queue",
@@ -176,16 +206,22 @@ class WorkbenchEngine:
             report = self._openai_review(p, final=False)
             self._set_report(p, report, "compliance_reviewed", "02-openai-review.json")
         elif stage == "compliance_reviewed":
+            memory = self._learned_guidance(p["platform"], p["vertical"])
             article = self._claude(revision_prompt(
                 p["source_text"], p["article_text"], p["last_report"],
-                p["platform"], p["vertical"]
+                p["platform"], p["vertical"], memory,
             ))
             self._set_article(p, article, "revised", "03-claude-revision.html", bump=True)
         elif stage == "revised":
             report = self._openai_review(p, final=True)
             if report.get("verdict") != "approved":
                 if p["revision_round"] >= 3:
-                    self._set_report(p, report, "admin_review", "04-openai-signoff.json")
+                    if self._adjudication_count(p["id"]) < 2:
+                        self._set_report(p, report, "revised", "04-openai-signoff.json")
+                        if not self._adjudicate_current(self.get(p["id"]), report):
+                            self._set_stage(p["id"], "admin_review")
+                    else:
+                        self._set_report(p, report, "admin_review", "04-openai-signoff.json")
                 else:
                     self._set_report(p, report, "compliance_reviewed", "04-openai-signoff.json")
             else:
@@ -199,11 +235,26 @@ class WorkbenchEngine:
             report = self._openai_review(p, final=True)
             if report.get("verdict") == "approved":
                 target = "post_seo_signed_off"
-            elif p["revision_round"] >= 3:
-                target = "admin_review"
             else:
-                target = "compliance_reviewed"
+                target = "seo_repair_needed"
             self._set_report(p, report, target, "06-openai-post-seo.json")
+        elif stage == "seo_repair_needed":
+            memory = self._learned_guidance(p["platform"], p["vertical"])
+            article = self._claude(revision_prompt(
+                p["source_text"], p["article_text"], p["last_report"],
+                p["platform"], p["vertical"], memory,
+            ))
+            self._set_article(p, article, "seo_repaired", "07-claude-seo-repair.html")
+        elif stage == "seo_repaired":
+            report = self._openai_review(p, final=True)
+            if report.get("verdict") == "approved":
+                self._set_report(p, report, "post_seo_signed_off", "08-openai-post-seo-signoff.json")
+            elif self._adjudication_count(p["id"]) < 4:
+                self._set_report(p, report, "seo_repaired", "08-openai-post-seo-signoff.json")
+                if not self._adjudicate_current(self.get(p["id"]), report, target_stage="seo_repaired"):
+                    self._set_stage(p["id"], "admin_review")
+            else:
+                self._set_report(p, report, "admin_review", "08-openai-post-seo-signoff.json")
         elif stage == "post_seo_signed_off":
             self._build_package(p)
         return self.get(project_id)
@@ -263,6 +314,18 @@ class WorkbenchEngine:
             text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.S)
         report = json.loads(text)
         report["reviewed_article_hash"] = p["article_hash"]
+        report["prompt_version"] = PROMPT_VERSION
+        deterministic = deterministic_findings(
+            p["article_text"], p["platform"], p["vertical"]
+        )
+        if deterministic:
+            existing = report.setdefault("mandatory_edits", [])
+            existing_ids = {item.get("id") for item in existing}
+            for item in deterministic:
+                if item["id"] not in existing_ids:
+                    existing.append(item)
+            report["mandatory_count"] = len(existing)
+            report["verdict"] = "not_approved"
         return report
 
     def _set_article(self, p, article, stage, filename, bump=False):
@@ -289,7 +352,8 @@ class WorkbenchEngine:
                 (json.dumps(report), stage, _now(), p["id"]),
             )
         self._write(p["id"], filename, json.dumps(report, indent=2, ensure_ascii=False))
-        self._event(p["id"], "compliance_report", stage, p["article_hash"], report)
+        event_id = self._event(p["id"], "compliance_report", stage, p["article_hash"], report)
+        self._record_issue_observations(event_id, p, report)
 
     def _build_package(self, p):
         manifest = {
@@ -304,6 +368,78 @@ class WorkbenchEngine:
             conn.execute("UPDATE projects SET stage='package_ready',updated_at=? WHERE id=?", (_now(), p["id"]))
         self._event(p["id"], "package_ready", "package_ready", p["article_hash"], manifest)
 
+    def _adjudication_count(self, project_id):
+        with self._connect() as conn:
+            return conn.execute(
+                "SELECT COUNT(*) FROM adjudications WHERE project_id=?", (project_id,)
+            ).fetchone()[0]
+
+    def _set_stage(self, project_id, stage):
+        with self._connect() as conn:
+            conn.execute("UPDATE projects SET stage=?,updated_at=? WHERE id=?", (stage, _now(), project_id))
+
+    @staticmethod
+    def _unsafe_reviewer_replacement(text):
+        lowered = text.casefold()
+        return any(pattern in lowered for pattern in (
+            "accessnewswire may receive compensation",
+            "barchart may receive compensation",
+            "this advertorial may earn compensation",
+            "this advertorial may receive compensation",
+            "we may earn", "we receive compensation", "our affiliate",
+        ))
+
+    def _adjudicate_current(self, p, report, target_stage="revised"):
+        """Apply safe exact reviewer edits while rejecting stale/contradictory ones."""
+        article = p["article_text"]
+        original = article
+        applied, skipped = [], []
+        for item in report.get("mandatory_edits", []) or []:
+            exact = str(item.get("exact_text", "") or "")
+            replacement = str(item.get("replacement", "") or "")
+            replacement = replacement.replace(
+                "This advertorial may receive compensation if readers click the partner link and subscribe.",
+                "Compensation may be received if a subscription is purchased through the partner link in this advertorial.",
+            )
+            if not exact or exact not in article:
+                skipped.append({"id": item.get("id"), "reason": "exact_text_not_current"})
+                continue
+            if not replacement or self._unsafe_reviewer_replacement(replacement):
+                skipped.append({"id": item.get("id"), "reason": "replacement_conflicts_with_house_rules"})
+                continue
+            article = article.replace(exact, replacement, 1)
+            applied.append(item.get("id"))
+
+        # Remove source-advertiser urgency wording even when a reviewer points
+        # at the wrong exact sentence. This is a safe, meaning-preserving edit.
+        for phrase, replacement in (
+            (' "almost immediately"', ' promptly'),
+            (' "must move fast"', ' should review the timing described'),
+            (' "window is beginning to close"', ' timing is discussed in the offer materials'),
+        ):
+            if phrase in article:
+                article = article.replace(phrase, replacement)
+                applied.append("house_urgency_rewrite")
+
+        source_hash = p["article_hash"]
+        result_hash = _hash(article) if article != original else ""
+        payload = {"applied": applied, "skipped": skipped, "prompt_version": PROMPT_VERSION}
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT INTO adjudications(project_id,source_article_hash,result_article_hash,applied_count,skipped_count,payload,created_at) VALUES(?,?,?,?,?,?,?)",
+                (p["id"], source_hash, result_hash, len(applied), len(skipped), json.dumps(payload), _now()),
+            )
+        if article == original:
+            return False
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE projects SET article_text=?,article_hash=?,stage=?,updated_at=? WHERE id=?",
+                (article, result_hash, target_stage, _now(), p["id"]),
+            )
+        self._write(p["id"], "07-adjudicated-revision.html", article)
+        self._event(p["id"], "adjudicated_revision", target_stage, result_hash, payload)
+        return True
+
     def _write(self, project_id, filename, content):
         directory = self.projects_dir / project_id
         directory.mkdir(parents=True, exist_ok=True)
@@ -311,8 +447,54 @@ class WorkbenchEngine:
 
     def _event(self, project_id, event_type, stage, article_hash, payload):
         with self._connect() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 "INSERT INTO events(project_id,event_type,stage,article_hash,payload,created_at) VALUES(?,?,?,?,?,?)",
                 (project_id, event_type, stage, article_hash,
                  json.dumps(payload, ensure_ascii=False), _now()),
             )
+            return cursor.lastrowid
+
+    def _record_issue_observations(self, event_id, project, report):
+        with self._connect() as conn:
+            for item in report.get("mandatory_edits", []) or []:
+                category = str(item.get("category", "Uncategorized"))
+                issue = str(item.get("issue", "Unknown issue"))
+                conn.execute(
+                    "INSERT OR IGNORE INTO issue_observations VALUES(?,?,?,?,?,?,?,?)",
+                    (event_id, project["id"], project["platform"], project["vertical"],
+                     issue_fingerprint(category, issue), category, issue, _now()),
+                )
+
+    def _backfill_issue_memory(self):
+        with self._connect() as conn:
+            rows = conn.execute("""
+                SELECT e.id,e.project_id,e.payload,e.created_at,p.platform,p.vertical
+                FROM events e JOIN projects p ON p.id=e.project_id
+                WHERE e.event_type='compliance_report'
+            """).fetchall()
+            for row in rows:
+                try:
+                    report = json.loads(row["payload"] or "{}")
+                except json.JSONDecodeError:
+                    continue
+                for item in report.get("mandatory_edits", []) or []:
+                    category = str(item.get("category", "Uncategorized"))
+                    issue = str(item.get("issue", "Unknown issue"))
+                    conn.execute(
+                        "INSERT OR IGNORE INTO issue_observations VALUES(?,?,?,?,?,?,?,?)",
+                        (row["id"], row["project_id"], row["platform"], row["vertical"],
+                         issue_fingerprint(category, issue), category, issue, row["created_at"]),
+                    )
+
+    def _learned_guidance(self, platform, vertical):
+        with self._connect() as conn:
+            rows = conn.execute("""
+                SELECT category,issue,COUNT(*) AS occurrences
+                FROM issue_observations
+                WHERE platform=? AND vertical=?
+                GROUP BY fingerprint
+                HAVING COUNT(*) >= 2
+                ORDER BY occurrences DESC, category
+                LIMIT 20
+            """, (platform, vertical)).fetchall()
+        return learned_guidance([dict(row) for row in rows])
