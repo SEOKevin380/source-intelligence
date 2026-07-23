@@ -15,6 +15,12 @@ if [ -f "$WORKBENCH_ENV" ]; then
 fi
 
 cd "$REPO_DIR"
+
+if curl -fsS "http://127.0.0.1:8101/_stcore/health" >/dev/null 2>&1; then
+  echo "Newswire Compliance Workbench is already running at http://127.0.0.1:8101"
+  exit 0
+fi
+
 exec python3 -m streamlit run newswire_workbench_app.py \
   --server.address 127.0.0.1 \
   --server.port 8101 \
