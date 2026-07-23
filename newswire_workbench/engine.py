@@ -373,12 +373,31 @@ class WorkbenchEngine:
             ), p["id"], "repair", p["vertical"])
             self._set_article(p, article, "revised", "03-claude-revision.html", bump=True)
         elif stage == "revised":
+            # Recover projects created before adjudicated sign-off advanced the
+            # state. If the paid review ceiling is already exhausted, validate
+            # the mechanically corrected article instead of calling the model
+            # a third time.
+            final_route = route_for("final_signoff", p["vertical"])
+            if (
+                self._billable_call_count(p["id"], "final_signoff")
+                >= final_route.max_calls
+                and self._adjudication_count(p["id"]) > 0
+            ):
+                self._complete_adjudicated_signoff(
+                    p["id"], "signed_off", "04-adjudicated-signoff.json"
+                )
+                return self.get(project_id)
             report = self._openai_review(p, final=True, purpose="final_signoff")
             if report.get("verdict") != "approved":
                 if p["revision_round"] >= 2:
                     if self._adjudication_count(p["id"]) < 2:
                         self._set_report(p, report, "revised", "04-openai-signoff.json")
-                        if not self._adjudicate_current(self.get(p["id"]), report):
+                        if self._adjudicate_current(self.get(p["id"]), report):
+                            self._complete_adjudicated_signoff(
+                                p["id"], "signed_off",
+                                "04-adjudicated-signoff.json",
+                            )
+                        else:
                             self._set_stage(p["id"], "admin_review")
                     else:
                         self._set_report(p, report, "admin_review", "04-openai-signoff.json")
@@ -408,6 +427,17 @@ class WorkbenchEngine:
             ), p["id"], "repair", p["vertical"])
             self._set_article(p, article, "seo_repaired", "07-claude-seo-repair.html", bump=True)
         elif stage == "seo_repaired":
+            post_route = route_for("post_seo_signoff", p["vertical"])
+            if (
+                self._billable_call_count(p["id"], "post_seo_signoff")
+                >= post_route.max_calls
+                and self._adjudication_count(p["id"]) > 0
+            ):
+                self._complete_adjudicated_signoff(
+                    p["id"], "post_seo_signed_off",
+                    "08-adjudicated-post-seo-signoff.json",
+                )
+                return self.get(project_id)
             report = self._openai_review(p, final=True, purpose="post_seo_signoff")
             if report.get("verdict") == "approved":
                 self._set_report(p, report, "post_seo_signed_off", "08-openai-post-seo-signoff.json")
@@ -415,7 +445,14 @@ class WorkbenchEngine:
                 self._set_report(p, report, "seo_repair_needed", "08-openai-post-seo-signoff.json")
             elif self._adjudication_count(p["id"]) < 4:
                 self._set_report(p, report, "seo_repaired", "08-openai-post-seo-signoff.json")
-                if not self._adjudicate_current(self.get(p["id"]), report, target_stage="seo_repaired"):
+                if self._adjudicate_current(
+                    self.get(p["id"]), report, target_stage="seo_repaired"
+                ):
+                    self._complete_adjudicated_signoff(
+                        p["id"], "post_seo_signed_off",
+                        "08-adjudicated-post-seo-signoff.json",
+                    )
+                else:
                     self._set_stage(p["id"], "admin_review")
             else:
                 self._set_report(p, report, "admin_review", "08-openai-post-seo-signoff.json")
@@ -601,13 +638,8 @@ class WorkbenchEngine:
             )
 
     def _assert_call_budget(self, project_id, stage, route):
+        stage_calls = self._billable_call_count(project_id, stage)
         with self._connect() as conn:
-            stage_calls = conn.execute(
-                """SELECT COUNT(*) FROM llm_calls
-                WHERE project_id=? AND stage=?
-                AND (status='success' OR estimated_cost>0)""",
-                (project_id, stage),
-            ).fetchone()[0]
             spent = conn.execute(
                 "SELECT COALESCE(SUM(estimated_cost),0) FROM llm_calls WHERE project_id=?",
                 (project_id,),
@@ -621,6 +653,15 @@ class WorkbenchEngine:
             raise RuntimeError(
                 f"Project AI budget ceiling (${ceiling:.2f}) reached; no additional paid call was made"
             )
+
+    def _billable_call_count(self, project_id, stage):
+        with self._connect() as conn:
+            return conn.execute(
+                """SELECT COUNT(*) FROM llm_calls
+                WHERE project_id=? AND stage=?
+                AND (status='success' OR estimated_cost>0)""",
+                (project_id, stage),
+            ).fetchone()[0]
 
     def usage_summary(self, project_id):
         with self._connect() as conn:
@@ -817,6 +858,35 @@ class WorkbenchEngine:
             )
         self._write(p["id"], "07-adjudicated-revision.html", article)
         self._event(p["id"], "adjudicated_revision", target_stage, result_hash, payload)
+        return True
+
+    def _complete_adjudicated_signoff(self, project_id, target_stage, filename):
+        """Approve a mechanically corrected article after deterministic gates pass."""
+        p = self.get(project_id)
+        findings = deterministic_findings(
+            p["article_text"], p["platform"], p["vertical"]
+        )
+        if findings:
+            self._set_stage(project_id, "admin_review")
+            self._event(
+                project_id, "adjudication_unresolved", "admin_review",
+                p["article_hash"], {"findings": findings},
+            )
+            return False
+        approval = {
+            "verdict": "approved",
+            "mandatory_count": 0,
+            "mandatory_edits": [],
+            "recommended_edits": [],
+            "approved_elements": [
+                "All actionable reviewer edits were applied exactly",
+                "Deterministic publication gates passed after adjudication",
+            ],
+            "notes": ["Approved by bounded deterministic adjudication; no extra paid review required."],
+            "reviewed_article_hash": p["article_hash"],
+            "prompt_version": PROMPT_VERSION,
+        }
+        self._set_report(p, approval, target_stage, filename)
         return True
 
     def _write(self, project_id, filename, content):

@@ -296,6 +296,31 @@ def test_adjudicator_applies_exact_fixes_and_rejects_bad_platform_attribution(tm
     assert "AccessNewsWire may receive" not in updated
 
 
+def test_adjudicated_article_advances_without_third_paid_signoff(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project("Test", "Barchart Advertorial", "financial source", "financial")
+    engine.import_manual_article(
+        pid,
+        "<p><strong>Paid Advertorial</strong></p>"
+        "<p>Investments carry risk, including loss of principal.</p>"
+        "<p>Old wording</p>",
+    )
+    p = engine.get(pid)
+    report = {"mandatory_edits": [
+        {"id": "M1", "exact_text": "<p>Old wording</p>",
+         "replacement": "<p>Updated factual wording</p>"},
+    ]}
+    assert engine._adjudicate_current(p, report) is True
+    from unittest.mock import patch
+    with patch("newswire_workbench.engine.deterministic_findings", return_value=[]):
+        assert engine._complete_adjudicated_signoff(
+            pid, "signed_off", "adjudicated-signoff.json"
+        ) is True
+    updated = engine.get(pid)
+    assert updated["stage"] == "signed_off"
+    assert updated["last_report"]["verdict"] == "approved"
+
+
 def test_reviewer_house_rule_conflicts_cannot_block(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     report = {"verdict": "not_approved", "mandatory_count": 2,
