@@ -2342,11 +2342,21 @@ else:
                     _failed_diagnostics = _workbench.article_diagnostics(
                         _active_project_id
                     )
-                    st.warning(
-                        "This run did not pass the publication gates. Click "
-                        "**Rebuild With Latest Workflow** above; a clean, "
-                        "product-scoped run will be created automatically."
-                    )
+                    if _workbench.can_recover_locked_pre_signoff(
+                        _active_project_id
+                    ):
+                        st.warning(
+                            "The workflow preserved its remaining paid-call "
+                            "capacity and has a zero-cost owned recovery. Click "
+                            "**Resume Current Workflow** above; it will repair "
+                            "the exact project before any final review call."
+                        )
+                    else:
+                        st.warning(
+                            "This run did not pass the publication gates. Click "
+                            "**Rebuild With Latest Workflow** above; a clean, "
+                            "product-scoped run will be created automatically."
+                        )
                     st.caption(
                         "Remaining gates: "
                         + ", ".join(

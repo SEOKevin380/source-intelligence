@@ -1472,6 +1472,46 @@ def test_duplicate_paid_run_is_blocked_and_stale_lock_recovers(tmp_path, monkeyp
     assert any(e["event_type"] == "stale_run_recovered" for e in engine.events(pid))
 
 
+def test_three_call_d18_stop_is_resumable_from_paid_artifacts(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    article = (
+        "<p><strong>Paid Advertorial:</strong> A commission may be earned.</p>"
+        + "".join(
+            f"<p>Seller materials describe buyer detail {index} with useful "
+            "source-grounded context for evaluating the current offer.</p>"
+            for index in range(90)
+        )
+    )
+    engine._set_article(
+        engine.get(pid), article, "revised", "03-claude-revision.html"
+    )
+    engine._write(pid, "01-claude-draft.html", article)
+    for purpose in ("draft", "compliance", "compliance_repair"):
+        engine._record_llm_call(
+            pid, purpose, route_for(purpose, "device"), 100, 100
+        )
+    engine._set_stage(pid, "admin_review")
+    engine._event(
+        pid, "pre_signoff_blocked", "admin_review",
+        engine.get(pid)["article_hash"],
+        {"blockers": [{"id": "D18", "issue": "Draft is short."}]},
+    )
+    assert engine.can_recover_locked_pre_signoff(pid) is True
+
+
 def test_overwritten_artifact_is_archived(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     pid = engine.create_project("Test", "AccessNewsWire", "device source")

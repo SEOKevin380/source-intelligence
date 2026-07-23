@@ -11,6 +11,8 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
+from bs4 import BeautifulSoup
+
 from .prompts import (
     compliance_prompt,
     detect_vertical,
@@ -728,7 +730,7 @@ class WorkbenchEngine:
         return [dict(r) for r in rows]
 
     def can_recover_locked_pre_signoff(self, project_id):
-        """Return whether an admin stop contains only owned mechanical gates."""
+        """Return whether an admin stop has a zero-cost owned recovery."""
         p = self.get(project_id)
         if p["stage"] != "admin_review" or not self._uses_locked_call_path(p):
             return False
@@ -742,6 +744,18 @@ class WorkbenchEngine:
         if isinstance(payload, str):
             payload = json.loads(payload)
         blockers = payload.get("blockers") or []
+        blocker_ids = {item.get("id") for item in blockers}
+        depth_recoverable = (
+            blocker_ids == {"D18"}
+            and self.usage_summary(project_id)["calls"] == 3
+            and self._billable_call_count(project_id, "final_signoff") == 0
+            and (self.projects_dir / project_id / "01-claude-draft.html").exists()
+            and (
+                self.projects_dir / project_id / "03-claude-revision.html"
+            ).exists()
+        )
+        if depth_recoverable:
+            return True
         if not blockers or not all(
             item.get("id") in MECHANICAL_GATES for item in blockers
         ):
@@ -1098,6 +1112,8 @@ class WorkbenchEngine:
         if isinstance(payload, str):
             payload = json.loads(payload)
         blockers = payload.get("blockers") or []
+        if {item.get("id") for item in blockers} == {"D18"}:
+            return self._recover_depth_from_paid_artifacts(project_id)
         if not blockers or any(
             item.get("id") not in MECHANICAL_GATES for item in blockers
         ):
@@ -1119,6 +1135,131 @@ class WorkbenchEngine:
             {
                 "repaired_gates": [item.get("id") for item in blockers],
                 "paid_calls_added": 0,
+                "operator_decision_required": False,
+            },
+        )
+        return True
+
+    def _recover_depth_from_paid_artifacts(self, project_id):
+        """Reconcile safe unique blocks from both paid writer outputs."""
+        p = self.get(project_id)
+        project_dir = self.projects_dir / project_id
+        draft_path = project_dir / "01-claude-draft.html"
+        repair_path = project_dir / "03-claude-revision.html"
+        if not draft_path.exists() or not repair_path.exists():
+            return False
+
+        report_path = project_dir / "02-openai-review.json"
+        try:
+            report = json.loads(report_path.read_text()) if report_path.exists() else {}
+        except (OSError, json.JSONDecodeError):
+            report = {}
+        prohibited = [
+            re.sub(r"\s+", " ", str(item.get("exact_text") or "")).strip().casefold()
+            for item in report.get("mandatory_edits", [])
+            if str(item.get("exact_text") or "").strip()
+        ]
+
+        base = BeautifulSoup(p["article_text"], "html.parser")
+        existing_blocks = [
+            re.sub(r"\s+", " ", node.get_text(" ", strip=True)).casefold()
+            for node in base.find_all(["p", "li"])
+        ]
+        existing_tokens = [
+            set(re.findall(r"[a-z0-9]+", value))
+            for value in existing_blocks if value
+        ]
+        additions = []
+        assembled_words = self._article_word_count(p["article_text"])
+        target_words = 1800
+        for path in (repair_path, draft_path):
+            source = BeautifulSoup(path.read_text(), "html.parser")
+            for node in source.find_all(["p", "ul", "ol"]):
+                if assembled_words >= target_words:
+                    break
+                text = re.sub(
+                    r"\s+", " ", node.get_text(" ", strip=True)
+                ).strip()
+                lowered = text.casefold()
+                if len(text.split()) < 12:
+                    continue
+                if any(exact and exact in lowered for exact in prohibited):
+                    continue
+                if re.search(
+                    r"\bpaid advertorial\b|\bcommission may be earned\b",
+                    lowered,
+                ):
+                    continue
+                tokens = set(re.findall(r"[a-z0-9]+", lowered))
+                if not tokens:
+                    continue
+                if any(
+                    len(tokens & known) / max(len(tokens | known), 1) >= 0.72
+                    for known in existing_tokens
+                ):
+                    continue
+                additions.append(str(node))
+                existing_tokens.append(tokens)
+                assembled_words += len(re.findall(r"\b[\w’'-]+\b", text))
+            if assembled_words >= target_words:
+                break
+
+        if not additions:
+            return False
+        heading = base.new_tag("h2")
+        strong = base.new_tag("strong")
+        strong.string = "Additional Source-Grounded Buyer Details"
+        heading.append(strong)
+        base.append(heading)
+        for fragment in additions:
+            parsed = BeautifulSoup(fragment, "html.parser")
+            for node in list(parsed.contents):
+                base.append(node)
+
+        merged = repair_source_grounding(
+            str(base), p["source_text"], p["vertical"]
+        )
+        self._set_article(
+            p, merged, "revised", "03c-depth-reconciled.html", bump=False
+        )
+        recovered = self.get(project_id)
+        preflight = audit_article(
+            recovered["article_text"],
+            recovered["platform"],
+            recovered["vertical"],
+            _source_affiliate_link(recovered["source_text"]),
+        )
+        self._persist_preflight_article(recovered, preflight, "revised")
+        recovered = self.get(project_id)
+        remaining = audit_article(
+            recovered["article_text"],
+            recovered["platform"],
+            recovered["vertical"],
+            _source_affiliate_link(recovered["source_text"]),
+        )["blockers"]
+        if remaining:
+            self._set_stage(project_id, "admin_review")
+            self._event(
+                project_id, "depth_reconciliation_incomplete", "admin_review",
+                recovered["article_hash"], {
+                    "remaining_blockers": remaining,
+                    "paid_calls_added": 0,
+                    "operator_decision_required": False,
+                },
+            )
+            return False
+        self._event(
+            project_id, "depth_reconciled_from_paid_artifacts", "revised",
+            recovered["article_hash"], {
+                "source_artifacts": [
+                    draft_path.name, repair_path.name
+                ],
+                "added_blocks": len(additions),
+                "final_words": self._article_word_count(
+                    recovered["article_text"]
+                ),
+                "paid_calls_added": 0,
+                "next_action": "reserved_final_signoff",
                 "operator_decision_required": False,
             },
         )
