@@ -1,6 +1,7 @@
 """Mechanical MBK HTML normalization without rewriting editorial text."""
 
 import html as html_lib
+import json
 import re
 
 from bs4 import BeautifulSoup, NavigableString
@@ -310,38 +311,26 @@ def repair_publication_gates(html, platform, vertical, affiliate_href=""):
 
     # The disclosure and risk statement are mechanical requirements, not
     # editorial judgment calls.
-    lead_text = soup.get_text(" ", strip=True)[:1200].casefold()
-    if "advertorial" not in lead_text:
-        disclosure = BeautifulSoup(
-            "<p><strong>Paid Advertorial</strong></p>", "html.parser"
-        ).p
-        first = soup.find()
-        if first:
-            first.insert_before(disclosure)
-        else:
-            soup.append(disclosure)
-    if (
-        affiliate_href
-        and affiliate_href.upper() != "TRAFFIC-FIRST"
-        and not re.search(
-            r"compensation may be received|a commission may be earned",
-            soup.get_text(" ", strip=True),
-            re.I,
-        )
-    ):
-        compensation = BeautifulSoup(
-            "<p>Compensation may be received if a purchase is made through "
-            "links in this advertorial.</p>",
-            "html.parser",
-        ).p
-        paid = next(
-            (p for p in soup.find_all("p") if "advertorial" in p.get_text().casefold()),
-            None,
-        )
-        if paid:
-            paid.insert_after(compensation)
-        else:
-            soup.insert(0, compensation)
+    for paragraph in list(soup.find_all("p")):
+        paragraph_text = paragraph.get_text(" ", strip=True).casefold()
+        if (
+            "paid advertorial" in paragraph_text
+            or "compensation may be received" in paragraph_text
+            or "a commission may be earned" in paragraph_text
+        ):
+            paragraph.decompose()
+    disclosure_html = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received "
+        "if a purchase is made through links in this advertorial.</p>"
+        if affiliate_href and affiliate_href.upper() != "TRAFFIC-FIRST"
+        else "<p><strong>Paid Advertorial</strong></p>"
+    )
+    disclosure = BeautifulSoup(disclosure_html, "html.parser").p
+    first = soup.find()
+    if first:
+        first.insert_before(disclosure)
+    else:
+        soup.append(disclosure)
     if vertical == "financial" and not re.search(
         r"(?:loss of principal|investments? (?:involve|carry|includes?) risk)",
         soup.get_text(" ", strip=True), re.I,
@@ -437,3 +426,58 @@ def repair_publication_gates(html, platform, vertical, affiliate_href=""):
         # Link insertion can create new nodes, so normalize once more.
         normalized = normalize_master_html(normalized, word_count)
     return normalized
+
+
+def repair_source_grounding(html, source_text, vertical):
+    """Remove excluded-claim echoes and unsupported device filler at zero cost."""
+    soup = BeautifulSoup(ensure_article_html(html), "html.parser")
+    excluded = []
+    marker = "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══"
+    if marker in str(source_text or ""):
+        try:
+            pack = json.loads(str(source_text).split(marker, 1)[1].strip())
+            excluded = [
+                str(item.get("text") or "").strip()
+                for item in pack.get("excluded_publication_claims", [])
+                if str(item.get("text") or "").strip()
+            ]
+        except (TypeError, ValueError, json.JSONDecodeError):
+            excluded = []
+
+    excluded_tokens = []
+    for claim in excluded:
+        tokens = {
+            token for token in re.findall(r"[a-z0-9]+", claim.casefold())
+            if len(token) >= 5 and token not in {
+                "seller", "claim", "claims", "product", "device",
+                "materials", "official", "stated",
+            }
+        }
+        if tokens:
+            excluded_tokens.append(tokens)
+
+    unsupported_device_patterns = (
+        r"\bindustrial\b.{0,100}\bresidential\b|"
+        r"\bresidential\b.{0,100}\bindustrial\b",
+        r"\bdirty electricity\b.{0,100}"
+        r"\b(?:comes?|caused|generated|created|sources?)\b",
+        r"\b(?:cheaper|less expensive|costs? less|low-risk trial)\b.{0,120}"
+        r"\b(?:professional|audit|appliance|upgrade|electrician)\b",
+    )
+    for node in list(soup.find_all(["p", "li"])):
+        lowered = node.get_text(" ", strip=True).casefold()
+        words = set(re.findall(r"[a-z0-9]+", lowered))
+        excluded_echo = any(
+            len(words & tokens) >= min(2, len(tokens))
+            for tokens in excluded_tokens
+        )
+        unsupported_filler = (
+            vertical == "device"
+            and any(
+                re.search(pattern, lowered, re.I | re.S)
+                for pattern in unsupported_device_patterns
+            )
+        )
+        if excluded_echo or unsupported_filler:
+            node.decompose()
+    return str(soup)

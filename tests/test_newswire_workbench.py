@@ -3,6 +3,7 @@ import zipfile
 from unittest.mock import patch
 
 import pytest
+from bs4 import BeautifulSoup
 
 from newswire_workbench.engine import WorkbenchEngine, _source_affiliate_link
 from newswire_workbench.prompts import detect_vertical
@@ -15,6 +16,7 @@ from newswire_workbench.formatting import (
     ensure_affiliate_links,
     normalize_master_html,
     repair_publication_gates,
+    repair_source_grounding,
 )
 from newswire_workbench.routing import risk_tier, route_for
 from source_pack_contract import seal_source_pack
@@ -110,10 +112,12 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert project["stage"] == "source_ready"
     assert (
         "AUTOMATION CONTEXT VERSION: "
-        "serp-differentiation-depth-v8-attributed-source-contract"
+        "serp-differentiation-depth-v9-source-aware-fixed-point"
         in project["source_text"]
     )
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
+    assert "LOCKED GENERATION BLUEPRINT" in project["source_text"]
+    assert "SEO strategy is complete" in project["source_text"]
     assert any(e["event_type"] == "sealed_source_pack_imported" for e in engine.events(first))
 
 
@@ -502,6 +506,89 @@ def test_escaped_html_is_blocked_then_rendered_as_clean_markup():
             repaired, "Barchart Advertorial", "device"
         )
     }
+
+
+def test_disclosure_variants_collapse_to_one_opening_disclosure():
+    article = (
+        "<p><strong>Paid Advertorial</strong></p>"
+        "<p>A commission may be earned through links in this article.</p>"
+        "<p>Compensation may be received if a purchase is made.</p>"
+        "<h2><strong>Product Details</strong></h2><p>Useful detail.</p>"
+    )
+    repaired = repair_publication_gates(
+        article,
+        "Barchart Advertorial",
+        "device",
+        "https://partner.example/device",
+    )
+    plain = BeautifulSoup(repaired, "html.parser").get_text(" ", strip=True)
+    assert plain.casefold().count("paid advertorial") == 1
+    assert plain.casefold().count("compensation may be received") == 1
+
+
+def test_source_aware_repair_removes_complete_ecowatt_objection_family():
+    pack = {
+        "excluded_publication_claims": [
+            {
+                "text": "A patent application has been filed for the device.",
+            },
+        ],
+    }
+    source = (
+        "AUTOMATION CONTEXT VERSION: test\n"
+        "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══\n"
+        + json.dumps(pack)
+    )
+    article = (
+        "<p>Buyers should verify whether a patent application has been filed.</p>"
+        "<p>Industrial customers use power factor differently from residential "
+        "utility customers.</p>"
+        "<p>Dirty electricity comes from household appliances and wiring.</p>"
+        "<p>This costs less than professional audits and appliance upgrades.</p>"
+        "<p>Seller materials state that EcoWatt is a plug-in device.</p>"
+    )
+
+    repaired = repair_source_grounding(article, source, "device")
+
+    assert "patent application" not in repaired
+    assert "Industrial customers" not in repaired
+    assert "Dirty electricity comes" not in repaired
+    assert "costs less than professional" not in repaired
+    assert "Seller materials state" in repaired
+
+
+def test_approved_first_review_packages_without_post_approval_seo_mutation(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "EcoWatt Power Saver",
+        "Barchart Advertorial",
+        "AUTOMATION CONTEXT VERSION: test\n"
+        "AFFILIATE LINK: https://partner.example/ecowatt",
+        "device",
+    )
+    engine.import_manual_article(
+        pid,
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received "
+        "if a purchase is made through links in this advertorial.</p>"
+        "<h2><strong>Product Details</strong></h2>"
+        + "<p>Seller materials describe the current product offer.</p>" * 250,
+    )
+    approval = _independent_approval(engine, pid)
+    with patch.object(engine, "_openai_review", return_value=approval):
+        engine.run_next(pid, "")
+    assert engine.get(pid)["stage"] == "signed_off"
+    approved_hash = engine.get(pid)["article_hash"]
+
+    with patch.object(
+        engine, "_claude", side_effect=AssertionError("SEO must not mutate")
+    ):
+        engine.run_next(pid, "")
+
+    packaged = engine.get(pid)
+    assert packaged["stage"] == "package_ready"
+    assert packaged["article_hash"] == approved_hash
 
 
 def test_double_escaped_html_and_anchor_attributes_are_repaired():

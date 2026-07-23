@@ -215,3 +215,101 @@ def format_exemplar_guidance(exemplars: list[dict]) -> str:
         "",
     ))
     return "\n".join(lines)
+
+
+def build_generation_blueprint(pack: dict, exemplars: list[dict]) -> str:
+    """Convert banked precedents and captured context into one locked SEO plan."""
+    product = pack.get("product") or {}
+    product_name = str(product.get("product_name") or "Product").strip()
+    profiles = pack.get("contextual_source_profiles") or []
+    prior_profiles = [
+        item for item in profiles
+        if item.get("source_type") == "previous_release"
+    ]
+    competitor_profiles = [
+        item for item in profiles
+        if item.get("source_type") == "competitor_release"
+    ]
+    context_text = " ".join(
+        str(value or "")
+        for item in prior_profiles + competitor_profiles
+        for value in (
+            item.get("title"),
+            " ".join(item.get("headings") or []),
+            item.get("opening_excerpt"),
+        )
+    )
+    used_intents = set(infer_intents(context_text))
+    intent_order = (
+        "features",
+        "how_it_works",
+        "pricing",
+        "trust",
+        "review",
+    )
+    selected_intent = next(
+        (intent for intent in intent_order if intent not in used_intents),
+        "buyer_fit",
+    )
+    promises = {
+        "features": "seller-described features, evidence limits, and buyer fit",
+        "how_it_works": "how the seller describes operation and what remains unverified",
+        "pricing": "current package pricing, offer gaps, and purchase fit",
+        "trust": "source verification, seller transparency, and buyer checks",
+        "review": "a source-grounded evaluation for prospective buyers",
+        "buyer_fit": "who may find the offer relevant and what to verify first",
+    }
+    h2_spines = {
+        "features": (
+            f"What {product_name} Is Designed to Offer",
+            "Seller-Described Features in Plain English",
+            "What the Source Record Does and Does Not Establish",
+            "Current Pricing and Package Information",
+            "Who May Find the Offer Worth Evaluating",
+            "Material Limitations and Questions to Verify",
+            "How to Review the Current Offer",
+        ),
+        "how_it_works": (
+            f"How the Seller Describes {product_name}",
+            "The Claimed Operating Approach",
+            "What Evidence Is Available",
+            "Setup and Use Claims From Seller Materials",
+            "Current Pricing and Buyer Fit",
+            "Material Limitations and Questions to Verify",
+            "The Source-Grounded Takeaway",
+        ),
+    }
+    spine = h2_spines.get(selected_intent, h2_spines["features"])
+    avoid = [
+        item.get("title") for item in prior_profiles + competitor_profiles
+        if item.get("title")
+    ]
+    previous_urls = [
+        item.get("url") for item in prior_profiles if item.get("url")
+    ]
+    lines = [
+        "═══ LOCKED GENERATION BLUEPRINT — DO NOT REDESIGN ═══",
+        f"Product: {product_name}",
+        f"Platform: {pack.get('intake_manifest', {}).get('publishing_channel', '')}",
+        f"Primary SEO intent: {selected_intent}",
+        f"Title promise: {promises[selected_intent]}",
+        "Use approved Barchart advertorial formatting from the precedent corpus.",
+        "SEO strategy is complete. Do not invent a different angle.",
+        "Required H2 spine:",
+    ]
+    lines.extend(f"  {index}. {heading}" for index, heading in enumerate(spine, 1))
+    if avoid:
+        lines.append("Do not repeat these supplied title promises:")
+        lines.extend(f"  • {title}" for title in avoid)
+    if previous_urls:
+        lines.append(
+            "Include exactly one quiet contextual backlink to the supplied "
+            f"coverage URL: {previous_urls[0]}"
+        )
+    lines.extend((
+        "Fill this blueprint only with current sealed product facts.",
+        "Do not import facts from exemplars, previous coverage, or competitors.",
+        "═══════════════════════════════════════════════",
+        "",
+    ))
+    return "\n".join(lines)

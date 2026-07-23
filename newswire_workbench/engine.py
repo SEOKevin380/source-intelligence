@@ -26,13 +26,14 @@ from .formatting import (
     ensure_affiliate_links,
     normalize_master_html,
     repair_publication_gates,
+    repair_source_grounding,
 )
 from .routing import estimated_cost, route_for
 from .audit import audit_article
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v8-attributed-source-contract"
+    "serp-differentiation-depth-v9-source-aware-fixed-point"
 )
 
 STAGES = (
@@ -217,7 +218,11 @@ class WorkbenchEngine:
         self, pack, platform, vertical="auto", force_new=False
     ):
         """Create or reuse a workbench job from a sealed Source Intelligence pack."""
-        from exemplar_corpus import format_exemplar_guidance, retrieve_exemplars
+        from exemplar_corpus import (
+            build_generation_blueprint,
+            format_exemplar_guidance,
+            retrieve_exemplars,
+        )
         from source_pack_contract import validate_source_pack
         validate_source_pack(pack, allow_limited=True)
         product = pack.get("product") or {}
@@ -237,6 +242,7 @@ class WorkbenchEngine:
             ),
         )
         exemplar_guidance = format_exemplar_guidance(exemplars)
+        generation_blueprint = build_generation_blueprint(pack, exemplars)
         source_text = "\n\n".join(part for part in (
             f"AUTOMATION CONTEXT VERSION: {WORKBENCH_SOURCE_CONTEXT_VERSION}",
             (
@@ -244,6 +250,7 @@ class WorkbenchEngine:
                 if force_new else ""
             ),
             exemplar_guidance,
+            generation_blueprint,
             "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══",
             pack_text,
         ) if part)
@@ -515,7 +522,7 @@ class WorkbenchEngine:
             "drafted": "Run ChatGPT compliance review",
             "compliance_reviewed": "Apply edits with Claude",
             "revised": "Run ChatGPT sign-off",
-            "signed_off": "Run Claude SEO optimization",
+            "signed_off": "Build submission package",
             "seo_optimized": "Run post-SEO ChatGPT regression",
             "seo_repair_needed": "Repair SEO compliance regressions with Claude",
             "seo_repaired": "Recheck repaired SEO article with ChatGPT",
@@ -684,7 +691,12 @@ class WorkbenchEngine:
             self._set_article(p, article, "drafted", "01-claude-draft.html")
         elif stage == "drafted":
             report = self._openai_review(p, final=False)
-            self._set_report(p, report, "compliance_reviewed", "02-openai-review.json")
+            target = (
+                "signed_off"
+                if report.get("verdict") == "approved"
+                else "compliance_reviewed"
+            )
+            self._set_report(p, report, target, "02-openai-review.json")
         elif stage == "compliance_reviewed":
             memory = self._learned_guidance(p["platform"], p["vertical"])
             repair_purpose = "compliance_repair"
@@ -748,11 +760,10 @@ class WorkbenchEngine:
             else:
                 self._set_report(p, report, "signed_off", "04-openai-signoff.json")
         elif stage == "signed_off":
-            article = self._claude(seo_prompt(
-                p["source_text"], p["article_text"], p["platform"], p["vertical"],
-                release_title=p.get("release_title", p["title"]),
-            ), p["id"], "seo", p["vertical"])
-            self._set_article(p, article, "seo_optimized", "05-claude-seo.html")
+            # SERP differentiation is decided during exemplar-grounded
+            # generation. Never mutate an independently approved article just
+            # to run a separate SEO pass.
+            self._build_package(p)
         elif stage == "seo_optimized":
             report = self._openai_review(p, final=True, purpose="post_seo_signoff")
             if report.get("verdict") == "approved":
@@ -1126,6 +1137,9 @@ class WorkbenchEngine:
 
     def _set_article(self, p, article, stage, filename, bump=False):
         article = ensure_article_html(article)
+        article = repair_source_grounding(
+            article, p["source_text"], p["vertical"]
+        )
         if not article:
             raise ValueError("Model returned an empty article")
         title = p.get("release_title") or p["title"]
