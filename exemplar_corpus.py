@@ -61,6 +61,59 @@ _VERTICAL_TERMS = {
     },
 }
 
+_NICHE_TERMS = {
+    "energy_devices": {
+        "power saver", "energy saver", "electricity", "voltage", "power factor",
+    },
+    "cooling_devices": {
+        "air cooler", "portable ac", "cooling", "air conditioning",
+    },
+    "hearing_devices": {"hearing aid", "hearing", "earbuds"},
+    "vision_devices": {"binocular", "night vision", "vision", "eyewear"},
+    "home_gadgets": {
+        "vacuum", "camera", "charger", "projector", "speaker", "wifi",
+        "smart ring", "gadget",
+    },
+    "weight_management": {
+        "weight loss", "fat burn", "metabolic", "appetite", "glp-1",
+    },
+    "blood_sugar": {"blood sugar", "glucose", "glycemic"},
+    "brain_cognition": {
+        "brain", "memory", "cognitive", "nootropic", "focus",
+    },
+    "mens_health": {
+        "male enhancement", "erectile", "testosterone", "prostate", "men's health",
+    },
+    "joint_pain": {"joint", "arthritis", "knee", "back pain", "pain relief"},
+    "nerve_health": {"nerve", "neuropathy", "sciatica"},
+    "dental_health": {"dental", "teeth", "gum", "oral health"},
+    "skin_anti_aging": {
+        "skin", "wrinkle", "anti-aging", "beauty", "serum", "cream",
+    },
+    "gut_health": {"gut", "digest", "probiotic", "bloating"},
+    "sleep_stress": {"sleep", "stress", "anxiety", "calm"},
+    "general_supplements": {
+        "supplement", "vitamin", "capsule", "gummies", "formula",
+    },
+    "telehealth": {
+        "telehealth", "telemedicine", "semaglutide", "tirzepatide", "prescription",
+    },
+    "financial_newsletters": {
+        "stock", "investing", "investment", "newsletter", "portfolio",
+        "dividend", "trading", "retirement",
+    },
+    "collectibles_currency": {
+        "coin", "commemorative", "collectible", "silver certificate",
+        "dollar bill", "$1 bill", "$2 bill",
+    },
+    "gaming_gambling": {
+        "casino", "betting", "slots", "sportsbook", "poker", "lottery",
+    },
+    "courses_info_products": {
+        "course", "program", "guide", "system", "masterclass", "training",
+    },
+}
+
 _INTENT_TERMS = {
     "review": {"review", "reviews", "reviewed", "analysis", "examined"},
     "trust": {"scam", "legit", "complaints", "honest", "warning", "red flags"},
@@ -109,6 +162,17 @@ def infer_vertical(*values: str) -> str:
     return best if score else "general_consumer"
 
 
+def infer_niche(*values: str) -> str:
+    """Return the narrow editorial niche used for precedent retrieval."""
+    text = " ".join(value or "" for value in values).casefold()
+    scores = {
+        niche: sum(3 if " " in term else 1 for term in terms if term in text)
+        for niche, terms in _NICHE_TERMS.items()
+    }
+    best, score = max(scores.items(), key=lambda item: item[1])
+    return best if score else "general_consumer"
+
+
 def infer_intents(title: str) -> list[str]:
     text = f" {title.lower()} "
     intents = [
@@ -145,11 +209,13 @@ def retrieve_exemplars(
     """Retrieve structurally useful, approved precedents at no API cost."""
     platform = normalize_platform(platform)
     vertical = vertical or infer_vertical(product_name, source_url)
+    niche = infer_niche(product_name, source_url, previous_releases)
     query_tokens = _tokens(" ".join((product_name, source_url, previous_releases)))
     query_intents = set(infer_intents(product_name + " " + previous_releases))
 
     ranked = []
     same_vertical = []
+    same_niche = []
     for release in load_approved_release_index():
         if release.get("platform") != platform:
             continue
@@ -164,14 +230,16 @@ def retrieve_exemplars(
         )
         recency = float(release.get("recency_score", 0))
         score = 8 * token_score + 3 * vertical_score + 2 * intent_score + recency
-        if vertical_score:
+        if release.get("niche") == niche:
+            same_niche.append((score + 5, release))
+        elif vertical_score:
             same_vertical.append((score, release))
         elif overlap:
             ranked.append((score, release))
 
     # A same-platform but wrong-vertical article is not a meaningful structural
     # precedent. Use it only when no same-vertical precedent exists at all.
-    selected_pool = same_vertical or ranked
+    selected_pool = same_niche or same_vertical or ranked
     selected_pool.sort(key=lambda item: (-item[0], item[1].get("title", "")))
     return [
         release for _, release in selected_pool[: max(1, min(limit, 8))]
@@ -204,7 +272,8 @@ def format_exemplar_guidance(exemplars: list[dict]) -> str:
     lines.extend(("", "CLOSEST PUBLISHED REFERENCES:"))
     for item in exemplars:
         lines.append(
-            f"  • {item['title']} [{item['platform']}/{item['vertical']}]"
+            f"  • {item['title']} "
+            f"[{item['platform']}/{item.get('niche', item['vertical'])}]"
         )
         lines.append(f"    Published URL: {item['live_url']}")
     lines.extend((
@@ -221,6 +290,11 @@ def build_generation_blueprint(pack: dict, exemplars: list[dict]) -> str:
     """Convert banked precedents and captured context into one locked SEO plan."""
     product = pack.get("product") or {}
     product_name = str(product.get("product_name") or "Product").strip()
+    niche = infer_niche(
+        product_name,
+        str(product.get("category") or ""),
+        str(product.get("product_type") or ""),
+    )
     profiles = pack.get("contextual_source_profiles") or []
     prior_profiles = [
         item for item in profiles
@@ -311,6 +385,7 @@ def build_generation_blueprint(pack: dict, exemplars: list[dict]) -> str:
     lines = [
         "═══ LOCKED GENERATION BLUEPRINT — DO NOT REDESIGN ═══",
         f"Product: {product_name}",
+        f"Publisher niche: {niche}",
         f"Platform: {pack.get('intake_manifest', {}).get('publishing_channel', '')}",
         f"Primary SEO intent: {selected_intent}",
         f"Title promise: {promises[selected_intent]}",

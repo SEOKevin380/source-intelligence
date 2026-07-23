@@ -26,6 +26,7 @@ from exemplar_corpus import (  # noqa: E402
     _PLATFORM_HOSTS,
     _tokens,
     infer_intents,
+    infer_niche,
     infer_vertical,
     normalize_platform,
 )
@@ -178,12 +179,14 @@ def build(workbook_path: str) -> dict:
             release_type = str(value(type_idx) or "").strip()
             published_date = _iso_date(value(date_idx))
             vertical = infer_vertical(title, source_url, release_type)
+            niche = infer_niche(title, source_url, release_type)
 
             record = {
                 "title": title,
                 "title_pattern": _title_pattern(title),
                 "platform": platform,
                 "vertical": vertical,
+                "niche": niche,
                 "intents": infer_intents(title),
                 "tokens": sorted(_tokens(title + " " + source_url)),
                 "published_date": published_date,
@@ -229,6 +232,7 @@ def build(workbook_path: str) -> dict:
             "source_urls": set(),
             "platforms": set(),
             "verticals": set(),
+            "niches": set(),
             "intents": set(),
             "live_release_urls": set(),
             "release_count": 0,
@@ -242,6 +246,7 @@ def build(workbook_path: str) -> dict:
             entity["source_urls"].add(release["source_url"])
         entity["platforms"].add(release["platform"])
         entity["verticals"].add(release["vertical"])
+        entity["niches"].add(release["niche"])
         entity["intents"].update(release["intents"])
         entity["live_release_urls"].add(release["live_url"])
         entity["release_count"] += 1
@@ -256,7 +261,7 @@ def build(workbook_path: str) -> dict:
     for entity in entity_map.values():
         for field in (
             "source_domains", "source_urls", "platforms", "verticals",
-            "intents", "live_release_urls",
+            "niches", "intents", "live_release_urls",
         ):
             entity[field] = sorted(entity[field])
         entities.append(entity)
@@ -272,6 +277,7 @@ def build(workbook_path: str) -> dict:
             "unique_product_or_offering_count": len(entities),
             "platform_counts": dict(Counter(x["platform"] for x in ordered)),
             "vertical_counts": dict(Counter(x["vertical"] for x in ordered)),
+            "niche_counts": dict(Counter(x["niche"] for x in ordered)),
             "sheet_counts": dict(sheets),
             "rejected": dict(rejected),
         },

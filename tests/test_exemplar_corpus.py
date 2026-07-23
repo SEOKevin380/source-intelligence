@@ -1,6 +1,7 @@
 from exemplar_corpus import (
     format_exemplar_guidance,
     infer_intents,
+    infer_niche,
     infer_vertical,
     normalize_platform,
     retrieve_exemplars,
@@ -19,6 +20,9 @@ def test_vertical_and_intent_inference_are_universal():
     assert infer_vertical("Jim Woods Stock Investing Newsletter") == "financial"
     assert infer_vertical("Portable Smart Air Cooler Review") == "consumer_electronics"
     assert "trust" in infer_intents("Example Reviews: Scam or Legit?")
+    assert infer_niche("EcoWatt Power Saver electricity review") == "energy_devices"
+    assert infer_niche("Portable Air Cooler Review") == "cooling_devices"
+    assert infer_niche("Stock Investing Newsletter") == "financial_newsletters"
 
 
 def test_accesswire_financial_precedents_are_available():
