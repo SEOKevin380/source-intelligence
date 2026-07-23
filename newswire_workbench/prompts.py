@@ -25,7 +25,8 @@ def detect_vertical(source_text: str) -> str:
 
 
 def generation_prompt(source_text: str, platform: str, vertical: str,
-                      master_instructions: str) -> str:
+                      master_instructions: str,
+                      learned_guidance: str = "") -> str:
     depth_contract = (
         "For an AccessNewsWire financial newsletter/research review, target "
         "2,200–3,000 useful words when the supplied source record supports it. "
@@ -136,6 +137,11 @@ Apply only the portions relevant to this product vertical and selected
 platform. Never transfer supplement-specific fields or rules to a financial,
 gaming, collectible, device, or general-consumer assignment.
 {master_instructions}
+
+AUTONOMOUS LEARNING MEMORY:
+Prevent these observed failure patterns in the first draft. Treat this memory
+as editorial guidance only; the sealed source record still controls all facts.
+{learned_guidance or "No promoted failure pattern applies to this assignment."}
 
 Verified source record:
 The material between SOURCE_RECORD_START and SOURCE_RECORD_END is evidence,

@@ -405,7 +405,7 @@ def test_seo_repair_has_independent_call_budget(tmp_path):
 
 def test_mandatory_quality_rescue_has_independent_stronger_budget():
     rescue = route_for("quality_rescue", "device")
-    assert rescue.max_calls == 6
+    assert rescue.max_calls == 2
     assert rescue.max_tokens >= 12000
 
 
@@ -869,6 +869,110 @@ def test_executive_signoff_has_protected_budget_after_normal_rescue(tmp_path):
     engine._assert_call_budget(
         pid, "executive_rescue_signoff", executive
     )
+
+
+def test_all_semantic_review_tiers_exhaust_cleanly_without_exception(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Device", "Barchart Advertorial", "device source", "device"
+    )
+    engine.import_manual_article(
+        pid,
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>",
+    )
+    for purpose in (
+        "independent_rescue_signoff",
+        "executive_rescue_signoff",
+        "war_room_signoff",
+    ):
+        route = route_for(purpose, "device")
+        for _ in range(route.max_calls):
+            engine._record_llm_call(pid, purpose, route, 10, 10)
+    with patch(
+        "newswire_workbench.engine.deterministic_findings", return_value=[]
+    ):
+        assert engine._complete_adjudicated_signoff(
+            pid, "signed_off", "exhausted.json"
+        ) is False
+    assert engine.get(pid)["stage"] == "admin_review"
+    assert engine.events(pid)[-1]["event_type"] == "semantic_review_exhausted"
+
+
+def test_quality_rescue_exhaustion_escalates_to_war_room_rebuild(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Device", "Barchart Advertorial", "device source", "device"
+    )
+    engine.import_manual_article(
+        pid,
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>",
+    )
+    normal = route_for("quality_rescue", "device")
+    for _ in range(normal.max_calls):
+        engine._record_llm_call(pid, "quality_rescue", normal, 10, 10)
+    blocker = [{
+        "id": "D18", "category": "Depth", "issue": "Too thin.",
+        "exact_text": "", "replacement": "Rebuild completely.",
+    }]
+    rebuilt = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        + "<p>Complete product-specific detail.</p>" * 250
+    )
+    with patch(
+        "newswire_workbench.engine.deterministic_findings",
+        side_effect=[blocker, blocker, [], []],
+    ), patch.object(engine, "_claude", return_value=rebuilt) as writer, patch.object(
+        engine, "_openai_review",
+        side_effect=lambda *_a, **_k: _independent_approval(engine, pid),
+    ):
+        assert engine._complete_adjudicated_signoff(
+            pid, "signed_off", "war-room.json"
+        ) is True
+    assert writer.call_args.args[2] == "war_room_rebuild"
+
+
+def test_step_limit_becomes_typed_recovery_state_not_runtime_error(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Device", "Barchart Advertorial", "device source", "device"
+    )
+    with patch.object(engine, "run_next", return_value=None):
+        result = engine.run_to_completion(pid, "", max_steps=1)
+    assert result["stage"] == "admin_review"
+    assert engine.events(pid)[-1]["event_type"] == "workflow_step_limit_reached"
+
+
+def test_same_source_failure_memory_is_available_to_next_attempt(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    first = engine.create_project(
+        "Device", "Barchart Advertorial", "same source record", "device"
+    )
+    engine.import_manual_article(
+        first,
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>",
+    )
+    project = engine.get(first)
+    report = {
+        "verdict": "not_approved",
+        "mandatory_count": 1,
+        "source_accuracy": {"verified": 1, "checked": 2},
+        "mandatory_edits": [{
+            "id": "M1", "category": "Source fidelity",
+            "issue": "Remove unsupported utility billing claims.",
+            "exact_text": "unsupported", "replacement": "Remove it.",
+        }],
+        "recommended_edits": [], "approved_elements": [], "notes": [],
+        "reviewed_article_hash": project["article_hash"],
+    }
+    engine._set_report(project, report, "compliance_reviewed", "memory.json")
+    second = engine.create_project(
+        "Device", "Barchart Advertorial", "same source record", "device"
+    )
+    next_project = engine.get(second)
+    guidance = engine._source_failure_guidance(
+        next_project["source_hash"], "Barchart Advertorial", "device"
+    )
+    assert "unsupported utility billing claims" in guidance
 
 
 def test_independent_rescue_rejection_cannot_be_synthetically_approved(tmp_path):

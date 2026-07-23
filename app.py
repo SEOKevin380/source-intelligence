@@ -1942,7 +1942,15 @@ else:
                 ):
                     _result = _workbench.run_to_completion(_project_id, _master_rules)
                     if _result["stage"] == "package_ready" and _workbench_caps.get("wordpress"):
-                        _workbench.send_to_wordpress_draft(_project_id)
+                        try:
+                            _workbench.send_to_wordpress_draft(_project_id)
+                        except Exception as _wordpress_error:
+                            # Delivery is downstream of approval. A WordPress
+                            # transport problem must not mislabel a successfully
+                            # approved package as a failed editorial workflow.
+                            st.session_state[
+                                f"wordpress_delivery_error_{_project_id}"
+                            ] = str(_wordpress_error)
                 st.rerun()
 
             _active_project_id = _project_map.get(_workflow_key)
@@ -1981,6 +1989,14 @@ else:
                     )
                     if _wp_saved:
                         st.link_button("Open WordPress Draft", _wp_saved["edit_url"])
+                    _wp_error = st.session_state.get(
+                        f"wordpress_delivery_error_{_active_project_id}"
+                    )
+                    if _wp_error:
+                        st.warning(
+                            "The article is approved and packaged. WordPress "
+                            "delivery is pending: " + _wp_error
+                        )
                     _export = _workbench.export_path(_active_project_id)
                     if _export.exists():
                         st.download_button(

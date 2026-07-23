@@ -40,8 +40,8 @@ def route_for(stage: str, vertical: str = "general_consumer") -> ModelRoute:
     routes = {
         "draft": ModelRoute(
             "anthropic-direct",
-            os.environ.get("NEWSWIRE_DRAFT_MODEL", "claude-sonnet-4-5-20250929"),
-            12000, 1, 3.0, 15.0,
+            os.environ.get("NEWSWIRE_DRAFT_MODEL", "claude-haiku-4-5-20251001"),
+            12000, 1, 1.0, 5.0,
         ),
         "compliance_repair": ModelRoute(
             "anthropic-direct",
@@ -62,11 +62,19 @@ def route_for(stage: str, vertical: str = "general_consumer") -> ModelRoute:
             "anthropic-direct",
             os.environ.get(
                 "NEWSWIRE_QUALITY_RESCUE_MODEL",
+                "claude-sonnet-4-5-20250929",
+            ),
+            14000, 2, 3.0, 15.0,
+        ),
+        "war_room_rebuild": ModelRoute(
+            "anthropic-direct",
+            os.environ.get(
+                "NEWSWIRE_WAR_ROOM_MODEL",
                 os.environ.get(
                     "NEWSWIRE_DRAFT_MODEL", "claude-sonnet-4-5-20250929"
                 ),
             ),
-            14000, 6, 3.0, 15.0,
+            16000, 1, 3.0, 15.0,
         ),
         "seo": ModelRoute(
             "anthropic-direct",
@@ -107,7 +115,7 @@ def route_for(stage: str, vertical: str = "general_consumer") -> ModelRoute:
                 "NEWSWIRE_FINAL_MODEL",
                 "gpt-5.4" if risk_tier(vertical) >= 2 else "gpt-5.4-mini",
             ),
-            5000, 3, 2.5 if risk_tier(vertical) >= 2 else 0.75,
+            5000, 2, 2.5 if risk_tier(vertical) >= 2 else 0.75,
             15.0 if risk_tier(vertical) >= 2 else 4.5,
         ),
         # If the normal independent reviewer has rejected three materially
@@ -117,7 +125,12 @@ def route_for(stage: str, vertical: str = "general_consumer") -> ModelRoute:
         "executive_rescue_signoff": ModelRoute(
             "openai-direct",
             os.environ.get("NEWSWIRE_EXECUTIVE_MODEL", "gpt-5.4"),
-            7000, 3, 2.5, 15.0,
+            7000, 1, 2.5, 15.0,
+        ),
+        "war_room_signoff": ModelRoute(
+            "openai-direct",
+            os.environ.get("NEWSWIRE_EXECUTIVE_MODEL", "gpt-5.4"),
+            7000, 1, 2.5, 15.0,
         ),
     }
     if stage not in routes:

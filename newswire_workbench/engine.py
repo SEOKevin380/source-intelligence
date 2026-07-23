@@ -459,8 +459,9 @@ class WorkbenchEngine:
             "admin_review": "Kevin review queue",
         }[project["stage"]]
 
-    def run_to_completion(self, project_id, master_instructions, max_steps=20):
+    def run_to_completion(self, project_id, master_instructions, max_steps=60):
         """Run unattended until complete, a credential is missing, or admin review."""
+        no_progress = 0
         for _ in range(max_steps):
             project = self.get(project_id)
             if project["stage"] == "admin_review":
@@ -469,8 +470,37 @@ class WorkbenchEngine:
                 return self.get(project_id)
             if project["stage"] == "package_ready":
                 return project
+            before = (
+                project["stage"],
+                project["article_hash"],
+                project["revision_round"],
+                self.usage_summary(project_id)["calls"],
+            )
             self.run_next(project_id, master_instructions)
-        raise RuntimeError("Workflow exceeded its safety step limit")
+            updated = self.get(project_id)
+            after = (
+                updated["stage"],
+                updated["article_hash"],
+                updated["revision_round"],
+                self.usage_summary(project_id)["calls"],
+            )
+            no_progress = no_progress + 1 if after == before else 0
+            if no_progress >= 2:
+                self._event(
+                    project_id, "workflow_stall_detected", updated["stage"],
+                    updated["article_hash"], {"state": after},
+                )
+                self._set_stage(project_id, "admin_review")
+        project = self.get(project_id)
+        self._event(
+            project_id, "workflow_step_limit_reached", project["stage"],
+            project["article_hash"], {
+                "max_steps": max_steps,
+                "operator_decision_required": False,
+            },
+        )
+        self._set_stage(project_id, "admin_review")
+        return self.get(project_id)
 
     def _recover_mechanical_admin_review(self, project_id):
         """Resume legacy admin jobs, including source conflicts the engine can resolve."""
@@ -576,8 +606,15 @@ class WorkbenchEngine:
         p = self.get(project_id)
         stage = p["stage"]
         if stage == "source_ready":
+            memory = "\n".join(filter(None, (
+                self._learned_guidance(p["platform"], p["vertical"]),
+                self._source_failure_guidance(
+                    p["source_hash"], p["platform"], p["vertical"]
+                ),
+            )))
             article = self._claude(generation_prompt(
-                p["source_text"], p["platform"], p["vertical"], master_instructions
+                p["source_text"], p["platform"], p["vertical"],
+                master_instructions, learned_guidance=memory,
             ), p["id"], "draft", p["vertical"])
             self._set_article(p, article, "drafted", "01-claude-draft.html")
         elif stage == "drafted":
@@ -808,9 +845,21 @@ class WorkbenchEngine:
         route = route_for(purpose, p["vertical"])
         self._assert_call_budget(p["id"], purpose, route)
         try:
+            reviewer_system = (
+                "You are the executive editorial adjudicator. Distinguish actual "
+                "publication blockers from preferences. Approve the exact article "
+                "when all material source, platform, legal, and reader-value "
+                "requirements pass; never invent objections or demand unsupported "
+                "facts. Return valid JSON only."
+                if purpose in {
+                    "executive_rescue_signoff", "war_room_signoff"
+                }
+                else "You are an independent, publication-focused compliance "
+                     "editor. Return valid JSON only."
+            )
             response = client.responses.create(
             model=route.model,
-            input=[{"role": "system", "content": "You are an independent, publication-focused compliance editor. Return valid JSON only."},
+            input=[{"role": "system", "content": reviewer_system},
                    {"role": "user", "content": prompt}],
             text={"format": {
                 "type": "json_schema",
@@ -916,17 +965,23 @@ class WorkbenchEngine:
         ceiling = float(os.environ.get("NEWSWIRE_PROJECT_BUDGET_USD", "1.50"))
         if stage in {
             "quality_rescue",
+            "war_room_rebuild",
             "independent_rescue_signoff",
             "executive_rescue_signoff",
+            "war_room_signoff",
         }:
             ceiling += float(
                 os.environ.get("NEWSWIRE_QUALITY_RESCUE_BUDGET_USD", "4.50")
             )
-        if stage == "executive_rescue_signoff":
+        if stage in {"executive_rescue_signoff", "war_room_signoff"}:
             ceiling += float(
                 os.environ.get(
                     "NEWSWIRE_EXECUTIVE_RESCUE_BUDGET_USD", "6.00"
                 )
+            )
+        if stage in {"war_room_rebuild", "war_room_signoff"}:
+            ceiling += float(
+                os.environ.get("NEWSWIRE_WAR_ROOM_BUDGET_USD", "8.00")
             )
         if spent >= ceiling:
             raise RuntimeError(
@@ -999,6 +1054,12 @@ class WorkbenchEngine:
             article = ensure_affiliate_links(
                 article, affiliate_href, target=target
             )
+        # Canonicalize all mechanically repairable requirements before any
+        # paid compliance review. Reviewers should spend judgment on meaning,
+        # not Markdown, heading wrappers, CTA distribution, or disclosures.
+        article = repair_publication_gates(
+            article, p["platform"], p["vertical"], affiliate_href
+        )
         digest = _hash(title + "\n" + article)
         round_no = p["revision_round"] + (1 if bump else 0)
         with self._connect() as conn:
@@ -1290,11 +1351,55 @@ class WorkbenchEngine:
                     project_id, target_stage, filename
                 )
 
-            # This is a technical retry state, never a request for an editorial
-            # decision. A fresh run can be created automatically by the UI.
+            war_route = route_for("war_room_rebuild", p["vertical"])
+            war_count = self._billable_call_count(
+                project_id, "war_room_rebuild"
+            )
+            if war_count < war_route.max_calls:
+                war_report = {
+                    "verdict": "not_approved",
+                    "mandatory_count": len(blockers),
+                    "mandatory_edits": blockers,
+                    "recommended_edits": quality_warnings,
+                    "approved_elements": [],
+                    "notes": [
+                        "War-room rebuild: reconstruct the complete article "
+                        "from the sealed source record, preserve the client case, "
+                        "and satisfy every remaining publication blocker."
+                    ],
+                    "reviewed_article_hash": p["article_hash"],
+                }
+                rebuilt = self._claude(
+                    revision_prompt(
+                        p["source_text"],
+                        p["article_text"],
+                        war_report,
+                        p["platform"],
+                        p["vertical"],
+                        self._learned_guidance(
+                            p["platform"], p["vertical"]
+                        ),
+                        release_title=p.get("release_title", p["title"]),
+                    ),
+                    p["id"],
+                    "war_room_rebuild",
+                    p["vertical"],
+                )
+                self._set_article(
+                    p, rebuilt, p["stage"],
+                    f"11-war-room-rebuild-{war_count + 1}.html",
+                    bump=True,
+                )
+                return self._complete_adjudicated_signoff(
+                    project_id, target_stage, filename
+                )
+
+            # Every autonomous repair tier was exhausted. Preserve the exact
+            # blockers as a typed technical state instead of throwing a generic
+            # provider/call-ceiling exception.
             self._set_stage(project_id, "admin_review")
             self._event(
-                project_id, "quality_rescue_exhausted", "admin_review",
+                project_id, "autonomous_repair_exhausted", "admin_review",
                 p["article_hash"], {
                     "blockers": blockers,
                     "quality_warnings": quality_warnings,
@@ -1305,16 +1410,28 @@ class WorkbenchEngine:
         # Passing regex/mechanical gates is necessary, never sufficient.
         # A semantic rescue or adjudicated rewrite must be approved by the
         # independent reviewer on the exact final article hash.
-        independent_route = route_for(
-            "independent_rescue_signoff", p["vertical"]
-        )
-        review_purpose = (
-            "independent_rescue_signoff"
+        review_purpose = ""
+        for candidate in (
+            "independent_rescue_signoff",
+            "executive_rescue_signoff",
+            "war_room_signoff",
+        ):
+            route = route_for(candidate, p["vertical"])
             if self._billable_call_count(
-                project_id, "independent_rescue_signoff"
-            ) < independent_route.max_calls
-            else "executive_rescue_signoff"
-        )
+                project_id, candidate
+            ) < route.max_calls:
+                review_purpose = candidate
+                break
+        if not review_purpose:
+            self._set_stage(project_id, "admin_review")
+            self._event(
+                project_id, "semantic_review_exhausted", "admin_review",
+                p["article_hash"], {
+                    "last_report": p.get("last_report") or {},
+                    "operator_decision_required": False,
+                },
+            )
+            return False
         report = self._openai_review(
             p, final=True, purpose=review_purpose
         )
@@ -1430,3 +1547,28 @@ class WorkbenchEngine:
                 LIMIT 20
             """, (platform, vertical)).fetchall()
         return learned_guidance([dict(row) for row in rows])
+
+    def _source_failure_guidance(self, source_hash, platform, vertical):
+        """Use recent same-source failures immediately, without global promotion."""
+        with self._connect() as conn:
+            rows = conn.execute("""
+                SELECT io.category,io.issue,COUNT(*) AS occurrences
+                FROM issue_observations io
+                JOIN projects p ON p.id=io.project_id
+                WHERE p.source_hash=? AND p.platform=? AND p.vertical=?
+                GROUP BY io.fingerprint
+                ORDER BY occurrences DESC, MAX(io.created_at) DESC
+                LIMIT 12
+            """, (source_hash, platform, vertical)).fetchall()
+        if not rows:
+            return ""
+        lines = [
+            "Same-source issues observed in prior attempts "
+            "(prevent them before review):"
+        ]
+        for row in rows:
+            lines.append(
+                f"- Seen {row['occurrences']} time(s): "
+                f"{row['category']} — {row['issue']}"
+            )
+        return "\n".join(lines)
