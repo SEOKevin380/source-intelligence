@@ -873,20 +873,19 @@ class WorkbenchEngine:
 
     @staticmethod
     def _report_has_true_source_conflict(report):
-        """Only contradictory source records—not editorial friction—need admin."""
-        for item in report.get("mandatory_edits", []) or []:
-            combined = " ".join(str(item.get(key, "")) for key in (
-                "category", "issue", "exact_text", "replacement"
-            )).casefold()
-            contradiction = any(term in combined for term in (
-                "source contradiction", "conflicting source",
-                "sources conflict", "contradictory source",
-            ))
-            cannot_resolve = any(term in combined for term in (
-                "cannot determine which", "requires source owner",
-                "requires client clarification",
-            ))
-            if contradiction and cannot_resolve:
+        """Require structured evidence; reviewer prose alone cannot escalate."""
+        conflicts = report.get("source_conflict_evidence") or []
+        if not isinstance(conflicts, list):
+            return False
+        for conflict in conflicts:
+            if not isinstance(conflict, dict):
+                continue
+            records = conflict.get("records") or []
+            facts = conflict.get("incompatible_facts") or []
+            if (
+                isinstance(records, list) and len(set(map(str, records))) >= 2
+                and isinstance(facts, list) and len(set(map(str, facts))) >= 2
+            ):
                 return True
         return False
 

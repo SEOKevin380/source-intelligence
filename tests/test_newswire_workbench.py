@@ -384,6 +384,23 @@ def test_legacy_reviewer_admin_state_recovers_without_global_counters(tmp_path):
     assert recovered["release_title"] == "Jim Woods Forecasts & Strategies Review"
 
 
+def test_reviewer_conflict_prose_is_not_source_conflict_evidence():
+    report = {
+        "mandatory_edits": [{
+            "category": "Conflicting sources",
+            "issue": "Sources conflict and require client clarification.",
+            "exact_text": "Claim",
+            "replacement": "Qualified claim",
+        }]
+    }
+    assert WorkbenchEngine._report_has_true_source_conflict(report) is False
+    report["source_conflict_evidence"] = [{
+        "records": ["official_page", "checkout"],
+        "incompatible_facts": ["$77", "$99"],
+    }]
+    assert WorkbenchEngine._report_has_true_source_conflict(report) is True
+
+
 def test_adjudicated_article_advances_without_third_paid_signoff(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     pid = engine.create_project("Test", "Barchart Advertorial", "financial source", "financial")
