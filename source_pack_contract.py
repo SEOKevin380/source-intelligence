@@ -24,6 +24,29 @@ SELLER_SOURCE_CLASSES = frozenset({
     "authorized_reseller",
 })
 
+STRUCTURED_PRODUCT_CLAIM_TYPES = {
+    "key_features": "feature",
+    "specifications": "specification",
+    "power_source": "specification",
+    "pricing": "pricing",
+    "services_offered": "feature",
+    "pricing_tiers": "pricing",
+    "whats_included": "feature",
+    "format": "specification",
+    "access_method": "feature",
+    "platform_support": "specification",
+    "integrations": "feature",
+    "support_options": "feature",
+    "service_description": "feature",
+    "service_area": "feature",
+    "program_structure": "feature",
+    "duration": "specification",
+    "included_items": "feature",
+    "billing_frequency": "pricing",
+    "cancellation_policy": "refund_policy",
+    "trial_period": "pricing",
+}
+
 
 PLATFORM_LABELS = {
     "accessnewswire": "Accesswire",
@@ -79,6 +102,80 @@ def _canonical_payload(pack: dict) -> bytes:
     return json.dumps(
         payload, sort_keys=True, separators=(",", ":"), default=str
     ).encode("utf-8")
+
+
+def _first_artifact_id(pack: dict) -> str:
+    artifacts = pack.get("all_artifacts") or {}
+    if isinstance(artifacts, dict) and artifacts:
+        return str(next(iter(artifacts)))
+    if isinstance(artifacts, list):
+        for artifact in artifacts:
+            if isinstance(artifact, dict) and artifact.get("artifact_id"):
+                return str(artifact["artifact_id"])
+    return "structured-source-record"
+
+
+def _structured_product_claims(pack: dict) -> dict:
+    """Migrate captured structured fields into attributed publication claims.
+
+    Older reports populated the CVD/source brief but did not always populate
+    the parallel claim ledger. These are not promoted to independent facts:
+    they remain explicitly seller/source-material attributed.
+    """
+    product = pack.get("product") or {}
+    artifact_id = _first_artifact_id(pack)
+    migrated = {}
+
+    def add(claim_type: str, field: str, text: str):
+        clean = str(text or "").strip()
+        if not clean or clean.casefold() in {
+            "not established", "unknown", "none", "n/a",
+        }:
+            return
+        migrated.setdefault(claim_type, []).append({
+            "text": clean,
+            "artifact_id": artifact_id,
+            "source_class": "official_vendor",
+            "review_status": "needs_verification",
+            "publication_treatment": "seller_attribution_required",
+            "metadata": {
+                "excerpt_is_literal": False,
+                "structured_source_record": True,
+                "source_pack_field": field,
+            },
+        })
+
+    for field, claim_type in STRUCTURED_PRODUCT_CLAIM_TYPES.items():
+        value = product.get(field)
+        if not value:
+            continue
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    label = item.get("package") or item.get("name") or field
+                    price = item.get("price") or item.get("total")
+                    per_unit = item.get("per_unit")
+                    parts = []
+                    if price:
+                        parts.append(f"${str(price).lstrip('$')}")
+                    if per_unit:
+                        parts.append(f"${str(per_unit).lstrip('$')} per unit")
+                    if parts:
+                        add(claim_type, field, f"{label}: " + "; ".join(parts))
+                    elif item:
+                        add(claim_type, field, f"{label}: {item}")
+                else:
+                    add(claim_type, field, item)
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                add(
+                    claim_type,
+                    field,
+                    f"{str(key).replace('_', ' ')}: {item}",
+                )
+        else:
+            add(claim_type, field, value)
+    return migrated
 
 
 def assess_readiness(full_data: dict) -> tuple:
@@ -150,6 +247,8 @@ def seal_source_pack(full_data: dict) -> dict:
         or pack.get("publication_claims")
         or {}
     )
+    if not any(source_claims.values()):
+        source_claims = _structured_product_claims(pack)
     for claim_type, items in source_claims.items():
         for claim in items or []:
             status = str(claim.get("review_status", "unreviewed")).lower()
@@ -168,9 +267,14 @@ def seal_source_pack(full_data: dict) -> dict:
             ).strip().casefold()
             compliance_blocked = str(claim.get("text", "")).strip().casefold() in blocked_texts
             seller_attribution_required = bool(
-                product_type == "device"
-                and claim_type in DEVICE_ATTRIBUTABLE_CLAIM_TYPES
-                and metadata.get("excerpt_is_literal") is True
+                claim_type in DEVICE_ATTRIBUTABLE_CLAIM_TYPES
+                and (
+                    (
+                        product_type == "device"
+                        and metadata.get("excerpt_is_literal") is True
+                    )
+                    or metadata.get("structured_source_record") is True
+                )
                 and has_artifact
                 and source_class in SELLER_SOURCE_CLASSES
                 and status in {"accepted", "unreviewed", "needs_verification"}

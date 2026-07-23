@@ -1799,6 +1799,8 @@ else:
     _quick_json = json.dumps(_publication_pack, indent=2, default=str)
     _pack_contract = _publication_pack["source_pack_contract"]
     _pack_readiness = _pack_contract["readiness"]
+    from newswire_workbench import WORKBENCH_SOURCE_CONTEXT_VERSION
+    st.caption(f"Automation workflow: {WORKBENCH_SOURCE_CONTEXT_VERSION}")
 
     if _pack_readiness == "complete":
         st.success(

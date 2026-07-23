@@ -81,6 +81,34 @@ def test_resealing_legacy_publication_ledger_does_not_erase_claims():
     assert len(resealed["publication_claims"]["feature"]) == 3
 
 
+def test_structured_device_record_migrates_to_attributed_claim_ledger():
+    raw = _pack()
+    raw["claims_by_type"] = {}
+    raw["product"].update({
+        "key_features": ["Voltage stabilization", "Plug-and-play installation"],
+        "specifications": {"voltage_range": "90V–250V"},
+        "pricing": [
+            {"package": "Single Unit", "price": "49.99", "per_unit": "49.99"},
+        ],
+    })
+    pack = seal_source_pack(raw)
+    assert pack["source_pack_contract"]["readiness"] == "complete"
+    assert pack["publication_claim_summary"]["publication_claim_count"] == 4
+    claims = [
+        claim
+        for items in pack["publication_claims"].values()
+        for claim in items
+    ]
+    assert all(
+        claim["publication_treatment"] == "seller_attribution_required"
+        for claim in claims
+    )
+    assert all(
+        claim["metadata"]["structured_source_record"] is True
+        for claim in claims
+    )
+
+
 def test_tampering_is_detected():
     pack = seal_source_pack(_pack())
     tampered = copy.deepcopy(pack)
