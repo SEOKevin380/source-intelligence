@@ -39,7 +39,7 @@ from .execution_budget import (
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v23-continuous-run-authority"
+    "serp-differentiation-depth-v24-unified-depth-contract"
 )
 
 STAGES = (
@@ -730,8 +730,19 @@ class WorkbenchEngine:
         if isinstance(payload, str):
             payload = json.loads(payload)
         blockers = payload.get("blockers") or []
-        return bool(blockers) and all(
+        if not blockers or not all(
             item.get("id") in MECHANICAL_GATES for item in blockers
+        ):
+            return False
+        preflight = audit_article(
+            p["article_text"],
+            p["platform"],
+            p["vertical"],
+            _source_affiliate_link(p["source_text"]),
+        )
+        return not any(
+            item.get("id") not in MECHANICAL_GATES
+            for item in preflight["blockers"]
         )
 
     def capabilities(self):
@@ -1170,11 +1181,18 @@ class WorkbenchEngine:
             ), p["id"], repair_purpose, p["vertical"])
             candidate_words = self._article_word_count(article)
             current_words = self._article_word_count(p["article_text"])
-            minimum_preserved = min(
-                current_words,
-                max(900, int(current_words * 0.80)),
+            platform_floor = (
+                1400
+                if p["platform"] == "Barchart Advertorial"
+                and p["vertical"] == "device"
+                else 900
             )
-            if current_words >= 900 and candidate_words < minimum_preserved:
+            minimum_preserved = max(
+                platform_floor,
+                int(current_words * 0.80),
+            )
+            enforce_floor = platform_floor == 1400 or current_words >= 900
+            if enforce_floor and candidate_words < minimum_preserved:
                 self._event(
                     p["id"],
                     "destructive_revision_rejected",

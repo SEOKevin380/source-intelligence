@@ -7,7 +7,7 @@ import re
 PROMPT_VERSION = "newswire-v1.8.1-governed-intelligence"
 
 PUBLICATION_BLOCKER_IDS = frozenset({
-    "D1", "D2", "D3", "D5", "D6", "D7", "D17", "D20",
+    "D1", "D2", "D3", "D5", "D6", "D7", "D17", "D18", "D20",
 })
 
 HARD_BLOCKER_RATIONALE = {
@@ -18,6 +18,7 @@ HARD_BLOCKER_RATIONALE = {
     "D6": ("financial_claim", "Financial copy cannot imply a guaranteed outcome."),
     "D7": ("financial_disclosure", "Material investment-loss risk must be stated."),
     "D17": ("deliverable_integrity", "Reader-facing output must be rendered HTML."),
+    "D18": ("editorial_depth", "Platform-specific reader coverage must be complete."),
     "D20": ("source_accuracy", "Material assertions must be grounded in the sealed record."),
 }
 

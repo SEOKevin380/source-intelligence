@@ -357,7 +357,8 @@ compliance report below.
   fit/not-fit, limitations, trust, and current terms. Keep alternatives to one
   compact neutral comparison section and never advocate competing products.
 - The revised Barchart device article must retain at least 80% of the current
-  article's word count and must not fall below 900 words. If a sentence cannot
+  article's word count and must not fall below 1,400 useful, source-grounded
+  words. If a sentence cannot
   be repaired without adding a fact, delete only that sentence and strengthen
   neighboring sections using permitted claims, recorded prices, recorded
   contact facts, buyer questions, and clearly labeled verification gaps.

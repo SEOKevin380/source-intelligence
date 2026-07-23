@@ -132,7 +132,7 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert project["stage"] == "source_ready"
     assert (
         "AUTOMATION CONTEXT VERSION: "
-        "serp-differentiation-depth-v23-continuous-run-authority"
+            "serp-differentiation-depth-v24-unified-depth-contract"
         in project["source_text"]
     )
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
@@ -191,7 +191,7 @@ def test_explicit_rebuild_reuses_active_project_then_rebuilds_terminal(tmp_path)
     assert engine.latest_project_from_pack(
         pack,
         "AccessNewsWire",
-        "serp-differentiation-depth-v23-continuous-run-authority",
+            "serp-differentiation-depth-v24-unified-depth-contract",
     ) == rebuilt
     assert engine.latest_project_from_pack(
         pack, "AccessNewsWire", "nonexistent-future-workflow"
@@ -220,7 +220,7 @@ def test_only_latest_durable_project_is_authoritative_run_target(tmp_path):
     newer = engine.create_project_from_pack(
         pack, "Barchart Advertorial", force_new=True
     )
-    version = "serp-differentiation-depth-v23-continuous-run-authority"
+    version = "serp-differentiation-depth-v24-unified-depth-contract"
     assert not engine.is_authoritative_run_target(
         older, pack, "Barchart Advertorial", version
     )
@@ -393,7 +393,7 @@ def test_article_diagnostics_proves_html_contract(tmp_path):
     assert diagnostics["has_article_html"] is True
 
 
-def test_barchart_device_depth_is_visible_without_arbitrary_word_count_block():
+def test_barchart_device_depth_is_a_pre_signoff_publication_block():
     article = (
         "<p>Paid Advertorial: A commission may be earned.</p>"
         "<h2><strong>What It Is</strong></h2>"
@@ -405,8 +405,8 @@ def test_barchart_device_depth_is_visible_without_arbitrary_word_count_block():
     ids = {item["id"] for item in findings}
     assert "D18" in ids
     blockers, recommendations = partition_findings(findings)
-    assert "D18" not in {item["id"] for item in blockers}
-    assert "D18" in {item["id"] for item in recommendations}
+    assert "D18" in {item["id"] for item in blockers}
+    assert "D18" not in {item["id"] for item in recommendations}
 
 
 def test_repetitive_caveat_stacking_is_client_advocacy_warning():
@@ -546,7 +546,7 @@ def test_publication_repair_neutralizes_prosecutorial_device_headings():
 def test_offline_system_audit_owns_every_blocker_and_route():
     report = audit_system_contract("device")
     assert report["passed"] is True
-    assert report["blocker_count"] == 8
+    assert report["blocker_count"] == 9
     assert not report["missing_blocker_rationales"]
     assert not report["stale_blocker_rationales"]
     assert report["missing_gate_owners"] == []
@@ -689,7 +689,7 @@ def test_current_workflow_executes_repair_before_final_signoff(tmp_path):
     )
     article = (
         "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
-        + "<p>Seller materials describe the product.</p>" * 250
+        + "<p>Seller materials describe the product.</p>" * 300
     )
     rejection = {
         "verdict": "not_approved",
@@ -908,6 +908,7 @@ def test_locked_admin_pre_signoff_recovers_mechanical_html_without_paid_call(
     article = (
         "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
         '<p>**<a href="https://partner.example/offer">Review details</a>**</p>'
+        + "<p>Seller materials describe a useful detail for buyers.</p>" * 220
     )
     digest = hashlib.sha256(("Test Device\n" + article).encode()).hexdigest()
     with engine._connect() as conn:
@@ -934,7 +935,7 @@ def test_locked_admin_pre_signoff_recovers_mechanical_html_without_paid_call(
 def test_house_optimization_gates_never_become_publication_blockers():
     house_quality_ids = {
         "D4", "D8", "D9", "D10", "D11", "D12", "D13", "D14",
-        "D15", "D16", "D18", "D19",
+        "D15", "D16", "D19",
     }
     findings = [
         {
