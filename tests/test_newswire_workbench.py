@@ -401,6 +401,48 @@ def test_reviewer_conflict_prose_is_not_source_conflict_evidence():
     assert WorkbenchEngine._report_has_true_source_conflict(report) is True
 
 
+def test_structured_source_conflict_is_autoresolved_not_sent_to_admin(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Test", "AccessNewsWire",
+        "AFFILIATE LINK: https://partner.example/offer\n"
+        "official page and checkout records",
+        "financial",
+    )
+    p = engine.get(pid)
+    report = {
+        "verdict": "not_approved",
+        "mandatory_count": 1,
+        "mandatory_edits": [{
+            "id": "price-conflict",
+            "category": "Factual verification",
+            "issue": "The official page and checkout show different prices.",
+            "exact_text": "$77",
+            "replacement": "the current price shown at checkout",
+        }],
+        "source_conflict_evidence": [{
+            "records": ["official_page", "checkout"],
+            "incompatible_facts": ["$77", "$99"],
+        }],
+    }
+    engine._set_article(
+        p,
+        "<p><strong>Paid Advertorial</strong></p>"
+        "<p>Investing involves risk, including loss of principal.</p>"
+        "<h2>Review</h2><p>The offer costs $77.</p>"
+        + ("<p>Useful sourced newsletter information for readers.</p>" * 320),
+        "revised", "test-source-conflict.html",
+    )
+    p = engine.get(pid)
+    engine._set_report(p, report, "admin_review", "legacy-conflict.json")
+
+    assert engine._recover_mechanical_admin_review(pid) is True
+    recovered = engine.get(pid)
+    assert recovered["stage"] != "admin_review"
+    assert "$77" not in recovered["article_text"]
+    assert "current price shown at checkout" in recovered["article_text"]
+
+
 def test_adjudicated_article_advances_without_third_paid_signoff(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     pid = engine.create_project("Test", "Barchart Advertorial", "financial source", "financial")

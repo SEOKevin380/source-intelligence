@@ -310,11 +310,11 @@ class WorkbenchEngine:
         raise RuntimeError("Workflow exceeded its safety step limit")
 
     def _recover_mechanical_admin_review(self, project_id):
-        """Resume legacy admin jobs unless a typed source conflict is present."""
+        """Resume legacy admin jobs, including source conflicts the engine can resolve."""
         p = self.get(project_id)
         report = p.get("last_report") or {}
         if self._report_has_true_source_conflict(report):
-            return False
+            self._record_source_conflict_resolution(p, report)
 
         target = (
             "post_seo_signed_off"
@@ -341,6 +341,21 @@ class WorkbenchEngine:
                 },
             )
         return recovered
+
+    def _record_source_conflict_resolution(self, p, report):
+        """Record the autonomous policy used to resolve contradictory source facts."""
+        conflicts = report.get("source_conflict_evidence") or []
+        self._event(
+            p["id"], "source_conflict_autoresolved", p["stage"],
+            p["article_hash"], {
+                "conflicts": conflicts,
+                "policy": (
+                    "Prefer the controlling source of record and the most current "
+                    "first-party record. If neither controls, attribute each version "
+                    "or omit the disputed fact and document the limitation."
+                ),
+            },
+        )
 
     def run_next(self, project_id, master_instructions):
         self._release_stale_run(project_id)
@@ -439,16 +454,9 @@ class WorkbenchEngine:
                         p, report, "compliance_reviewed",
                         "04-openai-signoff.json",
                     )
-                elif self._report_has_true_source_conflict(report):
-                    self._set_report(
-                        p, report, "admin_review",
-                        "04-source-conflict.json",
-                    )
-                    self._event(
-                        p["id"], "source_conflict_escalated", "admin_review",
-                        p["article_hash"], {"report": report},
-                    )
                 else:
+                    if self._report_has_true_source_conflict(report):
+                        self._record_source_conflict_resolution(p, report)
                     self._set_report(
                         p, report, "revised", "04-openai-signoff.json"
                     )
@@ -503,15 +511,9 @@ class WorkbenchEngine:
                     p, report, "seo_repair_needed",
                     "08-openai-post-seo-signoff.json",
                 )
-            elif self._report_has_true_source_conflict(report):
-                self._set_report(
-                    p, report, "admin_review", "08-source-conflict.json"
-                )
-                self._event(
-                    p["id"], "source_conflict_escalated", "admin_review",
-                    p["article_hash"], {"report": report},
-                )
             else:
+                if self._report_has_true_source_conflict(report):
+                    self._record_source_conflict_resolution(p, report)
                 self._set_report(
                     p, report, "seo_repaired",
                     "08-openai-post-seo-signoff.json",

@@ -1924,8 +1924,9 @@ else:
                         )
                 elif _active_project["stage"] == "admin_review":
                     st.warning(
-                        "The automated system found a genuine unresolved conflict and sent it "
-                        "to the admin queue. The VA can continue to the next project."
+                        "The workflow hit a technical publication-gate failure that could not "
+                        "be repaired automatically. Source disagreements are resolved by the "
+                        "system and do not require VA review."
                     )
                 else:
                     st.info(
