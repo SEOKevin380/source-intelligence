@@ -8,7 +8,7 @@ PROMPT_VERSION = "newswire-v1.1"
 
 PUBLICATION_BLOCKER_IDS = frozenset({
     "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9",
-    "D10", "D11", "D12", "D13", "D14", "D17", "D18",
+    "D10", "D11", "D12", "D13", "D14", "D17", "D18", "D19",
 })
 
 
@@ -138,6 +138,43 @@ def deterministic_findings(article, platform, vertical):
                 "Answer who, what, why, how, cost, access or setup, fit, "
                 "not-fit, limitations, trust, and the specific product thesis. "
                 "Use evidence and explicit limitations, never generic filler."
+            ),
+        })
+    caveat_phrases = re.findall(
+        r"\b(?:not independently verified|cannot be independently verified|"
+        r"no independent (?:proof|testing|verification)|unverified (?:claim|"
+        r"claims|outcome|outcomes)|lack(?:s|ing) independent verification)\b",
+        re.sub(r"<[^>]+>", " ", article),
+        re.I,
+    )
+    normalized_caveats = [
+        re.sub(r"\s+", " ", item.casefold()).strip()
+        for item in caveat_phrases
+    ]
+    repeated_caveat = max(
+        (normalized_caveats.count(item) for item in set(normalized_caveats)),
+        default=0,
+    )
+    adversarial_headings = len(re.findall(
+        r"<h[23]\b[^>]*>.*?\b(?:claims? versus|claims? vs\.?|"
+        r"why .* (?:fails?|doesn.t work)|marketing fiction|the prosecution)\b",
+        article,
+        re.I | re.S,
+    ))
+    if len(caveat_phrases) > 4 or repeated_caveat > 2 or adversarial_headings:
+        findings.append({
+            "id": "D19",
+            "category": "Client advocacy drift gate",
+            "issue": (
+                "The article repeats evidentiary caveats or uses an adversarial "
+                "frame that overwhelms the strongest supportable client case."
+            ),
+            "exact_text": "",
+            "replacement": (
+                "Keep every material limitation, but state each one once. "
+                "Consolidate repeated caveats, lead with verified features and "
+                "offer value, identify best-fit readers, and build toward a "
+                "clear compliant next action without inventing benefits."
             ),
         })
     if links and links[0].start() > max(1200, len(article) // 4):

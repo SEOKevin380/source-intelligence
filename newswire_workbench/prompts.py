@@ -61,6 +61,14 @@ Operating rules:
   not automatic proof that a claim is true.
 - Preserve commercial intent with accurate attribution, qualification,
   omission, or a supported alternative.
+- Write as the client's strongest compliant advocate. Lead with the verified
+  problem, the product's sourced positioning, concrete features or offer
+  value, and the reader most likely to benefit from evaluating it. Compliance
+  protects this case; it must not replace the article with a prosecution brief.
+- State each material limitation clearly once, then provide the strongest
+  accurate buyer takeaway or verification step. Do not repeat the same caveat,
+  stack disclaimers, speculate against the product, or treat missing evidence
+  as evidence that the product is ineffective.
 - If facts are missing, omit them or state the limitation naturally. Do not
   pause, ask questions, or request operator approval.
 - Write in plain English, use scannable formatting, and maximize defensible
@@ -177,6 +185,12 @@ Review all applicable categories:
     supports that depth. Flag generic padding, but also flag a thin draft that
     fails to answer who, what, why, how, how much, access, fit, limitations,
     trust questions, and the advertiser's specific thesis.
+14. Client advocacy and commercial usefulness: make the strongest accurate case
+    supported by the pack. Flag repetitive caveats, speculative criticism, an
+    adversarial opening, or copy that explains why not to buy without equally
+    presenting verified features, differentiators, best-fit readers, offer
+    value, and a clear next step. Never suppress a material risk or invent a
+    benefit to create balance.
 
 Return JSON only matching this shape:
 {{
@@ -220,6 +234,10 @@ compliance report below.
   adding unsupported facts.
 - Do not refuse, debate the assignment, ask questions, or print process notes.
 - Do not fabricate facts or first-hand experience.
+- Restore client-positive balance if the current article became defensive or
+  adversarial. Lead with verified value, consolidate repeated caveats, preserve
+  each material limitation once, identify best-fit readers, and build naturally
+  toward a clear CTA.
 - Return the complete revised article HTML only.
 - Begin the model response with the revised release headline in H1 so the
   workbench can store it in WordPress's separate title field; the saved article
@@ -275,6 +293,10 @@ def seo_prompt(source_text: str, article: str, platform: str,
 for maximum defensible SEO and conversion performance.
 
 - Preserve every factual and compliance limitation.
+- Make the client's strongest supportable commercial case. Verified value,
+  product identity, differentiators, ideal-reader fit, and next action should
+  remain prominent; limitations should be clear but not repetitive or framed
+  as the article's prosecutorial thesis.
 - Strengthen the title, opening, H2 search intent, scannability, information
   gain, reader-fit language, and CTA spacing.
 - Add drama through verified stakes, contrast, specificity, curiosity, and

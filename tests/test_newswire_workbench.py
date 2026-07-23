@@ -5,6 +5,7 @@ import pytest
 
 from newswire_workbench.engine import WorkbenchEngine
 from newswire_workbench.prompts import detect_vertical
+from newswire_workbench.prompts import generation_prompt
 from newswire_workbench.learning import deterministic_findings, partition_findings
 from newswire_workbench.wordpress import WordPressDraftPublisher
 from newswire_workbench.formatting import (
@@ -21,6 +22,15 @@ def test_vertical_detection_is_category_aware():
     assert detect_vertical("investment stock newsletter") == "financial"
     assert detect_vertical("commemorative gold-plated coin") == "collectible"
     assert detect_vertical("supplement facts serving size") == "health"
+
+
+def test_generation_prompt_preserves_client_advocacy_without_invention():
+    prompt = generation_prompt(
+        "verified product source", "Barchart Advertorial", "device", ""
+    )
+    assert "client's strongest compliant advocate" in prompt
+    assert "must not replace the article with a prosecution brief" in prompt
+    assert "missing evidence" in prompt
 
 
 def test_fenced_plain_text_is_converted_to_submission_html():
@@ -148,6 +158,20 @@ def test_barchart_device_cannot_package_thin_long_form():
     assert "D18" in ids
     blockers, _ = partition_findings(findings)
     assert "D18" in {item["id"] for item in blockers}
+
+
+def test_repetitive_caveat_stacking_is_client_advocacy_blocker():
+    article = (
+        "<p>Paid Advertorial: Compensation may be received.</p>"
+        "<h2><strong>Product Details</strong></h2>"
+        + "<p>The claim is not independently verified.</p>" * 5
+        + "<p><a href='https://example.com'><strong>Review details</strong></a></p>"
+    )
+    findings = deterministic_findings(
+        article, "Barchart Advertorial", "device"
+    )
+    blockers, _ = partition_findings(findings)
+    assert "D19" in {item["id"] for item in blockers}
 
 
 def test_barchart_affiliate_links_are_added_and_bolded():
