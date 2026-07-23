@@ -41,6 +41,9 @@ On Kevin's Mac, two Desktop shortcuts are installed:
 
 If a key is absent, the Manual fallback tab accepts the corresponding Claude
 article or ChatGPT compliance report without losing project history.
+Manual compliance approval requires structured JSON containing the exact
+SHA-256 hash of the current article; pasted prose can record findings but cannot
+approve an article.
 
 ## VA operation
 
@@ -50,3 +53,6 @@ returns to Claude revision. After three unsuccessful repair rounds, the item
 moves to Kevin's review queue and the VA moves to the next project. The
 workflow does not ask a VA to select a claim, positioning angle, or legal
 interpretation.
+
+See `docs/NEWSWIRE_WORKBENCH_AUDIT.md` for the completed failure-mode audit,
+implemented safeguards, and the remaining requirements before remote team use.

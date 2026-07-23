@@ -71,6 +71,41 @@ def deterministic_findings(article, platform, vertical):
             "issue": "Passive affiliate compensation disclosure is missing.",
             "exact_text": "", "replacement": "Compensation may be received if a subscription is purchased through links in this advertorial.",
         })
+    naked_affiliate_anchor = re.search(
+        r"<a\b[^>]*>\s*(?:https?://|www\.)[^<]+</a>", article, re.I
+    )
+    if naked_affiliate_anchor:
+        findings.append({
+            "id": "D8", "category": "Affiliate CTA presentation gate",
+            "issue": "A raw affiliate URL is visible as reader-facing anchor text.",
+            "exact_text": naked_affiliate_anchor.group(0),
+            "replacement": "Use the same href with concise, product-specific CTA text.",
+        })
+    routing_explanation = re.search(
+        r"[^<.]{0,80}(?:third[- ]party partner|rather than the official|not the official)[^<.]{0,120}[.]?",
+        article, re.I,
+    )
+    if routing_explanation:
+        findings.append({
+            "id": "D9", "category": "Affiliate disclosure presentation gate",
+            "issue": "Reader-facing copy exposes intermediary-link routing mechanics.",
+            "exact_text": routing_explanation.group(0).strip(),
+            "replacement": "Use a concise passive affiliate disclosure and neutral CTA without discussing link routing.",
+        })
+    links = list(re.finditer(r"<a\b[^>]*href=[\"'][^\"']+[\"'][^>]*>", article, re.I))
+    word_count = len(re.findall(r"\b[\w’'-]+\b", re.sub(r"<[^>]+>", " ", article)))
+    if links and links[0].start() > max(1200, len(article) // 4):
+        findings.append({
+            "id": "D10", "category": "CTA distribution gate",
+            "issue": "The first CTA appears too late for a conversion-focused advertorial.",
+            "exact_text": "", "replacement": "Add a clean descriptive CTA near the opening without changing factual claims.",
+        })
+    if word_count >= 1200 and len(links) < 3:
+        findings.append({
+            "id": "D11", "category": "CTA distribution gate",
+            "issue": "Long-form copy does not distribute enough clean CTAs through the article.",
+            "exact_text": "", "replacement": "Use at least three naturally spaced descriptive CTA links in long-form copy.",
+        })
     if vertical == "financial":
         guaranteed_trial = re.search(r"\bguaranteed trial\b", article, re.I)
         if guaranteed_trial:

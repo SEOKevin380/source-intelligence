@@ -114,4 +114,14 @@ with tab_audit:
 
 if p["stage"] == "package_ready":
     folder = engine.projects_dir / project_id
-    st.success(f"Submission package ready: {folder}")
+    export = engine.export_path(project_id)
+    st.success("Submission package passed final compliance and is ready.")
+    if export.exists():
+        st.download_button(
+            "Download submission package",
+            export.read_bytes(),
+            file_name=f"{p['title']}-submission-package.zip",
+            mime="application/zip",
+            type="primary",
+        )
+    st.caption(f"Local audit folder: {folder}")

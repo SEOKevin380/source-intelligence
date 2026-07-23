@@ -1,4 +1,5 @@
 import json
+import zipfile
 
 import pytest
 
@@ -33,10 +34,79 @@ def test_manual_path_and_hash_bound_report(tmp_path):
     p = engine.get(pid)
     assert p["stage"] == "drafted"
     report = {"verdict": "not_approved", "mandatory_count": 1,
-              "mandatory_edits": [], "recommended_edits": [],
+              "mandatory_edits": [{"id": "M1", "category": "Test",
+                                    "issue": "Fix text", "exact_text": "Text",
+                                    "replacement": "Revised text"}],
+              "recommended_edits": [],
               "approved_elements": [], "reviewed_article_hash": p["article_hash"]}
     engine.import_manual_report(pid, json.dumps(report))
     assert engine.get(pid)["stage"] == "compliance_reviewed"
+
+
+def test_manual_report_cannot_self_approve_without_current_hash(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project("Test", "AccessNewsWire", "device source")
+    engine.import_manual_article(pid, "<p>Draft</p>")
+    with pytest.raises(ValueError, match="current article hash"):
+        engine.import_manual_report(pid, "VERDICT: APPROVED")
+    with pytest.raises(ValueError, match="current article hash"):
+        engine.import_manual_report(pid, json.dumps({
+            "verdict": "approved", "mandatory_edits": [],
+            "reviewed_article_hash": "wrong",
+        }))
+
+
+def test_contradictory_compliance_report_is_rejected(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    with pytest.raises(ValueError, match="contradicts"):
+        engine._validate_report({
+            "verdict": "approved",
+            "mandatory_edits": [{"id": "M1"}],
+        })
+
+
+def test_duplicate_paid_run_is_blocked_and_stale_lock_recovers(tmp_path, monkeypatch):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project("Test", "AccessNewsWire", "device source")
+    with engine._connect() as conn:
+        conn.execute(
+            "UPDATE projects SET run_token='busy',run_started_at=? WHERE id=?",
+            ("2099-01-01T00:00:00+00:00", pid),
+        )
+    with pytest.raises(RuntimeError, match="already running"):
+        engine.run_next(pid, "")
+    monkeypatch.setenv("NEWSWIRE_STALE_RUN_SECONDS", "0")
+    with engine._connect() as conn:
+        conn.execute(
+            "UPDATE projects SET run_started_at='2000-01-01T00:00:00+00:00' WHERE id=?",
+            (pid,),
+        )
+    monkeypatch.setattr(engine, "_run_next_unlocked", lambda project_id, instructions: engine.get(project_id))
+    engine.run_next(pid, "")
+    assert any(e["event_type"] == "stale_run_recovered" for e in engine.events(pid))
+
+
+def test_overwritten_artifact_is_archived(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project("Test", "AccessNewsWire", "device source")
+    engine._write(pid, "report.json", "first")
+    engine._write(pid, "report.json", "second")
+    history = list((engine.projects_dir / pid / "history").glob("report-*.json"))
+    assert len(history) == 1
+    assert history[0].read_text() == "first"
+
+
+def test_package_builds_downloadable_zip(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project("Test", "AccessNewsWire", "device source")
+    engine.import_manual_article(pid, "<p>Final</p>")
+    p = engine.get(pid)
+    p["last_report"] = {"verdict": "approved", "mandatory_count": 0,
+                        "mandatory_edits": [], "reviewed_article_hash": p["article_hash"]}
+    engine._build_package(p)
+    assert engine.export_path(pid).exists()
+    with zipfile.ZipFile(engine.export_path(pid)) as archive:
+        assert {"00-source-record.txt", "FINAL-ARTICLE.html", "submission-manifest.json"}.issubset(archive.namelist())
 
 
 def test_next_action_includes_admin_queue(tmp_path):
@@ -64,6 +134,27 @@ def test_deterministic_financial_gates_override_model_ambiguity():
     assert {"D1", "D6", "D7"}.issubset(ids)
 
 
+def test_deterministic_gate_hides_raw_affiliate_url_and_routing_explanation():
+    article = """<p><strong>Paid Advertorial</strong> — Links may lead to a third-party partner page rather than the official domain.</p>
+    <p>Investments carry risk, including loss of principal.</p>
+    <a href=\"https://partner.example/offer\">https://partner.example/offer</a>"""
+    ids = {item["id"] for item in deterministic_findings(
+        article, "AccessNewsWire", "financial"
+    )}
+    assert {"D8", "D9"}.issubset(ids)
+
+
+def test_long_advertorial_requires_early_distributed_ctas():
+    article = ("<p><strong>Paid Advertorial</strong></p>" +
+               "<p>Investments carry risk, including loss of principal.</p>" +
+               ("<p>Useful sourced discussion for readers.</p>" * 400) +
+               '<a href="https://partner.example/offer">Review offer details</a>')
+    ids = {item["id"] for item in deterministic_findings(
+        article, "AccessNewsWire", "financial"
+    )}
+    assert {"D10", "D11"}.issubset(ids)
+
+
 def test_recurring_review_issues_become_memory(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     pid = engine.create_project("Test", "AccessNewsWire", "financial source", "financial")
@@ -76,6 +167,8 @@ def test_recurring_review_issues_become_memory(tmp_path):
                   "recommended_edits": [], "approved_elements": [],
                   "reviewed_article_hash": p["article_hash"]}
         engine._set_report(p, report, "compliance_reviewed", f"r{n}.json")
+    with engine._connect() as conn:
+        conn.execute("UPDATE projects SET stage='package_ready' WHERE id=?", (pid,))
     assert "Seen 2 times" in engine._learned_guidance("AccessNewsWire", "financial")
 
 
@@ -94,3 +187,15 @@ def test_adjudicator_applies_exact_fixes_and_rejects_bad_platform_attribution(tm
     updated = engine.get(pid)["article_text"]
     assert "New title" in updated
     assert "AccessNewsWire may receive" not in updated
+
+
+def test_reviewer_house_rule_conflicts_cannot_block(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    report = {"verdict": "not_approved", "mandatory_count": 2,
+              "mandatory_edits": [
+                  {"id": "M1", "exact_text": "Disclosure", "replacement": "We may earn a commission."},
+                  {"id": "M2", "exact_text": "Priority code ABC123 may apply.", "replacement": ""},
+              ], "notes": []}
+    cleaned = engine._remove_house_rule_conflicts(report)
+    assert cleaned["verdict"] == "approved"
+    assert cleaned["mandatory_count"] == 0
