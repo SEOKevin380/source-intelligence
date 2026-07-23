@@ -43,7 +43,14 @@ def route_for(stage: str, vertical: str = "general_consumer") -> ModelRoute:
             os.environ.get("NEWSWIRE_DRAFT_MODEL", "claude-sonnet-4-5-20250929"),
             12000, 1, 3.0, 15.0,
         ),
-        "repair": ModelRoute(
+        "compliance_repair": ModelRoute(
+            "anthropic-direct",
+            os.environ.get("NEWSWIRE_REPAIR_MODEL", "claude-haiku-4-5-20251001"),
+            9000, 2, 1.0, 5.0,
+        ),
+        # SEO repair is a later, independent job. It must never inherit the
+        # paid-call count from the initial compliance repair.
+        "seo_repair": ModelRoute(
             "anthropic-direct",
             os.environ.get("NEWSWIRE_REPAIR_MODEL", "claude-haiku-4-5-20251001"),
             9000, 2, 1.0, 5.0,

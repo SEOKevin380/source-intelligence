@@ -417,7 +417,7 @@ class WorkbenchEngine:
                 p["source_text"], p["article_text"], p["last_report"],
                 p["platform"], p["vertical"], memory,
                 release_title=p.get("release_title", p["title"]),
-            ), p["id"], "repair", p["vertical"])
+            ), p["id"], "compliance_repair", p["vertical"])
             self._set_article(p, article, "revised", "03-claude-revision.html", bump=True)
         elif stage == "revised":
             # Recover projects created before adjudicated sign-off advanced the
@@ -471,7 +471,7 @@ class WorkbenchEngine:
                 p["source_text"], p["article_text"], p["last_report"],
                 p["platform"], p["vertical"], memory,
                 release_title=p.get("release_title", p["title"]),
-            ), p["id"], "repair", p["vertical"])
+            ), p["id"], "seo_repair", p["vertical"])
             self._set_article(p, article, "seo_repaired", "07-claude-seo-repair.html", bump=True)
         elif stage == "seo_repaired":
             post_route = route_for("post_seo_signoff", p["vertical"])

@@ -66,7 +66,8 @@ def test_routing_uses_stronger_final_review_only_for_higher_risk():
     assert risk_tier("financial") == 3
     assert route_for("final_signoff", "general_consumer").model == "gpt-5.4-mini"
     assert route_for("final_signoff", "financial").model == "gpt-5.4"
-    assert route_for("repair", "financial").max_calls == 2
+    assert route_for("compliance_repair", "financial").max_calls == 2
+    assert route_for("seo_repair", "financial").max_calls == 2
 
 
 def test_llm_call_budget_blocks_repeat_stage_calls(tmp_path):
@@ -92,6 +93,25 @@ def test_post_seo_signoff_has_independent_call_budget(tmp_path):
 
     post_seo = route_for("post_seo_signoff", "financial")
     engine._assert_call_budget(pid, "post_seo_signoff", post_seo)
+
+
+def test_seo_repair_has_independent_call_budget(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Test", "AccessNewsWire", "financial source", "financial"
+    )
+    compliance_repair = route_for("compliance_repair", "financial")
+    for _ in range(compliance_repair.max_calls):
+        engine._record_llm_call(
+            pid, "compliance_repair", compliance_repair, 100, 100
+        )
+    with pytest.raises(RuntimeError, match="call ceiling"):
+        engine._assert_call_budget(
+            pid, "compliance_repair", compliance_repair
+        )
+
+    seo_repair = route_for("seo_repair", "financial")
+    engine._assert_call_budget(pid, "seo_repair", seo_repair)
 
 
 def test_manual_path_and_hash_bound_report(tmp_path):
