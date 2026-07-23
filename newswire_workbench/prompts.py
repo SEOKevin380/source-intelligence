@@ -227,7 +227,8 @@ compliance report below.
 - The publishing platform is not the affiliate. Never say AccessNewsWire or
   Barchart earns or receives the affiliate compensation.
 - Use the house-standard passive disclosure: “Compensation may be received if
-  a subscription is purchased through links in this advertorial.”
+  a purchase is made through links in this advertorial.” For a newsletter,
+  “subscription is purchased” is also acceptable.
 - Affiliate URLs belong only in href attributes. Replace raw URL/domain anchor
   text with a product-specific CTA such as “Review the current offer details.”
 - Keep the opening disclosure short; do not tell readers that a link routes

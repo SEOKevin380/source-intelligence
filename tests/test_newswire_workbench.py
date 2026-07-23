@@ -223,6 +223,12 @@ def test_seo_repair_has_independent_call_budget(tmp_path):
     engine._assert_call_budget(pid, "seo_repair", seo_repair)
 
 
+def test_mandatory_quality_rescue_has_independent_stronger_budget():
+    rescue = route_for("quality_rescue", "device")
+    assert rescue.max_calls == 3
+    assert rescue.max_tokens >= 12000
+
+
 def test_manual_path_and_hash_bound_report(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     pid = engine.create_project("Test", "Barchart Advertorial", "financial newsletter source")

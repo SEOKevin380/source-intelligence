@@ -856,6 +856,10 @@ class WorkbenchEngine:
                 f"Automated {stage} call ceiling reached; routed to admin review instead of repeating paid work"
             )
         ceiling = float(os.environ.get("NEWSWIRE_PROJECT_BUDGET_USD", "1.50"))
+        if stage == "quality_rescue":
+            ceiling += float(
+                os.environ.get("NEWSWIRE_QUALITY_RESCUE_BUDGET_USD", "1.50")
+            )
         if spent >= ceiling:
             raise RuntimeError(
                 f"Project AI budget ceiling (${ceiling:.2f}) reached; no additional paid call was made"
@@ -1155,12 +1159,71 @@ class WorkbenchEngine:
         )
         blockers, quality_warnings = partition_findings(findings)
         if blockers:
+            rescue_route = route_for("quality_rescue", p["vertical"])
+            rescue_count = self._billable_call_count(
+                project_id, "quality_rescue"
+            )
+            if rescue_count < rescue_route.max_calls:
+                rescue_report = {
+                    "verdict": "not_approved",
+                    "mandatory_count": len(blockers),
+                    "mandatory_edits": blockers,
+                    "recommended_edits": quality_warnings,
+                    "approved_elements": [],
+                    "notes": [
+                        "Autonomous quality rescue: preserve verified facts, "
+                        "commercial strength, prior-release differentiation, "
+                        "and complete every mandatory publication gate."
+                    ],
+                    "reviewed_article_hash": p["article_hash"],
+                }
+                rescue_article = self._claude(
+                    revision_prompt(
+                        p["source_text"],
+                        p["article_text"],
+                        rescue_report,
+                        p["platform"],
+                        p["vertical"],
+                        self._learned_guidance(
+                            p["platform"], p["vertical"]
+                        ),
+                        release_title=p.get("release_title", p["title"]),
+                    ),
+                    p["id"],
+                    "quality_rescue",
+                    p["vertical"],
+                )
+                self._set_article(
+                    p,
+                    rescue_article,
+                    p["stage"],
+                    f"10-quality-rescue-{rescue_count + 1}.html",
+                    bump=True,
+                )
+                rescued = self.get(project_id)
+                self._event(
+                    project_id,
+                    "autonomous_quality_rescue",
+                    rescued["stage"],
+                    rescued["article_hash"],
+                    {
+                        "attempt": rescue_count + 1,
+                        "blockers": blockers,
+                    },
+                )
+                return self._complete_adjudicated_signoff(
+                    project_id, target_stage, filename
+                )
+
+            # This is a technical retry state, never a request for an editorial
+            # decision. A fresh run can be created automatically by the UI.
             self._set_stage(project_id, "admin_review")
             self._event(
-                project_id, "adjudication_unresolved", "admin_review",
+                project_id, "quality_rescue_exhausted", "admin_review",
                 p["article_hash"], {
                     "blockers": blockers,
                     "quality_warnings": quality_warnings,
+                    "operator_decision_required": False,
                 },
             )
             return False

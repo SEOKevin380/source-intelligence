@@ -55,6 +55,19 @@ def route_for(stage: str, vertical: str = "general_consumer") -> ModelRoute:
             os.environ.get("NEWSWIRE_REPAIR_MODEL", "claude-haiku-4-5-20251001"),
             9000, 2, 1.0, 5.0,
         ),
+        # Mandatory editorial gates never terminate in an operator queue.
+        # This independent rescue budget uses the stronger writer with enough
+        # output room to rebuild a complete long-form article.
+        "quality_rescue": ModelRoute(
+            "anthropic-direct",
+            os.environ.get(
+                "NEWSWIRE_QUALITY_RESCUE_MODEL",
+                os.environ.get(
+                    "NEWSWIRE_DRAFT_MODEL", "claude-sonnet-4-5-20250929"
+                ),
+            ),
+            14000, 3, 3.0, 15.0,
+        ),
         "seo": ModelRoute(
             "anthropic-direct",
             os.environ.get("NEWSWIRE_SEO_MODEL", "claude-haiku-4-5-20251001"),
