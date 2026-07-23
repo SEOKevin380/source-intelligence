@@ -31,7 +31,7 @@ from .routing import estimated_cost, route_for
 from .audit import audit_article
 
 
-WORKBENCH_SOURCE_CONTEXT_VERSION = "serp-differentiation-depth-v6-preflight"
+WORKBENCH_SOURCE_CONTEXT_VERSION = "serp-differentiation-depth-v7-objection-audit"
 
 STAGES = (
     "source_ready",
@@ -1067,6 +1067,7 @@ class WorkbenchEngine:
         for item in report.get("mandatory_edits", []) or []:
             exact = str(item.get("exact_text", "") or "")
             replacement = str(item.get("replacement", "") or "")
+            issue = str(item.get("issue", "") or "")
             if str(item.get("id", "")).startswith("D"):
                 rejected.append({"id": item.get("id"), "reason": "deterministic_gate_requires_mechanical_or_model_repair"})
                 continue
@@ -1075,6 +1076,28 @@ class WorkbenchEngine:
                 reason = "replacement_conflicts_with_house_disclosure_or_cta_rules"
             elif re.fullmatch(r"Priority code\s+[A-Z0-9-]+\s+may apply\.", exact, re.I):
                 reason = "source_supplied_priority_code_is_not_internal_language"
+            elif re.search(
+                r"(?:must|required|should).{0,100}(?:not the official|"
+                r"third[- ]party affiliate|affiliate domain)",
+                issue,
+                re.I,
+            ):
+                reason = "house_rule_forbids_reader_facing_affiliate_routing_explanation"
+            elif (
+                re.search(r"prior[- ]release", issue, re.I)
+                and re.search(r"(?:forbids?|remove).{0,80}(?:link|backlink)", issue, re.I)
+            ):
+                # The contextual backlink is required. Narrow the objection to
+                # the genuinely valid publisher-name/repeated-framing portion.
+                item = dict(item)
+                item["issue"] = (
+                    "Remove any prior publisher name or repeated prior-coverage "
+                    "framing while preserving one quiet contextual backlink."
+                )
+                item["replacement"] = (
+                    "Keep one descriptive contextual link without naming its "
+                    "publisher or calling it a previous release."
+                )
             if reason:
                 rejected.append({"id": item.get("id"), "reason": reason})
             else:
@@ -1589,7 +1612,32 @@ class WorkbenchEngine:
                 ORDER BY occurrences DESC, category
                 LIMIT 20
             """, (platform, vertical)).fetchall()
-        return learned_guidance([dict(row) for row in rows])
+        return learned_guidance(self._sanitize_guidance_rows(rows))
+
+    @staticmethod
+    def _sanitize_guidance_rows(rows):
+        """Prevent stale reviewer conflicts from becoming generation policy."""
+        sanitized = []
+        for raw in rows:
+            row = dict(raw)
+            issue = str(row.get("issue", "") or "")
+            if re.search(
+                r"(?:must|required|should).{0,100}(?:not the official|"
+                r"third[- ]party affiliate|affiliate domain)",
+                issue,
+                re.I,
+            ):
+                continue
+            if (
+                re.search(r"prior[- ]release", issue, re.I)
+                and re.search(r"(?:forbids?|remove).{0,80}(?:link|backlink)", issue, re.I)
+            ):
+                row["issue"] = (
+                    "Do not name a prior publisher or repeat prior-coverage "
+                    "framing; preserve one quiet contextual backlink."
+                )
+            sanitized.append(row)
+        return sanitized
 
     def _source_failure_guidance(self, source_hash, platform, vertical):
         """Use recent same-source failures immediately, without global promotion."""
@@ -1603,6 +1651,7 @@ class WorkbenchEngine:
                 ORDER BY occurrences DESC, MAX(io.created_at) DESC
                 LIMIT 12
             """, (source_hash, platform, vertical)).fetchall()
+        rows = self._sanitize_guidance_rows(rows)
         if not rows:
             return ""
         lines = [

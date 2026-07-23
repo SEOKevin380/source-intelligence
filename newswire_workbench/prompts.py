@@ -65,6 +65,10 @@ Operating rules:
   or industry-statistic assertions from memory.
 - Treat supplied sales pages and VSLs as records of what the advertiser says,
   not automatic proof that a claim is true.
+- For device specifications, setup, placement, operation, optimization time,
+  and functions taken from seller or third-party descriptions, use explicit
+  attribution such as “seller materials state” or “the offer describes.”
+  Never silently convert those descriptions into independently verified facts.
 - Preserve commercial intent with accurate attribution, qualification,
   omission, or a supported alternative.
 - Write as the client's strongest compliant advocate. Lead with the verified
@@ -103,6 +107,9 @@ Operating rules:
   backlink using a descriptive anchor. Do not name its publisher. The current
   release must have a different primary intent, title promise, opening thesis,
   and H2 question spine.
+- A previous-release backlink is mandatory context, but never call it a
+  “previous release,” name its publisher, or build a section around it. Place
+  it once as a quiet contextual resource inside a relevant paragraph.
 - Place the first clean affiliate CTA near the start of the release, then
   distribute additional CTAs naturally and evenly through long copy. Do not
   cluster links, expose raw URLs, or repeat identical surrounding sentences.
@@ -259,6 +266,9 @@ compliance report below.
   toward a clear CTA.
 - Remove scientific, engineering, market, utility-billing, competitor-pricing,
   or industry-statistic assertions absent from the sealed source record.
+- Attribute every device specification, setup direction, placement suggestion,
+  operational function, and claimed mechanism to the seller/offer unless the
+  sealed record explicitly identifies independent verification.
 - Return the complete revised article HTML only.
 - Begin the model response with the revised release headline in H1 so the
   workbench can store it in WordPress's separate title field; the saved article
@@ -276,6 +286,8 @@ compliance report below.
   of previous releases or collapse the new article back onto their main intent.
 - Preserve a natural contextual backlink to each valid supplied prior-release
   URL.
+- Preserve that backlink quietly inside a relevant paragraph. Do not call it a
+  previous release, name its publisher, or create a section about prior coverage.
 - Keep one clean CTA near the opening and distribute later CTAs naturally.
 - Preserve the exact MBK HTML contract: no body H1; every H2/H3 and CTA anchor
   contains STRONG; 10–14 additional STRONG.key-takeaway phrases; 5–6 strategic links for
@@ -345,6 +357,9 @@ for maximum defensible SEO and conversion performance.
   strategic links for AccessNewsWire long-form copy.
 - Do not introduce facts, claims, experiences, testimonials, prices, or terms
   absent from the source record.
+- Do not turn attributed device descriptions into verified facts. Preserve
+  “seller materials state,” “the offer describes,” or equivalent attribution
+  for specifications, placement, setup, functions, and claimed mechanisms.
 - Return complete article HTML only and no process commentary.
 - Begin with the optimized release headline in H1 for extraction into the
   separate WordPress title field. The saved body uses only bolded H2/H3 headings.

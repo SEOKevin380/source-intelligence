@@ -109,7 +109,7 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     project = engine.get(first)
     assert project["stage"] == "source_ready"
     assert (
-        "AUTOMATION CONTEXT VERSION: serp-differentiation-depth-v6-preflight"
+        "AUTOMATION CONTEXT VERSION: serp-differentiation-depth-v7-objection-audit"
         in project["source_text"]
     )
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
@@ -445,6 +445,46 @@ def test_affiliate_link_is_read_from_sealed_pack_json():
     assert _source_affiliate_link(source) == (
         "https://seriouslifemagazine.com/ecowatt-power-saver"
     )
+
+
+def test_escaped_html_is_blocked_then_rendered_as_clean_markup():
+    article = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "&lt;h2&gt;&lt;strong&gt;Product Details&lt;/strong&gt;&lt;/h2&gt;"
+        "&lt;p&gt;Seller materials state the setup details.&lt;/p&gt;"
+    )
+    assert "D17" in {
+        item["id"] for item in deterministic_findings(
+            article, "Barchart Advertorial", "device"
+        )
+    }
+    repaired = repair_publication_gates(
+        article, "Barchart Advertorial", "device"
+    )
+    assert "&lt;h2" not in repaired
+    assert "<h2><strong>Product Details</strong></h2>" in repaired
+    assert "D17" not in {
+        item["id"] for item in deterministic_findings(
+            repaired, "Barchart Advertorial", "device"
+        )
+    }
+
+
+def test_double_escaped_html_and_anchor_attributes_are_repaired():
+    article = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "&amp;lt;h2&amp;gt;&amp;lt;strong&amp;gt;Offer Details"
+        "&amp;lt;/strong&amp;gt;&amp;lt;/h2&amp;gt;"
+        "&amp;lt;a href=&amp;quot;https://partner.example/ecowatt&amp;quot;"
+        "&amp;gt;&amp;lt;strong&amp;gt;Review details"
+        "&amp;lt;/strong&amp;gt;&amp;lt;/a&amp;gt;"
+    )
+    repaired = repair_publication_gates(
+        article, "Barchart Advertorial", "device"
+    )
+    assert "&amp;lt;" not in repaired
+    assert "<h2><strong>Offer Details</strong></h2>" in repaired
+    assert 'href="https://partner.example/ecowatt"' in repaired
 
 
 def test_barchart_set_article_uses_sealed_pack_affiliate_link(tmp_path):
@@ -1312,3 +1352,51 @@ def test_reviewer_house_rule_conflicts_cannot_block(tmp_path):
     cleaned = engine._remove_house_rule_conflicts(report)
     assert cleaned["verdict"] == "approved"
     assert cleaned["mandatory_count"] == 0
+
+
+def test_reviewer_cannot_require_affiliate_routing_disclosure(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    report = {
+        "verdict": "not_approved",
+        "mandatory_count": 1,
+        "mandatory_edits": [{
+            "id": "M1",
+            "exact_text": "Opening disclosure",
+            "issue": (
+                "Opening disclosure must state that the linked page is not the "
+                "official brand site because it uses a third-party affiliate domain."
+            ),
+            "replacement": "This is not the official brand site.",
+        }],
+        "notes": [],
+    }
+    cleaned = engine._remove_house_rule_conflicts(report)
+    assert cleaned["verdict"] == "approved"
+    assert cleaned["mandatory_edits"] == []
+
+
+def test_learning_memory_drops_house_conflicts_and_narrows_prior_link_rule():
+    rows = [
+        {
+            "category": "Disclosure",
+            "issue": (
+                "The opening must state this is not the official site because "
+                "the CTA uses a third-party affiliate domain."
+            ),
+            "occurrences": 3,
+        },
+        {
+            "category": "Prior release",
+            "issue": "The prior-release rule forbids the contextual link.",
+            "occurrences": 2,
+        },
+        {
+            "category": "Source grounding",
+            "issue": "Utility-grid assertions are absent from the sealed record.",
+            "occurrences": 4,
+        },
+    ]
+    cleaned = WorkbenchEngine._sanitize_guidance_rows(rows)
+    assert len(cleaned) == 2
+    assert "preserve one quiet contextual backlink" in cleaned[0]["issue"]
+    assert "Utility-grid assertions" in cleaned[1]["issue"]

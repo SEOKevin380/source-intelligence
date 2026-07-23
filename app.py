@@ -1904,7 +1904,7 @@ else:
                     or (
                         _prior_diagnostics
                         and _prior_diagnostics.get("workflow_version")
-                        != "serp-differentiation-depth-v6-preflight"
+                        != "serp-differentiation-depth-v7-objection-audit"
                     )
                 )
             )

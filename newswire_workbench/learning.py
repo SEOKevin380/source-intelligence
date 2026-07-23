@@ -4,7 +4,7 @@ import hashlib
 import re
 
 
-PROMPT_VERSION = "newswire-v1.2-preflight"
+PROMPT_VERSION = "newswire-v1.3-objection-audit"
 
 PUBLICATION_BLOCKER_IDS = frozenset({
     "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9",
@@ -53,14 +53,30 @@ def deterministic_findings(article, platform, vertical):
         r"^\s{0,3}#{1,6}\s+\S|^\s*```|```\s*$",
         article,
     )
-    if markdown_residue or not re.search(
+    escaped_html = re.search(
+        r"&(?:amp;)?lt;/?(?:strong|h[1-6]|a|p|ul|ol|li|blockquote)"
+        r"\b.{0,500}?&(?:amp;)?gt;",
+        article,
+        re.I | re.S,
+    )
+    if markdown_residue or escaped_html or not re.search(
         r"<(?:p|h[1-6]|ul|ol|li|div|blockquote)\b", article, re.I
     ):
         findings.append({
             "id": "D17", "category": "Submission HTML gate",
-            "issue": "The deliverable contains Markdown residue or is not publication-ready article HTML.",
-            "exact_text": markdown_residue.group(0).strip() if markdown_residue else "",
-            "replacement": "Remove code fences and convert the complete draft to article-body HTML.",
+            "issue": (
+                "The deliverable contains Markdown, visible escaped HTML, or "
+                "is not publication-ready article HTML."
+            ),
+            "exact_text": (
+                markdown_residue.group(0).strip()
+                if markdown_residue else
+                escaped_html.group(0) if escaped_html else ""
+            ),
+            "replacement": (
+                "Remove code fences and convert escaped or Markdown markup "
+                "into clean rendered article-body HTML."
+            ),
         })
     if "advertorial" not in lowered[:1200]:
         findings.append({
@@ -235,7 +251,11 @@ def deterministic_findings(article, platform, vertical):
         })
     categorical_external_claims = re.findall(
         r"\b(?:utilities? (?:only|solely|do not|does not)|"
+        r"utilities? (?:measure|bill|charge)|"
         r"all residential|no residential|cannot reduce|"
+        r"residential (?:electricity )?billing|reactive power|"
+        r"kilowatt-hours? regardless|typical (?:home|household)|"
+        r"power factor (?:cannot|does not|doesn't)|"
         r"typically ranges? from \$|accounts for roughly \d+%|"
         r"breaks down approximately as)\b",
         plain_lower,

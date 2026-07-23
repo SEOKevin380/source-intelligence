@@ -61,6 +61,39 @@ def _repair_mixed_markdown(value):
     return str(soup)
 
 
+def _repair_escaped_article_tags(value):
+    """Render a narrow allowlist of model-escaped article tags safely."""
+    for _ in range(2):
+        collapsed = re.sub(
+            r"&amp;(lt;|gt;|quot;|#x27;)", r"&\1", value, flags=re.I
+        )
+        if collapsed == value:
+            break
+        value = collapsed
+    tag_pattern = re.compile(
+        r"&lt;(/?)(strong|h[1-6]|a|p|ul|ol|li|blockquote)"
+        r"((?:\s+[^&<>]*?)?)&gt;",
+        re.I,
+    )
+
+    def replace(match):
+        closing, tag, raw_attrs = match.groups()
+        tag = tag.lower()
+        if closing:
+            return f"</{tag}>"
+        attrs = html_lib.unescape(raw_attrs or "")
+        if tag == "a":
+            href = re.search(r"\bhref=[\"'](https?://[^\"']+)[\"']", attrs, re.I)
+            return f'<a href="{html_lib.escape(href.group(1), quote=True)}">' if href else "<a>"
+        if tag == "strong" and re.search(
+            r"\bclass=[\"'][^\"']*\bkey-takeaway\b", attrs, re.I
+        ):
+            return '<strong class="key-takeaway">'
+        return f"<{tag}>"
+
+    return tag_pattern.sub(replace, value)
+
+
 def ensure_article_html(value):
     """Remove model fences and convert plain-text drafts to article-body HTML."""
     value = (value or "").strip()
@@ -264,6 +297,7 @@ def ensure_affiliate_links(html, href, target=5):
 
 def repair_publication_gates(html, platform, vertical, affiliate_href=""):
     """Apply deterministic publication fixes without changing factual meaning."""
+    html = _repair_escaped_article_tags(html)
     html = ensure_article_html(html)
     soup = BeautifulSoup(html, "html.parser")
 
