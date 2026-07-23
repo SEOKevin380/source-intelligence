@@ -317,12 +317,55 @@ class WorkbenchEngine:
     def offline_preflight(self, project_id):
         """Audit the exact stored artifact without making a paid model call."""
         p = self.get(project_id)
-        return audit_article(
+        result = audit_article(
             p.get("article_text") or "",
             p["platform"],
             p["vertical"],
             _source_affiliate_link(p["source_text"]),
         )
+        last_report = p.get("last_report") or {}
+        exact_semantic_approval = bool(
+            last_report.get("verdict") == "approved"
+            and last_report.get("reviewed_article_hash") == p["article_hash"]
+            and p["stage"] in {
+                "signed_off", "post_seo_signed_off", "package_ready"
+            }
+        )
+        reviewer_capacity = {}
+        for purpose in (
+            "independent_rescue_signoff",
+            "executive_rescue_signoff",
+            "war_room_signoff",
+        ):
+            route = route_for(purpose, p["vertical"])
+            used = self._billable_call_count(project_id, purpose)
+            reviewer_capacity[purpose] = {
+                "used": used,
+                "maximum": route.max_calls,
+                "remaining": max(route.max_calls - used, 0),
+            }
+        unresolved = last_report.get("mandatory_edits") or []
+        result["semantic_review"] = {
+            "passed": exact_semantic_approval,
+            "stage": p["stage"],
+            "last_verdict": last_report.get("verdict", "not_run"),
+            "reviewed_article_hash": last_report.get(
+                "reviewed_article_hash", ""
+            ),
+            "current_article_hash": p["article_hash"],
+            "exact_hash_match": (
+                last_report.get("reviewed_article_hash") == p["article_hash"]
+            ),
+            "unresolved_edits": unresolved,
+            "reviewer_capacity": reviewer_capacity,
+            "remaining_calls": sum(
+                item["remaining"] for item in reviewer_capacity.values()
+            ),
+        }
+        result["ready_for_packaging"] = bool(
+            result["passed"] and exact_semantic_approval
+        )
+        return result
 
     def inherit_wordpress_draft(self, new_project_id, old_project_id):
         """Let an explicit rebuild update the same WordPress draft."""

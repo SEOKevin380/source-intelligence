@@ -363,6 +363,45 @@ def test_ecowatt_shaped_preflight_exposes_all_semantic_failures_together():
     assert report["passed"] is False
 
 
+def test_offline_preflight_does_not_claim_ready_without_exact_semantic_approval(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "EcoWatt", "Barchart Advertorial",
+        "AUTOMATION CONTEXT VERSION: test\n"
+        "AFFILIATE LINK: https://partner.example/ecowatt",
+        "device",
+    )
+    article = (
+        "<p><strong>Paid Advertorial</strong></p>"
+        + "<h2><strong>Product Details</strong></h2>"
+        + "<p>EcoWatt product details, setup, price, best fit, and material "
+        "limitations are explained in plain language for buyers.</p>" * 220
+    )
+    engine.import_manual_article(pid, article)
+    p = engine.get(pid)
+    engine._set_report(
+        p,
+        {
+            "verdict": "not_approved",
+            "mandatory_edits": [{
+                "id": "S1",
+                "category": "Semantic editorial review",
+                "issue": "The comparison angle still overlaps the prior release.",
+            }],
+            "reviewed_article_hash": p["article_hash"],
+        },
+        "admin_review",
+        "semantic-rejection.json",
+    )
+    preflight = engine.offline_preflight(pid)
+    assert preflight["blockers"] == []
+    assert preflight["semantic_review"]["passed"] is False
+    assert preflight["semantic_review"]["unresolved_edits"][0]["id"] == "S1"
+    assert preflight["ready_for_packaging"] is False
+
+
 def test_unsourced_categorical_background_triggers_source_grounding_gate():
     article = (
         "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"

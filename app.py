@@ -1923,6 +1923,7 @@ else:
                 _contract = _prior_preflight["system_contract"]
                 _preflight_blockers = _prior_preflight["blockers"]
                 _semantic_blockers = _prior_preflight["semantic_remaining"]
+                _semantic_review = _prior_preflight["semantic_review"]
                 if _contract["passed"]:
                     st.caption(
                         "Offline preflight: all "
@@ -1952,10 +1953,30 @@ else:
                                 item["id"] for item in _semantic_blockers
                             )
                         )
-                else:
+                elif _semantic_review["passed"]:
                     st.success(
-                        "Exact stored article passes every deterministic "
-                        "publication blocker before any additional paid call."
+                        "Exact stored article passes every deterministic gate "
+                        "and has independent semantic approval for its current "
+                        "article hash."
+                    )
+                else:
+                    st.warning(
+                        "Deterministic gates are clear, but the exact stored "
+                        "article does not yet have independent semantic approval."
+                    )
+                    _unresolved = _semantic_review["unresolved_edits"]
+                    if _unresolved:
+                        st.caption(
+                            "Independent reviewer objections: "
+                            + " | ".join(
+                                str(item.get("issue") or item)
+                                for item in _unresolved
+                            )
+                        )
+                    st.caption(
+                        "Independent review capacity remaining: "
+                        f"{_semantic_review['remaining_calls']} call(s). "
+                        f"Last verdict: {_semantic_review['last_verdict']}."
                     )
                 with st.expander("Offline preflight details"):
                     for _finding in (
@@ -1967,6 +1988,16 @@ else:
                             f"{_finding['category']}**"
                         )
                         st.caption(_finding["issue"])
+                    if not _semantic_review["passed"]:
+                        st.markdown("**Independent semantic review — unresolved**")
+                        st.caption(
+                            "The final article must be approved by an "
+                            "independent reviewer on its exact current hash."
+                        )
+                        for _edit in _semantic_review["unresolved_edits"]:
+                            st.caption(
+                                "• " + str(_edit.get("issue") or _edit)
+                            )
             if st.button(
                 (
                     "Rebuild With Latest Workflow"
