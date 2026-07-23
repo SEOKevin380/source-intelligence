@@ -1904,10 +1904,69 @@ else:
                     or (
                         _prior_diagnostics
                         and _prior_diagnostics.get("workflow_version")
-                        != "serp-differentiation-depth-v5"
+                        != "serp-differentiation-depth-v6-preflight"
                     )
                 )
             )
+            _prior_preflight = None
+            if _prior_project and _prior_project.get("article_text"):
+                try:
+                    _prior_preflight = _workbench.offline_preflight(
+                        _prior_project_id
+                    )
+                except Exception as _preflight_error:
+                    st.error(
+                        "Offline workflow preflight could not complete: "
+                        + str(_preflight_error)
+                    )
+            if _prior_preflight:
+                _contract = _prior_preflight["system_contract"]
+                _preflight_blockers = _prior_preflight["blockers"]
+                _semantic_blockers = _prior_preflight["semantic_remaining"]
+                if _contract["passed"]:
+                    st.caption(
+                        "Offline preflight: all "
+                        f"{_contract['blocker_count']} publication gates have "
+                        "repair ownership and every model/reviewer route has a "
+                        "valid independent budget."
+                    )
+                else:
+                    st.error(
+                        "Workflow contract is incomplete. No paid run should "
+                        "start until these defects are fixed: "
+                        + ", ".join(
+                            _contract["missing_gate_owners"]
+                            + _contract["route_errors"]
+                        )
+                    )
+                if _preflight_blockers:
+                    st.warning(
+                        "Exact stored article preflight — all remaining blockers "
+                        "found together: "
+                        + ", ".join(item["id"] for item in _preflight_blockers)
+                    )
+                    if _semantic_blockers:
+                        st.caption(
+                            "Semantic reconstruction required for: "
+                            + ", ".join(
+                                item["id"] for item in _semantic_blockers
+                            )
+                        )
+                else:
+                    st.success(
+                        "Exact stored article passes every deterministic "
+                        "publication blocker before any additional paid call."
+                    )
+                with st.expander("Offline preflight details"):
+                    for _finding in (
+                        _prior_preflight["blockers"]
+                        + _prior_preflight["recommendations"]
+                    ):
+                        st.markdown(
+                            f"**{_finding['id']} — "
+                            f"{_finding['category']}**"
+                        )
+                        st.caption(_finding["issue"])
             if st.button(
                 (
                     "Rebuild With Latest Workflow"
@@ -1915,7 +1974,13 @@ else:
                 ),
                 type="primary",
                 use_container_width=True,
-                disabled=not _ready_to_run,
+                disabled=(
+                    not _ready_to_run
+                    or bool(
+                        _prior_preflight
+                        and not _prior_preflight["system_contract"]["passed"]
+                    )
+                ),
                 key=f"build_newswire_{product_key or _quick_slug}",
             ):
                 _project_id = _workbench.create_project_from_pack(

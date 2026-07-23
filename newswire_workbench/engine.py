@@ -28,9 +28,10 @@ from .formatting import (
     repair_publication_gates,
 )
 from .routing import estimated_cost, route_for
+from .audit import audit_article
 
 
-WORKBENCH_SOURCE_CONTEXT_VERSION = "serp-differentiation-depth-v5"
+WORKBENCH_SOURCE_CONTEXT_VERSION = "serp-differentiation-depth-v6-preflight"
 
 STAGES = (
     "source_ready",
@@ -312,6 +313,16 @@ class WorkbenchEngine:
             "blocker_ids": [item["id"] for item in blockers],
             "recommendation_ids": [item["id"] for item in recommendations],
         }
+
+    def offline_preflight(self, project_id):
+        """Audit the exact stored artifact without making a paid model call."""
+        p = self.get(project_id)
+        return audit_article(
+            p.get("article_text") or "",
+            p["platform"],
+            p["vertical"],
+            _source_affiliate_link(p["source_text"]),
+        )
 
     def inherit_wordpress_draft(self, new_project_id, old_project_id):
         """Let an explicit rebuild update the same WordPress draft."""
@@ -1256,39 +1267,28 @@ class WorkbenchEngine:
     def _complete_adjudicated_signoff(self, project_id, target_stage, filename):
         """Approve a mechanically corrected article after deterministic gates pass."""
         p = self.get(project_id)
-        findings = []
-        for repair_pass in range(3):
-            p = self.get(project_id)
-            findings = deterministic_findings(
-                p["article_text"], p["platform"], p["vertical"]
-            )
-            if not findings:
-                break
-            affiliate_href = _source_affiliate_link(p["source_text"])
-            repaired = repair_publication_gates(
-                p["article_text"],
-                p["platform"],
-                p["vertical"],
-                affiliate_href,
-            )
-            if repaired != p["article_text"]:
-                digest = _hash((p.get("release_title") or p["title"]) + "\n" + repaired)
-                with self._connect() as conn:
-                    conn.execute(
-                        "UPDATE projects SET article_text=?,article_hash=?,updated_at=? "
-                        "WHERE id=?",
-                        (repaired, digest, _now(), project_id),
-                    )
-                self._write(project_id, "09-deterministic-gate-repair.html", repaired)
-                self._event(
-                    project_id, "deterministic_gate_repair", p["stage"],
-                    digest, {
-                        "repair_pass": repair_pass + 1,
-                        "repaired_findings": findings,
-                    },
+        affiliate_href = _source_affiliate_link(p["source_text"])
+        preflight = audit_article(
+            p["article_text"], p["platform"], p["vertical"], affiliate_href
+        )
+        repaired = preflight["article"]
+        if repaired != p["article_text"]:
+            digest = _hash((p.get("release_title") or p["title"]) + "\n" + repaired)
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE projects SET article_text=?,article_hash=?,updated_at=? "
+                    "WHERE id=?",
+                    (repaired, digest, _now(), project_id),
                 )
-                continue
-            break
+            self._write(project_id, "09-deterministic-gate-repair.html", repaired)
+            self._event(
+                project_id, "offline_preflight_repair", p["stage"], digest, {
+                    "repair_passes": preflight["repair_passes"],
+                    "initial_findings": preflight["initial_findings"],
+                    "final_findings": preflight["final_findings"],
+                    "system_contract": preflight["system_contract"],
+                },
+            )
         p = self.get(project_id)
         findings = deterministic_findings(
             p["article_text"], p["platform"], p["vertical"]

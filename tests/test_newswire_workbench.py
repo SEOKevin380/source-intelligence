@@ -8,6 +8,7 @@ from newswire_workbench.engine import WorkbenchEngine, _source_affiliate_link
 from newswire_workbench.prompts import detect_vertical
 from newswire_workbench.prompts import generation_prompt
 from newswire_workbench.learning import deterministic_findings, partition_findings
+from newswire_workbench.audit import audit_article, audit_system_contract
 from newswire_workbench.wordpress import WordPressDraftPublisher
 from newswire_workbench.formatting import (
     ensure_article_html,
@@ -107,7 +108,10 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert first == second
     project = engine.get(first)
     assert project["stage"] == "source_ready"
-    assert "AUTOMATION CONTEXT VERSION: serp-differentiation-depth-v5" in project["source_text"]
+    assert (
+        "AUTOMATION CONTEXT VERSION: serp-differentiation-depth-v6-preflight"
+        in project["source_text"]
+    )
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
     assert any(e["event_type"] == "sealed_source_pack_imported" for e in engine.events(first))
 
@@ -321,6 +325,42 @@ def test_publication_repair_neutralizes_prosecutorial_device_headings():
     assert "What Buyers Should Understand" in repaired
     assert "Material Limitations and Questions to Verify" in repaired
     assert "How This Product Fits a Broader Buying Decision" in repaired
+
+
+def test_offline_system_audit_owns_every_blocker_and_route():
+    report = audit_system_contract("device")
+    assert report["passed"] is True
+    assert report["blocker_count"] == 18
+    assert report["missing_gate_owners"] == []
+    assert report["route_errors"] == []
+
+
+def test_ecowatt_shaped_preflight_exposes_all_semantic_failures_together():
+    hostile = (
+        "```html\n<h1>EcoWatt Review</h1>"
+        "<p>Buyer Warning</p>"
+        "<h2>The Critical Issue: Why It Does Not Work</h2>"
+        + "<p>Utilities solely bill one measure. The claim is not independently "
+        "verified. This purchase risk lacks proof and cannot provide a benefit. "
+        "It is inappropriate and based solely on seller marketing.</p>" * 18
+        + "<h2>What Information Is Missing or Unverified</h2>"
+        "<h2>Verified Alternatives</h2>"
+        "<p>Energy audit, smart thermostat, programmable thermostat, LED "
+        "lighting, insulation, air sealing, smart power strip, whole-home "
+        "surge protection, energy audit, smart thermostat, LED lighting.</p>\n```"
+    )
+    report = audit_article(
+        hostile,
+        "Barchart Advertorial",
+        "device",
+        "https://partner.example/ecowatt",
+    )
+    initial_ids = {item["id"] for item in report["initial_findings"]}
+    final_ids = {item["id"] for item in report["final_findings"]}
+    assert {"D17", "D1", "D18", "D19", "D20"}.issubset(initial_ids)
+    assert not ({item["id"] for item in report["mechanical_remaining"]})
+    assert {"D18", "D19", "D20"}.issubset(final_ids)
+    assert report["passed"] is False
 
 
 def test_unsourced_categorical_background_triggers_source_grounding_gate():
