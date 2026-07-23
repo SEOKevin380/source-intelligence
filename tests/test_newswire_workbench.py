@@ -1,5 +1,6 @@
 import json
 import zipfile
+from unittest.mock import patch
 
 import pytest
 
@@ -16,6 +17,20 @@ from newswire_workbench.formatting import (
 )
 from newswire_workbench.routing import risk_tier, route_for
 from source_pack_contract import seal_source_pack
+
+
+def _independent_approval(engine, project_id):
+    p = engine.get(project_id)
+    return {
+        "verdict": "approved",
+        "mandatory_count": 0,
+        "source_accuracy": {"verified": 1, "checked": 1},
+        "mandatory_edits": [],
+        "recommended_edits": [],
+        "approved_elements": ["Independent final artifact review passed"],
+        "notes": [],
+        "reviewed_article_hash": p["article_hash"],
+    }
 
 
 def test_vertical_detection_is_category_aware():
@@ -172,6 +187,49 @@ def test_repetitive_caveat_stacking_is_client_advocacy_blocker():
     )
     blockers, _ = partition_findings(findings)
     assert "D19" in {item["id"] for item in blockers}
+
+
+def test_markdown_bold_residue_is_a_publication_blocker():
+    article = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<p>**What Buyers Should Know** before ordering.</p>"
+    )
+    ids = {
+        item["id"] for item in deterministic_findings(
+            article, "Barchart Advertorial", "device"
+        )
+    }
+    assert "D17" in ids
+
+
+def test_alternative_dominant_device_copy_triggers_advocacy_gate():
+    article = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<h2><strong>Verified Alternatives</strong></h2>"
+        "<p>Energy audit, smart thermostat, programmable thermostat, LED "
+        "lighting, insulation, air sealing, smart power strip, whole-home "
+        "surge protection, and LED lighting are alternatives.</p>"
+    )
+    ids = {
+        item["id"] for item in deterministic_findings(
+            article, "Barchart Advertorial", "device"
+        )
+    }
+    assert "D19" in ids
+
+
+def test_unsourced_categorical_background_triggers_source_grounding_gate():
+    article = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<p>Utilities solely measure one factor. Equipment typically ranges "
+        "from $300 to $700.</p>"
+    )
+    ids = {
+        item["id"] for item in deterministic_findings(
+            article, "Barchart Advertorial", "device"
+        )
+    }
+    assert "D20" in ids
 
 
 def test_barchart_affiliate_links_are_added_and_bolded():
@@ -550,7 +608,11 @@ def test_legacy_reviewer_admin_state_recovers_without_global_counters(tmp_path):
         "notes": [], "reviewed_article_hash": p["article_hash"],
     }
     engine._set_report(p, report, "admin_review", "legacy-admin.json")
-    assert engine._recover_mechanical_admin_review(pid) is True
+    with patch.object(
+        engine, "_openai_review",
+        side_effect=lambda *_a, **_k: _independent_approval(engine, pid),
+    ):
+        assert engine._recover_mechanical_admin_review(pid) is True
     recovered = engine.get(pid)
     assert recovered["stage"] == "signed_off"
     assert recovered["release_title"] == "Jim Woods Forecasts & Strategies Review"
@@ -608,14 +670,18 @@ def test_structured_source_conflict_is_autoresolved_not_sent_to_admin(tmp_path):
     p = engine.get(pid)
     engine._set_report(p, report, "admin_review", "legacy-conflict.json")
 
-    assert engine._recover_mechanical_admin_review(pid) is True
+    with patch.object(
+        engine, "_openai_review",
+        side_effect=lambda *_a, **_k: _independent_approval(engine, pid),
+    ):
+        assert engine._recover_mechanical_admin_review(pid) is True
     recovered = engine.get(pid)
     assert recovered["stage"] != "admin_review"
     assert "$77" not in recovered["article_text"]
     assert "current price shown at checkout" in recovered["article_text"]
 
 
-def test_adjudicated_article_advances_without_third_paid_signoff(tmp_path):
+def test_adjudicated_article_requires_independent_rescue_signoff(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     pid = engine.create_project("Test", "Barchart Advertorial", "financial source", "financial")
     engine.import_manual_article(
@@ -630,14 +696,55 @@ def test_adjudicated_article_advances_without_third_paid_signoff(tmp_path):
          "replacement": "<p>Updated factual wording</p>"},
     ]}
     assert engine._adjudicate_current(p, report) is True
-    from unittest.mock import patch
-    with patch("newswire_workbench.engine.deterministic_findings", return_value=[]):
+    with patch(
+        "newswire_workbench.engine.deterministic_findings", return_value=[]
+    ), patch.object(
+        engine, "_openai_review",
+        side_effect=lambda *_a, **_k: _independent_approval(engine, pid),
+    ) as reviewer:
         assert engine._complete_adjudicated_signoff(
             pid, "signed_off", "adjudicated-signoff.json"
         ) is True
+    reviewer.assert_called_once()
     updated = engine.get(pid)
     assert updated["stage"] == "signed_off"
     assert updated["last_report"]["verdict"] == "approved"
+
+
+def test_independent_rescue_rejection_cannot_be_synthetically_approved(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Device", "Barchart Advertorial", "device source", "device"
+    )
+    engine.import_manual_article(
+        pid,
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>",
+    )
+    rejected = {
+        "verdict": "not_approved",
+        "mandatory_count": 1,
+        "source_accuracy": {"verified": 0, "checked": 1},
+        "mandatory_edits": [{
+            "id": "M1",
+            "category": "Source fidelity",
+            "issue": "An external assertion is unsupported.",
+            "exact_text": "unsupported",
+            "replacement": "Remove it.",
+        }],
+        "recommended_edits": [],
+        "approved_elements": [],
+        "notes": [],
+        "reviewed_article_hash": engine.get(pid)["article_hash"],
+    }
+    with patch(
+        "newswire_workbench.engine.deterministic_findings", return_value=[]
+    ), patch.object(engine, "_openai_review", return_value=rejected):
+        assert engine._complete_adjudicated_signoff(
+            pid, "signed_off", "independent-signoff.json"
+        ) is False
+    updated = engine.get(pid)
+    assert updated["stage"] == "compliance_reviewed"
+    assert updated["last_report"]["verdict"] == "not_approved"
 
 
 def test_nonblocking_house_format_target_cannot_strand_va(tmp_path):
@@ -657,22 +764,22 @@ def test_nonblocking_house_format_target_cannot_strand_va(tmp_path):
         "exact_text": "",
         "replacement": "Improve emphasis distribution.",
     }]
-    from unittest.mock import patch
     with patch(
         "newswire_workbench.engine.deterministic_findings",
         return_value=persistent_style_finding,
     ), patch(
         "newswire_workbench.engine.repair_publication_gates",
         side_effect=lambda article, *_args: article,
+    ), patch.object(
+        engine, "_openai_review",
+        side_effect=lambda *_a, **_k: _independent_approval(engine, pid),
     ):
         assert engine._complete_adjudicated_signoff(
             pid, "signed_off", "style-warning-signoff.json"
         ) is True
     updated = engine.get(pid)
     assert updated["stage"] == "signed_off"
-    assert "Non-blocking house-format recommendations" in " ".join(
-        updated["last_report"]["notes"]
-    )
+    assert updated["last_report"]["verdict"] == "approved"
 
 
 def test_nonblocking_house_format_target_cannot_block_wordpress_handoff(
@@ -740,9 +847,13 @@ def test_deterministic_publication_defects_self_repair_without_admin(tmp_path):
             + ("<p>Useful sourced newsletter discussion for readers.</p>" * 450)
     )
     engine.import_manual_article(pid, article)
-    assert engine._complete_adjudicated_signoff(
-        pid, "signed_off", "adjudicated-signoff.json"
-    ) is True
+    with patch.object(
+        engine, "_openai_review",
+        side_effect=lambda *_a, **_k: _independent_approval(engine, pid),
+    ):
+        assert engine._complete_adjudicated_signoff(
+            pid, "signed_off", "adjudicated-signoff.json"
+        ) is True
     updated = engine.get(pid)
     assert updated["stage"] == "signed_off"
     findings = deterministic_findings(
@@ -795,7 +906,11 @@ def test_legacy_mechanical_admin_project_recovers_and_resumes(tmp_path):
         pid, "adjudication_unresolved", "admin_review",
         p["article_hash"], {"findings": findings},
     )
-    assert engine._recover_mechanical_admin_review(pid) is True
+    with patch.object(
+        engine, "_openai_review",
+        side_effect=lambda *_a, **_k: _independent_approval(engine, pid),
+    ):
+        assert engine._recover_mechanical_admin_review(pid) is True
     recovered = engine.get(pid)
     assert recovered["stage"] == "signed_off"
     findings = deterministic_findings(

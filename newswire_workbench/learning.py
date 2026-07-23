@@ -8,7 +8,7 @@ PROMPT_VERSION = "newswire-v1.1"
 
 PUBLICATION_BLOCKER_IDS = frozenset({
     "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9",
-    "D10", "D11", "D12", "D13", "D14", "D17", "D18", "D19",
+    "D10", "D11", "D12", "D13", "D14", "D17", "D18", "D19", "D20",
 })
 
 
@@ -48,13 +48,18 @@ def deterministic_findings(article, platform, vertical):
     """Return non-negotiable mechanical issues before model judgment."""
     findings = []
     lowered = article.casefold()
-    if re.search(r"^\s*```|```\s*$", article, re.I) or not re.search(
+    markdown_residue = re.search(
+        r"(?m)\*\*[^*\n]{2,120}\*\*|"
+        r"^\s{0,3}#{1,6}\s+\S|^\s*```|```\s*$",
+        article,
+    )
+    if markdown_residue or not re.search(
         r"<(?:p|h[1-6]|ul|ol|li|div|blockquote)\b", article, re.I
     ):
         findings.append({
             "id": "D17", "category": "Submission HTML gate",
-            "issue": "The deliverable is fenced Markdown or unstructured plain text.",
-            "exact_text": "```html" if "```" in article else "",
+            "issue": "The deliverable contains Markdown residue or is not publication-ready article HTML.",
+            "exact_text": markdown_residue.group(0).strip() if markdown_residue else "",
             "replacement": "Remove code fences and convert the complete draft to article-body HTML.",
         })
     if "advertorial" not in lowered[:1200]:
@@ -157,11 +162,48 @@ def deterministic_findings(article, platform, vertical):
     )
     adversarial_headings = len(re.findall(
         r"<h[23]\b[^>]*>.*?\b(?:claims? versus|claims? vs\.?|"
-        r"why .* (?:fails?|doesn.t work)|marketing fiction|the prosecution)\b",
+        r"why .* (?:fails?|doesn.t work)|marketing fiction|the prosecution|"
+        r"critical issue|missing or unverified|what (?:is|remains) missing)\b",
         article,
         re.I | re.S,
     ))
-    if len(caveat_phrases) > 4 or repeated_caveat > 2 or adversarial_headings:
+    plain_lower = re.sub(r"<[^>]+>", " ", article).casefold()
+    negative_case_markers = re.findall(
+        r"\b(?:unverified|not verified|not documented|not available|"
+        r"does not|cannot|no benefit|inappropriate|conflicts? with|"
+        r"lacks?|missing|purchase risk|speculative savings|"
+        r"solely on seller marketing)\b",
+        plain_lower,
+    )
+    alternatives_headings = len(re.findall(
+        r"<h[23]\b[^>]*>.*?\b(?:alternatives?|instead|other options?)\b",
+        article,
+        re.I | re.S,
+    ))
+    alternative_branding = len(re.findall(
+        r"\b(?:energy audit|smart thermostat|programmable thermostat|"
+        r"LED lighting|insulation|air sealing|smart power strip|"
+        r"whole-home surge protection)\b",
+        plain_lower,
+    ))
+    client_case_markers = len(re.findall(
+        r"\b(?:best fit|may appeal|may suit|designed for|marketed to|"
+        r"key feature|product feature|plug-and-play|current offer|"
+        r"ordering information)\b",
+        plain_lower,
+    ))
+    advocacy_imbalance = (
+        len(negative_case_markers) >= 12
+        and len(negative_case_markers) > client_case_markers * 2
+    )
+    alternatives_dominate = alternatives_headings and alternative_branding >= 6
+    if (
+        len(caveat_phrases) > 4
+        or repeated_caveat > 2
+        or adversarial_headings >= 2
+        or advocacy_imbalance
+        or alternatives_dominate
+    ):
         findings.append({
             "id": "D19",
             "category": "Client advocacy drift gate",
@@ -175,6 +217,28 @@ def deterministic_findings(article, platform, vertical):
                 "Consolidate repeated caveats, lead with verified features and "
                 "offer value, identify best-fit readers, and build toward a "
                 "clear compliant next action without inventing benefits."
+            ),
+        })
+    categorical_external_claims = re.findall(
+        r"\b(?:utilities? (?:only|solely|do not|does not)|"
+        r"all residential|no residential|cannot reduce|"
+        r"typically ranges? from \$|accounts for roughly \d+%|"
+        r"breaks down approximately as)\b",
+        plain_lower,
+    )
+    if len(categorical_external_claims) >= 2:
+        findings.append({
+            "id": "D20",
+            "category": "Source-grounded analysis gate",
+            "issue": (
+                "The draft relies on multiple categorical technical, market, "
+                "pricing, or industry assertions beyond the sealed record."
+            ),
+            "exact_text": categorical_external_claims[0],
+            "replacement": (
+                "Remove unsupported external assertions. Build depth from sealed "
+                "product facts, attributed positioning, reader questions, "
+                "disclosed gaps, and practical verification steps."
             ),
         })
     if links and links[0].start() > max(1200, len(article) // 4):

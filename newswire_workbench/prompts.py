@@ -38,8 +38,10 @@ def generation_prompt(source_text: str, platform: str, vertical: str,
         "the supplied official, prior-release, and competitor records support "
         "it. Answer what it is, how the claimed mechanism works, what evidence "
         "supports or limits the claims, price, setup, best fit, poor fit, "
-        "warranty/returns/contact availability, trust questions, and practical "
-        "alternatives. Do not pad with generic consumer advice."
+        "warranty/returns/contact availability, trust questions, and neutral "
+        "comparison criteria. Keep alternatives compact; never turn the "
+        "advertorial into a sales case for competing products. Do not pad "
+        "with generic consumer advice."
         if platform == "Barchart Advertorial" and vertical == "device"
         else
         "Use the length needed to answer the reader's material questions fully; "
@@ -57,6 +59,9 @@ Operating rules:
   evidence-limited. Find the strongest compliant, source-supported angle.
 - Never invent facts, first-hand use, endorsements, urgency, scarcity,
   performance, safety, pricing, or guarantees.
+- The sealed source record is exclusive for product and technical facts. Do
+  not add scientific, engineering, market, utility-billing, competitor-pricing,
+  or industry-statistic assertions from memory.
 - Treat supplied sales pages and VSLs as records of what the advertiser says,
   not automatic proof that a claim is true.
 - Preserve commercial intent with accurate attribution, qualification,
@@ -69,6 +74,10 @@ Operating rules:
   accurate buyer takeaway or verification step. Do not repeat the same caveat,
   stack disclaimers, speculate against the product, or treat missing evidence
   as evidence that the product is ineffective.
+- Never devote more space to alternatives than to the client's verified
+  product features, positioning, fit, offer, and buyer questions. Do not
+  recommend competing products or turn the article into an argument against
+  the category.
 - If facts are missing, omit them or state the limitation naturally. Do not
   pause, ask questions, or request operator approval.
 - Write in plain English, use scannable formatting, and maximize defensible
@@ -191,6 +200,10 @@ Review all applicable categories:
     presenting verified features, differentiators, best-fit readers, offer
     value, and a clear next step. Never suppress a material risk or invent a
     benefit to create balance.
+15. Source-grounded depth: flag categorical technical, scientific, market,
+    utility-billing, competitor-pricing, or industry-statistic assertions not
+    present in the sealed record. General knowledge cannot inflate word count
+    or prosecute the product category.
 
 Return JSON only matching this shape:
 {{
@@ -238,6 +251,8 @@ compliance report below.
   adversarial. Lead with verified value, consolidate repeated caveats, preserve
   each material limitation once, identify best-fit readers, and build naturally
   toward a clear CTA.
+- Remove scientific, engineering, market, utility-billing, competitor-pricing,
+  or industry-statistic assertions absent from the sealed source record.
 - Return the complete revised article HTML only.
 - Begin the model response with the revised release headline in H1 so the
   workbench can store it in WordPress's separate title field; the saved article
@@ -264,7 +279,8 @@ compliance report below.
   questions and product-specific analysis, never generic investment filler.
 - If this is a Barchart device review, build toward 2,200–2,800 useful,
   source-grounded words and fully answer mechanism, evidence, price, setup,
-  fit/not-fit, limitations, trust, current terms, and practical alternatives.
+  fit/not-fit, limitations, trust, and current terms. Keep alternatives to one
+  compact neutral comparison section and never advocate competing products.
 
 LEARNED ISSUE MEMORY:
 {memory}

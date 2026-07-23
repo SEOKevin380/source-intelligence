@@ -375,28 +375,15 @@ class WorkbenchEngine:
             _source_affiliate_link(p["source_text"]),
         )
         if repaired != p["article_text"]:
-            digest = _hash(
-                (p.get("release_title") or p["title"]) + "\n" + repaired
+            raise RuntimeError(
+                "WordPress handoff detected a post-approval content mutation. "
+                "The normalized artifact must receive independent signoff."
             )
-            report = dict(p["last_report"])
-            report["reviewed_article_hash"] = digest
-            with self._connect() as conn:
-                conn.execute(
-                    "UPDATE projects SET article_text=?,article_hash=?,"
-                    "last_report=?,updated_at=? WHERE id=?",
-                    (
-                        repaired, digest, json.dumps(report),
-                        _now(), project_id,
-                    ),
-                )
-            self._write(
-                project_id, "11-wordpress-handoff-normalized.html", repaired
+        if p["last_report"].get("reviewed_article_hash") != p["article_hash"]:
+            raise RuntimeError(
+                "WordPress handoff requires approval bound to the exact final "
+                "article hash."
             )
-            self._event(
-                project_id, "wordpress_handoff_normalized", "package_ready",
-                digest, {"reason": "submission_html_and_house_format"},
-            )
-            p = self.get(project_id)
         findings = deterministic_findings(p["article_text"], p["platform"], p["vertical"])
         blockers, _ = partition_findings(findings)
         if blockers:
@@ -871,7 +858,7 @@ class WorkbenchEngine:
                 f"Automated {stage} call ceiling reached; routed to admin review instead of repeating paid work"
             )
         ceiling = float(os.environ.get("NEWSWIRE_PROJECT_BUDGET_USD", "1.50"))
-        if stage == "quality_rescue":
+        if stage in {"quality_rescue", "independent_rescue_signoff"}:
             ceiling += float(
                 os.environ.get("NEWSWIRE_QUALITY_RESCUE_BUDGET_USD", "1.50")
             )
@@ -986,6 +973,15 @@ class WorkbenchEngine:
         report["mandatory_count"] = len(edits)
 
     def _build_package(self, p):
+        report = p.get("last_report") or {}
+        if (
+            report.get("verdict") != "approved"
+            or report.get("reviewed_article_hash") != p["article_hash"]
+        ):
+            raise RuntimeError(
+                "Package creation requires independent approval of the exact "
+                "final article hash."
+            )
         manifest = {
             "project_id": p["id"], "title": p["title"],
             "release_title": p.get("release_title", p["title"]), "platform": p["platform"],
@@ -1240,31 +1236,32 @@ class WorkbenchEngine:
                 },
             )
             return False
-        approval = {
-            "verdict": "approved",
-            "mandatory_count": 0,
-            "mandatory_edits": [],
-            "recommended_edits": [],
-            "approved_elements": [
-                "All actionable reviewer edits were applied exactly",
-                "Deterministic publication gates passed after adjudication",
-            ],
-            "notes": [
-                "Approved by bounded deterministic adjudication; no extra paid review required.",
-                *(
-                    [
-                        "Non-blocking house-format recommendations retained for "
-                        "continuous improvement: " +
-                        json.dumps(quality_warnings, ensure_ascii=False)
-                    ]
-                    if quality_warnings else []
-                ),
-            ],
-            "reviewed_article_hash": p["article_hash"],
-            "prompt_version": PROMPT_VERSION,
-        }
-        self._set_report(p, approval, target_stage, filename)
-        return True
+        # Passing regex/mechanical gates is necessary, never sufficient.
+        # A semantic rescue or adjudicated rewrite must be approved by the
+        # independent reviewer on the exact final article hash.
+        report = self._openai_review(
+            p, final=True, purpose="independent_rescue_signoff"
+        )
+        if report.get("verdict") == "approved":
+            self._set_report(p, report, target_stage, filename)
+            return True
+        repair_stage = (
+            "seo_repair_needed"
+            if target_stage == "post_seo_signed_off"
+            else "compliance_reviewed"
+        )
+        self._set_report(p, report, repair_stage, filename)
+        self._event(
+            project_id,
+            "independent_rescue_rejected",
+            repair_stage,
+            p["article_hash"],
+            {
+                "target_stage": target_stage,
+                "mandatory_count": len(report.get("mandatory_edits", [])),
+            },
+        )
+        return False
 
     def _write(self, project_id, filename, content):
         directory = self.projects_dir / project_id
