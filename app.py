@@ -1860,8 +1860,9 @@ else:
     if _newswire_platform and _pack_readiness != "blocked":
         st.markdown("#### Build Compliant Newswire Draft")
         st.caption(
-            "Uses this exact sealed source pack. Drafting, compliance repair, "
-            "SEO checks, and final packaging run automatically without copy/paste."
+            "Uses the sealed source pack, banked publisher precedents, and the "
+            "locked SEO blueprint. One draft, one independent review, then "
+            "exact-hash packaging; one bounded revision only if required."
         )
         try:
             for _secret_name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
@@ -2028,10 +2029,30 @@ else:
                 )
                 with open(_master_path, encoding="utf-8") as _master_file:
                     _master_rules = _master_file.read()
-                with st.spinner(
-                    "Building, checking, and correcting the draft. No team input is needed…"
-                ):
-                    _result = _workbench.run_to_completion(_project_id, _master_rules)
+                with st.status(
+                    "Starting the bounded newswire workflow…",
+                    expanded=True,
+                ) as _run_status:
+                    def _show_newswire_progress(message):
+                        _run_status.update(label=str(message))
+
+                    _result = _workbench.run_to_completion(
+                        _project_id,
+                        _master_rules,
+                        progress_callback=_show_newswire_progress,
+                    )
+                    _run_status.update(
+                        label=(
+                            "Newswire package completed."
+                            if _result["stage"] == "package_ready"
+                            else "Newswire run stopped at a typed review state."
+                        ),
+                        state=(
+                            "complete"
+                            if _result["stage"] == "package_ready"
+                            else "error"
+                        ),
+                    )
                     if _result["stage"] == "package_ready" and _workbench_caps.get("wordpress"):
                         try:
                             _workbench.send_to_wordpress_draft(_project_id)

@@ -13,8 +13,8 @@ MECHANICAL_GATES = frozenset({
     "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9",
     "D10", "D11", "D12", "D13", "D14", "D17",
 })
-SEMANTIC_GATES = frozenset({"D18", "D19", "D20"})
-QUALITY_GATES = frozenset({"D15", "D16"})
+SEMANTIC_GATES = frozenset({"D18", "D20"})
+QUALITY_GATES = frozenset({"D15", "D16", "D19"})
 REQUIRED_ROUTES = (
     "draft",
     "compliance_repair",

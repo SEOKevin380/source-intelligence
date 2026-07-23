@@ -4,11 +4,11 @@ import hashlib
 import re
 
 
-PROMPT_VERSION = "newswire-v1.6-human-editorial-serp"
+PROMPT_VERSION = "newswire-v1.7-bounded-fast-path"
 
 PUBLICATION_BLOCKER_IDS = frozenset({
     "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9",
-    "D10", "D11", "D12", "D13", "D14", "D17", "D18", "D19", "D20",
+    "D10", "D11", "D12", "D13", "D14", "D17", "D18", "D20",
 })
 
 

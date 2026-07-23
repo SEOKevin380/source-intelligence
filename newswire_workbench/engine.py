@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sqlite3
+import time
 import uuid
 import zipfile
 from datetime import datetime, timezone
@@ -33,7 +34,7 @@ from .audit import audit_article
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v10-human-editorial-serp"
+    "serp-differentiation-depth-v11-bounded-fast-path"
 )
 
 STAGES = (
@@ -531,11 +532,50 @@ class WorkbenchEngine:
             "admin_review": "Kevin review queue",
         }[project["stage"]]
 
-    def run_to_completion(self, project_id, master_instructions, max_steps=60):
+    def run_to_completion(
+        self, project_id, master_instructions, max_steps=20,
+        progress_callback=None,
+    ):
         """Run unattended until complete, a credential is missing, or admin review."""
+        started = time.monotonic()
+        wall_clock_limit = float(
+            os.environ.get("NEWSWIRE_MAX_RUN_SECONDS", "480")
+        )
+        call_limit = int(os.environ.get("NEWSWIRE_MAX_RUN_CALLS", "4"))
+        cost_limit = float(
+            os.environ.get("NEWSWIRE_MAX_RUN_COST_USD", "1.50")
+        )
         no_progress = 0
         for _ in range(max_steps):
             project = self.get(project_id)
+            usage = self.usage_summary(project_id)
+            run_calls = usage["calls"]
+            run_cost = usage["estimated_cost"]
+            limit_reason = ""
+            if time.monotonic() - started >= wall_clock_limit:
+                limit_reason = "wall_clock"
+            elif run_calls >= call_limit:
+                limit_reason = "paid_calls"
+            elif run_cost >= cost_limit:
+                limit_reason = "estimated_cost"
+            if limit_reason:
+                self._event(
+                    project_id, "workflow_run_limit", project["stage"],
+                    project["article_hash"], {
+                        "reason": limit_reason,
+                        "elapsed_seconds": round(time.monotonic() - started, 2),
+                        "run_calls": run_calls,
+                        "run_estimated_cost": round(run_cost, 6),
+                        "limits": {
+                            "seconds": wall_clock_limit,
+                            "calls": call_limit,
+                            "estimated_cost": cost_limit,
+                        },
+                        "operator_decision_required": False,
+                    },
+                )
+                self._set_stage(project_id, "admin_review")
+                return self.get(project_id)
             if project["stage"] == "admin_review":
                 if self._recover_mechanical_admin_review(project_id):
                     continue
@@ -548,6 +588,8 @@ class WorkbenchEngine:
                 project["revision_round"],
                 self.usage_summary(project_id)["calls"],
             )
+            if progress_callback:
+                progress_callback(self.next_action(project))
             self.run_next(project_id, master_instructions)
             updated = self.get(project_id)
             after = (
@@ -556,6 +598,10 @@ class WorkbenchEngine:
                 updated["revision_round"],
                 self.usage_summary(project_id)["calls"],
             )
+            if progress_callback:
+                progress_callback(
+                    "Completed: " + self.next_action(project)
+                )
             no_progress = no_progress + 1 if after == before else 0
             if no_progress >= 2:
                 self._event(
@@ -691,12 +737,19 @@ class WorkbenchEngine:
             self._set_article(p, article, "drafted", "01-claude-draft.html")
         elif stage == "drafted":
             report = self._openai_review(p, final=False)
-            target = (
-                "signed_off"
-                if report.get("verdict") == "approved"
-                else "compliance_reviewed"
-            )
-            self._set_report(p, report, target, "02-openai-review.json")
+            if report.get("verdict") == "approved":
+                self._set_report(
+                    p, report, "signed_off", "02-openai-review.json"
+                )
+            else:
+                self._set_report(
+                    p, report, "drafted", "02-openai-review.json"
+                )
+                reviewed = self.get(project_id)
+                if not self._adjudicate_current(
+                    reviewed, report, target_stage="revised"
+                ):
+                    self._set_stage(project_id, "compliance_reviewed")
         elif stage == "compliance_reviewed":
             memory = self._learned_guidance(p["platform"], p["vertical"])
             repair_purpose = "compliance_repair"
@@ -872,8 +925,8 @@ class WorkbenchEngine:
         import anthropic
         client = anthropic.Anthropic(
             api_key=key,
-            timeout=float(os.environ.get("NEWSWIRE_PROVIDER_TIMEOUT", "180")),
-            max_retries=int(os.environ.get("NEWSWIRE_PROVIDER_RETRIES", "2")),
+            timeout=float(os.environ.get("NEWSWIRE_PROVIDER_TIMEOUT", "90")),
+            max_retries=int(os.environ.get("NEWSWIRE_PROVIDER_RETRIES", "0")),
         )
         try:
             msg = client.messages.create(
@@ -909,8 +962,8 @@ class WorkbenchEngine:
         from openai import OpenAI
         client = OpenAI(
             api_key=key,
-            timeout=float(os.environ.get("NEWSWIRE_PROVIDER_TIMEOUT", "180")),
-            max_retries=int(os.environ.get("NEWSWIRE_PROVIDER_RETRIES", "2")),
+            timeout=float(os.environ.get("NEWSWIRE_PROVIDER_TIMEOUT", "90")),
+            max_retries=int(os.environ.get("NEWSWIRE_PROVIDER_RETRIES", "0")),
         )
         prompt = compliance_prompt(
             p["source_text"], p["article_text"], p["platform"], p["vertical"],

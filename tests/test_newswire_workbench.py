@@ -112,7 +112,7 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert project["stage"] == "source_ready"
     assert (
         "AUTOMATION CONTEXT VERSION: "
-        "serp-differentiation-depth-v10-human-editorial-serp"
+        "serp-differentiation-depth-v11-bounded-fast-path"
         in project["source_text"]
     )
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
@@ -256,7 +256,7 @@ def test_barchart_device_cannot_package_thin_long_form():
     assert "D18" in {item["id"] for item in blockers}
 
 
-def test_repetitive_caveat_stacking_is_client_advocacy_blocker():
+def test_repetitive_caveat_stacking_is_client_advocacy_warning():
     article = (
         "<p>Paid Advertorial: Compensation may be received.</p>"
         "<h2><strong>Product Details</strong></h2>"
@@ -266,8 +266,9 @@ def test_repetitive_caveat_stacking_is_client_advocacy_blocker():
     findings = deterministic_findings(
         article, "Barchart Advertorial", "device"
     )
-    blockers, _ = partition_findings(findings)
-    assert "D19" in {item["id"] for item in blockers}
+    blockers, recommendations = partition_findings(findings)
+    assert "D19" not in {item["id"] for item in blockers}
+    assert "D19" in {item["id"] for item in recommendations}
 
 
 def test_markdown_bold_residue_is_a_publication_blocker():
@@ -370,7 +371,7 @@ def test_publication_repair_neutralizes_prosecutorial_device_headings():
 def test_offline_system_audit_owns_every_blocker_and_route():
     report = audit_system_contract("device")
     assert report["passed"] is True
-    assert report["blocker_count"] == 18
+    assert report["blocker_count"] == 17
     assert report["missing_gate_owners"] == []
     assert report["route_errors"] == []
 
@@ -400,6 +401,9 @@ def test_ecowatt_shaped_preflight_exposes_all_semantic_failures_together():
     assert {"D17", "D1", "D18", "D19", "D20"}.issubset(initial_ids)
     assert not ({item["id"] for item in report["mechanical_remaining"]})
     assert {"D18", "D19", "D20"}.issubset(final_ids)
+    assert "D19" not in {
+        item["id"] for item in report["semantic_remaining"]
+    }
     assert report["passed"] is False
 
 
