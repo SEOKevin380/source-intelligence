@@ -29,6 +29,9 @@ from .formatting import (
 from .routing import estimated_cost, route_for
 
 
+WORKBENCH_SOURCE_CONTEXT_VERSION = "approved-exemplars-v1"
+
+
 STAGES = (
     "source_ready",
     "drafted",
@@ -191,11 +194,32 @@ class WorkbenchEngine:
 
     def create_project_from_pack(self, pack, platform, vertical="auto"):
         """Create or reuse a workbench job from a sealed Source Intelligence pack."""
+        from exemplar_corpus import format_exemplar_guidance, retrieve_exemplars
         from source_pack_contract import validate_source_pack
         validate_source_pack(pack, allow_limited=True)
         product = pack.get("product") or {}
+        manifest = pack.get("intake_manifest") or {}
         title = str(product.get("product_name") or "Untitled source project").strip()
-        source_text = json.dumps(pack, sort_keys=True, ensure_ascii=False, default=str)
+        pack_text = json.dumps(pack, sort_keys=True, ensure_ascii=False, default=str)
+        resolved_vertical = (
+            detect_vertical(pack_text) if vertical == "auto" else vertical
+        )
+        exemplars = retrieve_exemplars(
+            product_name=title,
+            platform=platform,
+            vertical=resolved_vertical,
+            source_url=str(product.get("official_url") or ""),
+            previous_releases=str(
+                manifest.get("previous_releases") or "FIRST RELEASE"
+            ),
+        )
+        exemplar_guidance = format_exemplar_guidance(exemplars)
+        source_text = "\n\n".join(part for part in (
+            f"AUTOMATION CONTEXT VERSION: {WORKBENCH_SOURCE_CONTEXT_VERSION}",
+            exemplar_guidance,
+            "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══",
+            pack_text,
+        ) if part)
         source_hash = _hash(source_text)
         with self._connect() as conn:
             existing = conn.execute(
@@ -204,9 +228,13 @@ class WorkbenchEngine:
             ).fetchone()
         if existing:
             return existing["id"]
-        pid = self.create_project(title, platform, source_text, vertical)
+        pid = self.create_project(
+            title, platform, source_text, resolved_vertical
+        )
         self._event(pid, "sealed_source_pack_imported", "source_ready", "", {
             "contract": pack["source_pack_contract"],
+            "automation_context_version": WORKBENCH_SOURCE_CONTEXT_VERSION,
+            "approved_exemplar_count": len(exemplars),
         })
         return pid
 
@@ -973,10 +1001,14 @@ class WorkbenchEngine:
     def _complete_adjudicated_signoff(self, project_id, target_stage, filename):
         """Approve a mechanically corrected article after deterministic gates pass."""
         p = self.get(project_id)
-        findings = deterministic_findings(
-            p["article_text"], p["platform"], p["vertical"]
-        )
-        if findings:
+        findings = []
+        for repair_pass in range(3):
+            p = self.get(project_id)
+            findings = deterministic_findings(
+                p["article_text"], p["platform"], p["vertical"]
+            )
+            if not findings:
+                break
             affiliate_match = re.search(
                 r"(?im)^AFFILIATE LINK:\s*(\S+)", p["source_text"]
             )
@@ -997,19 +1029,24 @@ class WorkbenchEngine:
                 self._write(project_id, "09-deterministic-gate-repair.html", repaired)
                 self._event(
                     project_id, "deterministic_gate_repair", p["stage"],
-                    digest, {"repaired_findings": findings},
+                    digest, {
+                        "repair_pass": repair_pass + 1,
+                        "repaired_findings": findings,
+                    },
                 )
-                p = self.get(project_id)
-                findings = deterministic_findings(
-                    p["article_text"], p["platform"], p["vertical"]
-                )
-            if findings:
-                self._set_stage(project_id, "admin_review")
-                self._event(
-                    project_id, "adjudication_unresolved", "admin_review",
-                    p["article_hash"], {"findings": findings},
-                )
-                return False
+                continue
+            break
+        p = self.get(project_id)
+        findings = deterministic_findings(
+            p["article_text"], p["platform"], p["vertical"]
+        )
+        if findings:
+            self._set_stage(project_id, "admin_review")
+            self._event(
+                project_id, "adjudication_unresolved", "admin_review",
+                p["article_hash"], {"findings": findings},
+            )
+            return False
         approval = {
             "verdict": "approved",
             "mandatory_count": 0,

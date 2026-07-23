@@ -57,7 +57,10 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     first = engine.create_project_from_pack(pack, "AccessNewsWire")
     second = engine.create_project_from_pack(pack, "AccessNewsWire")
     assert first == second
-    assert engine.get(first)["stage"] == "source_ready"
+    project = engine.get(first)
+    assert project["stage"] == "source_ready"
+    assert "AUTOMATION CONTEXT VERSION: approved-exemplars-v1" in project["source_text"]
+    assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
     assert any(e["event_type"] == "sealed_source_pack_imported" for e in engine.events(first))
 
 
