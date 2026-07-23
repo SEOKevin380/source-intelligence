@@ -377,8 +377,49 @@ def test_seo_repair_has_independent_call_budget(tmp_path):
 
 def test_mandatory_quality_rescue_has_independent_stronger_budget():
     rescue = route_for("quality_rescue", "device")
-    assert rescue.max_calls == 3
+    assert rescue.max_calls == 6
     assert rescue.max_tokens >= 12000
+
+
+def test_compliance_repair_ceiling_escalates_to_quality_rescue(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Device", "Barchart Advertorial", "device source", "device"
+    )
+    engine.import_manual_article(
+        pid,
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>",
+    )
+    p = engine.get(pid)
+    report = {
+        "verdict": "not_approved",
+        "mandatory_count": 1,
+        "mandatory_edits": [{
+            "id": "M1", "category": "Quality",
+            "issue": "Repair the article.", "exact_text": "",
+            "replacement": "Rebuild it.",
+        }],
+        "recommended_edits": [], "approved_elements": [], "notes": [],
+        "reviewed_article_hash": p["article_hash"],
+    }
+    engine._set_report(
+        p, report, "compliance_reviewed", "repair-needed.json"
+    )
+    normal = route_for("compliance_repair", "device")
+    for _ in range(normal.max_calls):
+        engine._record_llm_call(
+            pid, "compliance_repair", normal, 10, 10
+        )
+    with patch.object(
+        engine, "_claude",
+        return_value=(
+            "<h1>Device Review</h1>"
+            "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        ),
+    ) as writer:
+        engine._run_next_unlocked(pid, "")
+    assert writer.call_args.args[2] == "quality_rescue"
+    assert engine.get(pid)["stage"] == "revised"
 
 
 def test_manual_path_and_hash_bound_report(tmp_path):

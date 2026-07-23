@@ -66,7 +66,7 @@ def route_for(stage: str, vertical: str = "general_consumer") -> ModelRoute:
                     "NEWSWIRE_DRAFT_MODEL", "claude-sonnet-4-5-20250929"
                 ),
             ),
-            14000, 3, 3.0, 15.0,
+            14000, 6, 3.0, 15.0,
         ),
         "seo": ModelRoute(
             "anthropic-direct",

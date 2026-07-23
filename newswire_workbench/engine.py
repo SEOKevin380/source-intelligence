@@ -585,12 +585,27 @@ class WorkbenchEngine:
             self._set_report(p, report, "compliance_reviewed", "02-openai-review.json")
         elif stage == "compliance_reviewed":
             memory = self._learned_guidance(p["platform"], p["vertical"])
+            repair_purpose = "compliance_repair"
+            primary_route = route_for(repair_purpose, p["vertical"])
+            if (
+                self._billable_call_count(p["id"], repair_purpose)
+                >= primary_route.max_calls
+            ):
+                repair_purpose = "quality_rescue"
             article = self._claude(revision_prompt(
                 p["source_text"], p["article_text"], p["last_report"],
                 p["platform"], p["vertical"], memory,
                 release_title=p.get("release_title", p["title"]),
-            ), p["id"], "compliance_repair", p["vertical"])
-            self._set_article(p, article, "revised", "03-claude-revision.html", bump=True)
+            ), p["id"], repair_purpose, p["vertical"])
+            self._set_article(
+                p, article, "revised",
+                (
+                    "03-claude-revision.html"
+                    if repair_purpose == "compliance_repair"
+                    else "03-quality-rescue-revision.html"
+                ),
+                bump=True,
+            )
         elif stage == "revised":
             # Recover projects created before adjudicated sign-off advanced the
             # state. If the paid review ceiling is already exhausted, validate
@@ -645,12 +660,27 @@ class WorkbenchEngine:
             self._set_report(p, report, target, "06-openai-post-seo.json")
         elif stage == "seo_repair_needed":
             memory = self._learned_guidance(p["platform"], p["vertical"])
+            repair_purpose = "seo_repair"
+            primary_route = route_for(repair_purpose, p["vertical"])
+            if (
+                self._billable_call_count(p["id"], repair_purpose)
+                >= primary_route.max_calls
+            ):
+                repair_purpose = "quality_rescue"
             article = self._claude(revision_prompt(
                 p["source_text"], p["article_text"], p["last_report"],
                 p["platform"], p["vertical"], memory,
                 release_title=p.get("release_title", p["title"]),
-            ), p["id"], "seo_repair", p["vertical"])
-            self._set_article(p, article, "seo_repaired", "07-claude-seo-repair.html", bump=True)
+            ), p["id"], repair_purpose, p["vertical"])
+            self._set_article(
+                p, article, "seo_repaired",
+                (
+                    "07-claude-seo-repair.html"
+                    if repair_purpose == "seo_repair"
+                    else "07-quality-rescue-seo-repair.html"
+                ),
+                bump=True,
+            )
         elif stage == "seo_repaired":
             post_route = route_for("post_seo_signoff", p["vertical"])
             if (
@@ -886,7 +916,7 @@ class WorkbenchEngine:
         ceiling = float(os.environ.get("NEWSWIRE_PROJECT_BUDGET_USD", "1.50"))
         if stage in {"quality_rescue", "independent_rescue_signoff"}:
             ceiling += float(
-                os.environ.get("NEWSWIRE_QUALITY_RESCUE_BUDGET_USD", "1.50")
+                os.environ.get("NEWSWIRE_QUALITY_RESCUE_BUDGET_USD", "4.50")
             )
         if spent >= ceiling:
             raise RuntimeError(
