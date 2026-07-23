@@ -82,9 +82,45 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert first == second
     project = engine.get(first)
     assert project["stage"] == "source_ready"
-    assert "AUTOMATION CONTEXT VERSION: approved-exemplars-depth-v2" in project["source_text"]
+    assert "AUTOMATION CONTEXT VERSION: approved-exemplars-html-depth-v3" in project["source_text"]
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
     assert any(e["event_type"] == "sealed_source_pack_imported" for e in engine.events(first))
+
+
+def test_explicit_rebuild_creates_new_project_and_preserves_source(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": {},
+        "required_facts": {"missing": []},
+    })
+    first = engine.create_project_from_pack(pack, "AccessNewsWire")
+    rebuilt = engine.create_project_from_pack(
+        pack, "AccessNewsWire", force_new=True
+    )
+    assert rebuilt != first
+    assert "EXPLICIT REBUILD RUN:" in engine.get(rebuilt)["source_text"]
+
+
+def test_article_diagnostics_proves_html_contract(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Test", "AccessNewsWire",
+        "AUTOMATION CONTEXT VERSION: test-v1\nfinancial source",
+        "financial",
+    )
+    engine.import_manual_article(
+        pid,
+        "```html\nPaid Advertorial\n\nWhat It Is\n\nUseful details.\n```",
+    )
+    diagnostics = engine.article_diagnostics(pid)
+    assert diagnostics["workflow_version"] == "test-v1"
+    assert diagnostics["has_code_fence"] is False
+    assert diagnostics["has_article_html"] is True
 
 
 def test_routing_uses_stronger_final_review_only_for_higher_risk():

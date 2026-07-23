@@ -30,7 +30,7 @@ from .formatting import (
 from .routing import estimated_cost, route_for
 
 
-WORKBENCH_SOURCE_CONTEXT_VERSION = "approved-exemplars-depth-v2"
+WORKBENCH_SOURCE_CONTEXT_VERSION = "approved-exemplars-html-depth-v3"
 
 STAGES = (
     "source_ready",
@@ -192,7 +192,9 @@ class WorkbenchEngine:
         self._write(pid, "00-source-record.txt", source_text)
         return pid
 
-    def create_project_from_pack(self, pack, platform, vertical="auto"):
+    def create_project_from_pack(
+        self, pack, platform, vertical="auto", force_new=False
+    ):
         """Create or reuse a workbench job from a sealed Source Intelligence pack."""
         from exemplar_corpus import format_exemplar_guidance, retrieve_exemplars
         from source_pack_contract import validate_source_pack
@@ -216,6 +218,10 @@ class WorkbenchEngine:
         exemplar_guidance = format_exemplar_guidance(exemplars)
         source_text = "\n\n".join(part for part in (
             f"AUTOMATION CONTEXT VERSION: {WORKBENCH_SOURCE_CONTEXT_VERSION}",
+            (
+                f"EXPLICIT REBUILD RUN: {uuid.uuid4().hex}"
+                if force_new else ""
+            ),
             exemplar_guidance,
             "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══",
             pack_text,
@@ -237,6 +243,51 @@ class WorkbenchEngine:
             "approved_exemplar_count": len(exemplars),
         })
         return pid
+
+    def article_diagnostics(self, project_id):
+        """Return user-visible proof that the packaged deliverable is usable."""
+        p = self.get(project_id)
+        article = p.get("article_text") or ""
+        plain = re.sub(r"<[^>]+>", " ", article)
+        findings = deterministic_findings(
+            article, p["platform"], p["vertical"]
+        )
+        blockers, recommendations = partition_findings(findings)
+        version_match = re.search(
+            r"(?m)^AUTOMATION CONTEXT VERSION:\s*(\S+)", p["source_text"]
+        )
+        return {
+            "workflow_version": (
+                version_match.group(1) if version_match else "legacy"
+            ),
+            "word_count": len(re.findall(r"\b[\w’'-]+\b", plain)),
+            "has_code_fence": bool(re.search(r"```", article)),
+            "has_article_html": bool(re.search(
+                r"<(?:p|h[1-6]|ul|ol|li|div|blockquote)\b", article, re.I
+            )),
+            "blocker_ids": [item["id"] for item in blockers],
+            "recommendation_ids": [item["id"] for item in recommendations],
+        }
+
+    def inherit_wordpress_draft(self, new_project_id, old_project_id):
+        """Let an explicit rebuild update the same WordPress draft."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM wordpress_drafts WHERE project_id=?",
+                (old_project_id,),
+            ).fetchall()
+            for row in rows:
+                conn.execute(
+                    """INSERT INTO wordpress_drafts
+                    (project_id,site_url,post_id,article_hash,edit_url,updated_at)
+                    VALUES(?,?,?,?,?,?) ON CONFLICT(project_id,site_url) DO UPDATE SET
+                    post_id=excluded.post_id,article_hash=excluded.article_hash,
+                    edit_url=excluded.edit_url,updated_at=excluded.updated_at""",
+                    (
+                        new_project_id, row["site_url"], row["post_id"], "",
+                        row["edit_url"], _now(),
+                    ),
+                )
 
     def list_projects(self):
         with self._connect() as conn:

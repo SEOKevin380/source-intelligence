@@ -1876,16 +1876,37 @@ else:
                 and _workbench_caps.get("anthropic_format_valid", True)
                 and _workbench_caps.get("openai_format_valid", True)
             )
+            _prior_project_id = st.session_state.get(
+                "source_newswire_project_id"
+            )
+            _prior_project = None
+            if _prior_project_id:
+                try:
+                    _prior_project = _workbench.get(_prior_project_id)
+                except KeyError:
+                    _prior_project_id = None
+            _is_rebuild = bool(
+                _prior_project
+                and _prior_project["stage"] == "package_ready"
+            )
             if st.button(
-                "Build Draft Automatically",
+                (
+                    "Rebuild With Latest Workflow"
+                    if _is_rebuild else "Build Draft Automatically"
+                ),
                 type="primary",
                 use_container_width=True,
                 disabled=not _ready_to_run,
                 key=f"build_newswire_{product_key or _quick_slug}",
             ):
                 _project_id = _workbench.create_project_from_pack(
-                    _publication_pack, _newswire_platform, vertical="auto"
+                    _publication_pack, _newswire_platform, vertical="auto",
+                    force_new=_is_rebuild,
                 )
+                if _is_rebuild and _prior_project_id:
+                    _workbench.inherit_wordpress_draft(
+                        _project_id, _prior_project_id
+                    )
                 st.session_state["source_newswire_project_id"] = _project_id
                 _master_path = os.path.join(
                     os.path.dirname(__file__), "MBK_Project_Instructions_All_Platforms.txt"
@@ -1906,10 +1927,32 @@ else:
                 _active_project = _workbench.get(_active_project_id)
                 _usage = _workbench.usage_summary(_active_project_id)
                 if _active_project["stage"] == "package_ready":
+                    _diagnostics = _workbench.article_diagnostics(
+                        _active_project_id
+                    )
                     st.success(
                         "Draft approved and packaged. "
-                        f"Estimated AI cost: ${_usage['estimated_cost']:.3f}."
+                        f"Estimated AI cost: ${_usage['estimated_cost']:.3f}. "
+                        f"{_diagnostics['word_count']:,} words · "
+                        f"Workflow {_diagnostics['workflow_version']}."
                     )
+                    if (
+                        _diagnostics["has_code_fence"]
+                        or not _diagnostics["has_article_html"]
+                        or _diagnostics["blocker_ids"]
+                    ):
+                        st.error(
+                            "Output contract failed after packaging: "
+                            + ", ".join(
+                                _diagnostics["blocker_ids"]
+                                or ["invalid_html"]
+                            )
+                        )
+                    else:
+                        st.caption(
+                            "Submission HTML validated; no code fences or "
+                            "material publication blockers detected."
+                        )
                     _wp_saved = st.session_state.get("source_newswire_wordpress")
                     if _wp_saved:
                         st.link_button("Open WordPress Draft", _wp_saved["edit_url"])
