@@ -2143,6 +2143,15 @@ else:
                             )
             _pending_key = f"pending_newswire_run:{_workflow_key}"
             _pending_project_id = st.session_state.get(_pending_key)
+            if (
+                _pending_project_id
+                and _pending_project_id != _prior_project_id
+            ):
+                # A rerun or deployment can discover a newer durable project
+                # while the browser still holds an older pending ID. Never
+                # display one authoritative project and execute another.
+                st.session_state.pop(_pending_key, None)
+                _pending_project_id = None
             if st.button(
                 (
                     "Rebuild With Latest Workflow"
@@ -2205,6 +2214,21 @@ else:
             _pending_project_id = st.session_state.get(_pending_key)
             if _pending_project_id:
                 _project_id = _pending_project_id
+                if (
+                    not _workbench.is_authoritative_run_target(
+                        _project_id,
+                        _publication_pack,
+                        _newswire_platform,
+                        WORKBENCH_SOURCE_CONTEXT_VERSION,
+                    )
+                    or _project_id != _project_map.get(_workflow_key)
+                ):
+                    st.session_state.pop(_pending_key, None)
+                    raise RuntimeError(
+                        "Stale pending newswire project was discarded before "
+                        "any paid call. Resume the authoritative project shown "
+                        "on this page."
+                    )
                 _master_path = os.path.join(
                     os.path.dirname(__file__), "MBK_Project_Instructions_All_Platforms.txt"
                 )

@@ -194,6 +194,33 @@ def test_explicit_rebuild_creates_new_project_and_preserves_source(tmp_path):
     ) == rebuilt
 
 
+def test_only_latest_durable_project_is_authoritative_run_target(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    older = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    newer = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    version = "serp-differentiation-depth-v21-exemplar-assembly-contract"
+    assert not engine.is_authoritative_run_target(
+        older, pack, "Barchart Advertorial", version
+    )
+    assert engine.is_authoritative_run_target(
+        newer, pack, "Barchart Advertorial", version
+    )
+
+
 def test_invalid_legacy_package_is_automatically_rebuilt(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     pack = seal_source_pack({

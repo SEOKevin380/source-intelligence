@@ -620,6 +620,16 @@ class WorkbenchEngine:
             row = conn.execute(query, params).fetchone()
         return row["id"] if row else None
 
+    def is_authoritative_run_target(
+        self, project_id, pack, platform, workflow_version,
+    ):
+        """Return whether this ID is the latest durable exact-pack project."""
+        if not project_id:
+            return False
+        return project_id == self.latest_project_from_pack(
+            pack, platform, workflow_version
+        )
+
     def events(self, project_id):
         with self._connect() as conn:
             rows = conn.execute(
@@ -961,6 +971,19 @@ class WorkbenchEngine:
                 self._billable_call_count(p["id"], repair_purpose)
                 >= primary_route.max_calls
             ):
+                if self._uses_locked_call_path(p):
+                    self._set_stage(project_id, "admin_review")
+                    self._event(
+                        p["id"],
+                        "reserved_repair_call_exhausted",
+                        "admin_review",
+                        p["article_hash"],
+                        {
+                            "purpose": repair_purpose,
+                            "operator_decision_required": False,
+                        },
+                    )
+                    return self.get(project_id)
                 repair_purpose = "quality_rescue"
             article = self._claude(revision_prompt(
                 p["source_text"], p["article_text"], p["last_report"],
