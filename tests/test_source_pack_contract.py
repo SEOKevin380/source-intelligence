@@ -6,7 +6,7 @@ from source_pack_contract import seal_source_pack, validate_source_pack
 
 
 def _pack(missing=None):
-    return {
+    raw = {
         "product": {
             "product_name": "Example Product",
             "official_url": "https://example.com/product",
@@ -16,6 +16,19 @@ def _pack(missing=None):
         "source_manifest": [{"type": "official", "status": "captured"}],
         "required_facts": {"missing": missing or []},
     }
+    raw["claims_by_type"] = {
+        "feature": [
+            {
+                "text": f"Literal product fact {number}",
+                "artifact_id": "art-1",
+                "source_class": "official_vendor",
+                "review_status": "unreviewed",
+                "metadata": {"excerpt_is_literal": True},
+            }
+            for number in range(3)
+        ]
+    }
+    return raw
 
 
 def test_complete_pack_is_sealed_and_validates():
@@ -41,6 +54,31 @@ def test_missing_source_material_blocks_pack():
     assert pack["source_pack_contract"]["readiness"] == "blocked"
     with pytest.raises(ValueError, match="no_captured_source_material"):
         validate_source_pack(pack)
+
+
+def test_zero_claim_pack_is_blocked_before_paid_generation():
+    raw = _pack()
+    raw["claims_by_type"] = {}
+    pack = seal_source_pack(raw)
+    assert pack["source_pack_contract"]["readiness"] == "blocked"
+    assert "insufficient_publication_claims:0/3" in (
+        pack["source_pack_contract"]["readiness_reasons"]
+    )
+    with pytest.raises(ValueError, match="insufficient_publication_claims"):
+        validate_source_pack(pack)
+
+
+def test_resealing_legacy_publication_ledger_does_not_erase_claims():
+    first = seal_source_pack(_pack())
+    legacy = copy.deepcopy(first)
+    legacy.pop("claims_by_type", None)
+    resealed = seal_source_pack(legacy)
+    assert resealed["publication_claim_summary"] == {
+        "raw_claim_count": 3,
+        "publication_claim_count": 3,
+        "excluded_claim_count": 0,
+    }
+    assert len(resealed["publication_claims"]["feature"]) == 3
 
 
 def test_tampering_is_detected():

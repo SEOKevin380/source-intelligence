@@ -1811,9 +1811,15 @@ else:
             "will omit unavailable facts and continue without questions."
         )
     else:
+        _readiness_reasons = _pack_contract.get("readiness_reasons") or []
         st.error(
-            "Not ready for automation because source material was not captured. "
-            "Run Update Report after fixing the source URL or attachment."
+            "No paid generation will start because the sealed source pack "
+            "cannot support a source-grounded article. "
+            + (
+                "Preflight: " + ", ".join(_readiness_reasons)
+                if _readiness_reasons
+                else "Refresh the source record before generation."
+            )
         )
     with st.expander("Manual export / fallback files", expanded=False):
         st.caption(
@@ -1974,11 +1980,15 @@ else:
                         "with the exact approved article hash."
                     )
                 if _contract["passed"]:
+                    _budget = _contract.get("execution_budget") or {}
                     st.caption(
                         "Offline preflight: all "
                         f"{_contract['blocker_count']} publication gates have "
                         "repair ownership and every model/reviewer route has a "
-                        "valid independent budget."
+                        "valid independent budget. Complete run reserve: "
+                        f"{_budget.get('calls', 0)} calls for "
+                        + " → ".join(_budget.get("required_call_path") or [])
+                        + "."
                     )
                 else:
                     st.error(

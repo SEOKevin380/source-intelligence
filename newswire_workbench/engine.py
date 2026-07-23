@@ -31,10 +31,11 @@ from .formatting import (
 )
 from .routing import estimated_cost, route_for
 from .audit import audit_article
+from .execution_budget import execution_budget
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v14-niche-body-intelligence"
+    "serp-differentiation-depth-v15-end-to-end-budget-contract"
 )
 
 STAGES = (
@@ -420,9 +421,8 @@ class WorkbenchEngine:
         route = route_for(purpose, p["vertical"])
         used = self._billable_call_count(project_id, purpose)
         total_used = int(self.usage_summary(project_id)["calls"])
-        project_call_maximum = int(
-            os.environ.get("NEWSWIRE_MAX_RUN_CALLS", "4")
-        )
+        budget = execution_budget()
+        project_call_maximum = budget["calls"]
         project_remaining = max(project_call_maximum - total_used, 0)
         route_remaining = max(route.max_calls - used, 0)
         reviewer_capacity = {
@@ -453,6 +453,7 @@ class WorkbenchEngine:
             "reviewer_capacity": reviewer_capacity,
             "remaining_calls": min(route_remaining, project_remaining),
         }
+        result["execution_budget"] = budget
         result["ready_for_packaging"] = bool(
             result["passed"] and exact_semantic_approval
         )
@@ -701,13 +702,10 @@ class WorkbenchEngine:
     ):
         """Run unattended until complete, a credential is missing, or admin review."""
         started = time.monotonic()
-        wall_clock_limit = float(
-            os.environ.get("NEWSWIRE_MAX_RUN_SECONDS", "480")
-        )
-        call_limit = int(os.environ.get("NEWSWIRE_MAX_RUN_CALLS", "4"))
-        cost_limit = float(
-            os.environ.get("NEWSWIRE_MAX_RUN_COST_USD", "1.50")
-        )
+        budget = execution_budget()
+        wall_clock_limit = budget["seconds"]
+        call_limit = budget["calls"]
+        cost_limit = budget["estimated_cost"]
         no_progress = 0
         for _ in range(max_steps):
             project = self.get(project_id)

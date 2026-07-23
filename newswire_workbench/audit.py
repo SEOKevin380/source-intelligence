@@ -12,6 +12,7 @@ from .learning import (
     partition_findings,
 )
 from .routing import route_for
+from .execution_budget import execution_budget
 
 
 MECHANICAL_GATES = frozenset({
@@ -53,6 +54,15 @@ def audit_system_contract(vertical: str) -> dict:
                 route_errors.append(f"{purpose}: unusable call/token budget")
         except Exception as exc:  # pragma: no cover - defensive contract report
             route_errors.append(f"{purpose}: {exc}")
+    budget = execution_budget()
+    end_to_end_budget_valid = bool(
+        budget["calls"] >= len(REQUIRED_ROUTES)
+        and list(REQUIRED_ROUTES) == budget["required_call_path"]
+    )
+    if not end_to_end_budget_valid:
+        route_errors.append(
+            "global execution budget cannot fund the complete required route"
+        )
     return {
         "passed": not (
             missing_owners or unknown_owners or missing_rationales
@@ -69,6 +79,8 @@ def audit_system_contract(vertical: str) -> dict:
         "stale_blocker_rationales": stale_rationales,
         "route_errors": route_errors,
         "routes": routes,
+        "execution_budget": budget,
+        "end_to_end_budget_valid": end_to_end_budget_valid,
     }
 
 

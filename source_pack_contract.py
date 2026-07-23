@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 
 CONTRACT_NAME = "mbk.source-intelligence.publication-pack"
 CONTRACT_VERSION = 2
+MINIMUM_PUBLICATION_CLAIMS = 3
 
 DEVICE_ATTRIBUTABLE_CLAIM_TYPES = frozenset({
     "feature",
@@ -96,6 +97,15 @@ def assess_readiness(full_data: dict) -> tuple:
     )
     if not (full_data.get("all_artifacts") or captured_manifest):
         reasons.append("no_captured_source_material")
+    publication_claim_count = sum(
+        len(items or [])
+        for items in (full_data.get("publication_claims") or {}).values()
+    )
+    if publication_claim_count < MINIMUM_PUBLICATION_CLAIMS:
+        reasons.append(
+            "insufficient_publication_claims:"
+            f"{publication_claim_count}/{MINIMUM_PUBLICATION_CLAIMS}"
+        )
     if reasons:
         return "blocked", reasons
 
@@ -132,7 +142,15 @@ def seal_source_pack(full_data: dict) -> dict:
         (pack.get("product") or {}).get("product_type", "")
     ).strip().casefold()
     artifacts = pack.get("all_artifacts") or {}
-    for claim_type, items in (pack.get("claims_by_type") or {}).items():
+    # Persisted reports created by older contract versions may retain the
+    # already-vetted publication ledger without the original grouping. Reuse
+    # that ledger instead of silently resealing it into an empty brain.
+    source_claims = (
+        pack.get("claims_by_type")
+        or pack.get("publication_claims")
+        or {}
+    )
+    for claim_type, items in source_claims.items():
         for claim in items or []:
             status = str(claim.get("review_status", "unreviewed")).lower()
             metadata = claim.get("metadata") or {}
@@ -200,6 +218,13 @@ def seal_source_pack(full_data: dict) -> dict:
                 })
     pack["publication_claims"] = publication_claims
     pack["excluded_publication_claims"] = excluded_claims
+    pack["publication_claim_summary"] = {
+        "raw_claim_count": sum(len(items or []) for items in source_claims.values()),
+        "publication_claim_count": sum(
+            len(items or []) for items in publication_claims.values()
+        ),
+        "excluded_claim_count": len(excluded_claims),
+    }
     state, reasons = assess_readiness(pack)
     existing = pack.get("source_pack_contract", {}) or {}
     pack["source_pack_contract"] = {

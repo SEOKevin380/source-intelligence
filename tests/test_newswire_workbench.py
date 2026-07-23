@@ -22,6 +22,21 @@ from newswire_workbench.routing import risk_tier, route_for
 from source_pack_contract import seal_source_pack
 
 
+def _three_literal_claims():
+    return {
+        "feature": [
+            {
+                "text": f"Literal product fact {number}",
+                "artifact_id": "a1",
+                "source_class": "official_vendor",
+                "review_status": "unreviewed",
+                "metadata": {"excerpt_is_literal": True},
+            }
+            for number in range(3)
+        ]
+    }
+
+
 def _independent_approval(engine, project_id):
     p = engine.get(project_id)
     return {
@@ -105,7 +120,7 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     pack = seal_source_pack({
         "product": {"product_name": "Test Device", "official_url": "https://example.com"},
         "all_artifacts": [{"artifact_id": "a1"}],
-        "claims_by_type": {},
+        "claims_by_type": _three_literal_claims(),
         "required_facts": {"missing": []},
     })
     first = engine.create_project_from_pack(pack, "AccessNewsWire")
@@ -115,7 +130,7 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert project["stage"] == "source_ready"
     assert (
         "AUTOMATION CONTEXT VERSION: "
-        "serp-differentiation-depth-v14-niche-body-intelligence"
+        "serp-differentiation-depth-v15-end-to-end-budget-contract"
         in project["source_text"]
     )
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
@@ -157,7 +172,7 @@ def test_explicit_rebuild_creates_new_project_and_preserves_source(tmp_path):
             "official_url": "https://example.com",
         },
         "all_artifacts": [{"artifact_id": "a1"}],
-        "claims_by_type": {},
+        "claims_by_type": _three_literal_claims(),
         "required_facts": {"missing": []},
     })
     first = engine.create_project_from_pack(pack, "AccessNewsWire")
@@ -176,7 +191,7 @@ def test_invalid_legacy_package_is_automatically_rebuilt(tmp_path):
             "official_url": "https://example.com",
         },
         "all_artifacts": [{"artifact_id": "a1"}],
-        "claims_by_type": {},
+        "claims_by_type": _three_literal_claims(),
         "required_facts": {"missing": []},
     })
     legacy = engine.create_project_from_pack(pack, "Barchart Advertorial")
@@ -407,6 +422,18 @@ def test_offline_system_audit_owns_every_blocker_and_route():
     assert not report["stale_blocker_rationales"]
     assert report["missing_gate_owners"] == []
     assert report["route_errors"] == []
+    assert report["end_to_end_budget_valid"] is True
+    assert report["execution_budget"]["required_call_path"] == [
+        "draft", "compliance", "compliance_repair", "final_signoff"
+    ]
+
+
+def test_unsafe_environment_call_ceiling_cannot_starve_review(monkeypatch):
+    monkeypatch.setenv("NEWSWIRE_MAX_RUN_CALLS", "1")
+    report = audit_system_contract("device")
+    assert report["passed"] is True
+    assert report["execution_budget"]["calls"] == 4
+    assert report["execution_budget"]["configured_overrides"]["calls"] == "1"
 
 
 def test_house_optimization_gates_never_become_publication_blockers():
@@ -1339,7 +1366,7 @@ def test_forced_rebuild_keeps_stable_fact_source_identity(tmp_path):
             "official_url": "https://example.com",
         },
         "all_artifacts": [{"artifact_id": "a1"}],
-        "claims_by_type": {},
+        "claims_by_type": _three_literal_claims(),
         "required_facts": {"missing": []},
     })
     first = engine.create_project_from_pack(
