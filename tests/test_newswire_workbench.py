@@ -130,7 +130,7 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert project["stage"] == "source_ready"
     assert (
         "AUTOMATION CONTEXT VERSION: "
-        "serp-differentiation-depth-v16-claim-ledger-reconciliation"
+        "serp-differentiation-depth-v17-durable-run-transaction"
         in project["source_text"]
     )
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
@@ -181,6 +181,11 @@ def test_explicit_rebuild_creates_new_project_and_preserves_source(tmp_path):
     )
     assert rebuilt != first
     assert "EXPLICIT REBUILD RUN:" in engine.get(rebuilt)["source_text"]
+    assert engine.latest_project_from_pack(
+        pack,
+        "AccessNewsWire",
+        "serp-differentiation-depth-v17-durable-run-transaction",
+    ) == rebuilt
 
 
 def test_invalid_legacy_package_is_automatically_rebuilt(tmp_path):
@@ -434,6 +439,69 @@ def test_unsafe_environment_call_ceiling_cannot_starve_review(monkeypatch):
     assert report["passed"] is True
     assert report["execution_budget"]["calls"] == 4
     assert report["execution_budget"]["configured_overrides"]["calls"] == "1"
+    assert report["execution_budget"]["hard_limits"] == {
+        "paid_calls": 4,
+        "seconds_per_provider_call": 90.0,
+    }
+
+
+def test_prior_cost_cannot_starve_required_exact_hash_review(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Device", "Barchart Advertorial", "device source", "device"
+    )
+    draft = route_for("draft", "device")
+    with engine._connect() as conn:
+        conn.execute(
+            """INSERT INTO llm_calls(
+                project_id,stage,provider,model,input_tokens,output_tokens,
+                estimated_cost,status,error,created_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (
+                pid, "draft", draft.provider, draft.model,
+                100, 100, 99.0, "success", "", "2026-07-23T00:00:00+00:00",
+            ),
+        )
+    final_route = route_for("final_signoff", "device")
+    engine._assert_call_budget(pid, "final_signoff", final_route)
+
+
+def test_global_call_ceiling_cannot_be_bypassed_by_nested_rescue(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Device", "Barchart Advertorial", "device source", "device"
+    )
+    draft = route_for("draft", "device")
+    for index in range(4):
+        engine._record_llm_call(
+            pid, f"nested-{index}", draft, 100, 100
+        )
+    with pytest.raises(RuntimeError, match="Complete-run paid-call ceiling"):
+        engine._assert_call_budget(
+            pid, "war_room_signoff",
+            route_for("war_room_signoff", "device"),
+        )
+
+
+def test_zero_cost_packaging_finishes_after_fourth_paid_call(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Device", "Barchart Advertorial", "device source", "device"
+    )
+    engine._set_stage(pid, "signed_off")
+    draft = route_for("draft", "device")
+    for index in range(4):
+        engine._record_llm_call(
+            pid, f"completed-{index}", draft, 100, 100
+        )
+
+    def package(project_id, _instructions):
+        engine._set_stage(project_id, "package_ready")
+
+    with patch.object(engine, "run_next", side_effect=package) as run_next:
+        result = engine.run_to_completion(pid, "")
+    assert result["stage"] == "package_ready"
+    run_next.assert_called_once()
 
 
 def test_house_optimization_gates_never_become_publication_blockers():
@@ -1277,7 +1345,9 @@ def test_all_semantic_review_tiers_exhaust_cleanly_without_exception(tmp_path):
             pid, "signed_off", "exhausted.json"
         ) is False
     assert engine.get(pid)["stage"] == "admin_review"
-    assert engine.events(pid)[-1]["event_type"] == "semantic_review_exhausted"
+    assert engine.events(pid)[-1]["event_type"] == (
+        "global_review_budget_exhausted"
+    )
 
 
 def test_quality_rescue_exhaustion_escalates_to_war_room_rebuild(tmp_path):

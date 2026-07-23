@@ -35,7 +35,7 @@ from .execution_budget import execution_budget
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v16-claim-ledger-reconciliation"
+    "serp-differentiation-depth-v17-durable-run-transaction"
 )
 
 STAGES = (
@@ -51,6 +51,15 @@ STAGES = (
     "package_ready",
     "admin_review",
 )
+PAID_CALL_STAGES = frozenset({
+    "source_ready",
+    "drafted",
+    "compliance_reviewed",
+    "revised",
+    "seo_optimized",
+    "seo_repair_needed",
+    "seo_repaired",
+})
 
 
 def _now():
@@ -575,6 +584,27 @@ class WorkbenchEngine:
         data["last_report"] = json.loads(data["last_report"] or "{}")
         return data
 
+    def latest_project_from_pack(self, pack, platform, workflow_version=""):
+        """Return the newest durable project for this exact product source."""
+        fact_source_hash = str(
+            (pack.get("source_pack_contract") or {}).get("sha256") or ""
+        ).strip()
+        if not fact_source_hash:
+            return None
+        query = (
+            "SELECT id FROM projects WHERE fact_source_hash=? AND platform=?"
+        )
+        params = [fact_source_hash, platform]
+        if workflow_version:
+            query += " AND source_text LIKE ?"
+            params.append(
+                f"%AUTOMATION CONTEXT VERSION: {workflow_version}%"
+            )
+        query += " ORDER BY created_at DESC LIMIT 1"
+        with self._connect() as conn:
+            row = conn.execute(query, params).fetchone()
+        return row["id"] if row else None
+
     def events(self, project_id):
         with self._connect() as conn:
             rows = conn.execute(
@@ -701,37 +731,29 @@ class WorkbenchEngine:
         progress_callback=None,
     ):
         """Run unattended until complete, a credential is missing, or admin review."""
-        started = time.monotonic()
         budget = execution_budget()
-        wall_clock_limit = budget["seconds"]
         call_limit = budget["calls"]
-        cost_limit = budget["estimated_cost"]
         no_progress = 0
         for _ in range(max_steps):
             project = self.get(project_id)
             usage = self.usage_summary(project_id)
             run_calls = usage["calls"]
-            run_cost = usage["estimated_cost"]
             limit_reason = ""
-            if time.monotonic() - started >= wall_clock_limit:
-                limit_reason = "wall_clock"
-            elif run_calls >= call_limit:
+            if (
+                project["stage"] in PAID_CALL_STAGES
+                and run_calls >= call_limit
+            ):
                 limit_reason = "paid_calls"
-            elif run_cost >= cost_limit:
-                limit_reason = "estimated_cost"
             if limit_reason:
                 self._event(
                     project_id, "workflow_run_limit", project["stage"],
                     project["article_hash"], {
                         "reason": limit_reason,
-                        "elapsed_seconds": round(time.monotonic() - started, 2),
                         "run_calls": run_calls,
-                        "run_estimated_cost": round(run_cost, 6),
-                        "limits": {
-                            "seconds": wall_clock_limit,
-                            "calls": call_limit,
-                            "estimated_cost": cost_limit,
-                        },
+                        "run_estimated_cost": round(
+                            usage["estimated_cost"], 6
+                        ),
+                        "limits": budget["hard_limits"],
                         "operator_decision_required": False,
                     },
                 )
@@ -1278,40 +1300,17 @@ class WorkbenchEngine:
             )
 
     def _assert_call_budget(self, project_id, stage, route):
+        total_calls = int(self.usage_summary(project_id)["calls"])
+        global_limit = execution_budget()["calls"]
+        if total_calls >= global_limit:
+            raise RuntimeError(
+                "Complete-run paid-call ceiling reached; no additional paid "
+                "call was made"
+            )
         stage_calls = self._billable_call_count(project_id, stage)
-        with self._connect() as conn:
-            spent = conn.execute(
-                "SELECT COALESCE(SUM(estimated_cost),0) FROM llm_calls WHERE project_id=?",
-                (project_id,),
-            ).fetchone()[0]
         if stage_calls >= route.max_calls:
             raise RuntimeError(
                 f"Automated {stage} call ceiling reached; routed to admin review instead of repeating paid work"
-            )
-        ceiling = float(os.environ.get("NEWSWIRE_PROJECT_BUDGET_USD", "1.50"))
-        if stage in {
-            "quality_rescue",
-            "war_room_rebuild",
-            "independent_rescue_signoff",
-            "executive_rescue_signoff",
-            "war_room_signoff",
-        }:
-            ceiling += float(
-                os.environ.get("NEWSWIRE_QUALITY_RESCUE_BUDGET_USD", "4.50")
-            )
-        if stage in {"executive_rescue_signoff", "war_room_signoff"}:
-            ceiling += float(
-                os.environ.get(
-                    "NEWSWIRE_EXECUTIVE_RESCUE_BUDGET_USD", "6.00"
-                )
-            )
-        if stage in {"war_room_rebuild", "war_room_signoff"}:
-            ceiling += float(
-                os.environ.get("NEWSWIRE_WAR_ROOM_BUDGET_USD", "8.00")
-            )
-        if spent >= ceiling:
-            raise RuntimeError(
-                f"Project AI budget ceiling (${ceiling:.2f}) reached; no additional paid call was made"
             )
 
     def _billable_call_count(self, project_id, stage):
@@ -1700,6 +1699,19 @@ class WorkbenchEngine:
         )
         blockers, quality_warnings = partition_findings(findings)
         if blockers:
+            if self.usage_summary(project_id)["calls"] >= execution_budget()["calls"]:
+                self._set_stage(project_id, "admin_review")
+                self._event(
+                    project_id,
+                    "global_repair_budget_exhausted",
+                    "admin_review",
+                    p["article_hash"],
+                    {
+                        "blockers": blockers,
+                        "operator_decision_required": False,
+                    },
+                )
+                return False
             rescue_route = route_for("quality_rescue", p["vertical"])
             rescue_count = self._billable_call_count(
                 project_id, "quality_rescue"
@@ -1815,6 +1827,19 @@ class WorkbenchEngine:
         # Passing regex/mechanical gates is necessary, never sufficient.
         # A semantic rescue or adjudicated rewrite must be approved by the
         # independent reviewer on the exact final article hash.
+        if self.usage_summary(project_id)["calls"] >= execution_budget()["calls"]:
+            self._set_stage(project_id, "admin_review")
+            self._event(
+                project_id,
+                "global_review_budget_exhausted",
+                "admin_review",
+                p["article_hash"],
+                {
+                    "last_report": p.get("last_report") or {},
+                    "operator_decision_required": False,
+                },
+            )
+            return False
         review_purpose = ""
         for candidate in (
             "independent_rescue_signoff",

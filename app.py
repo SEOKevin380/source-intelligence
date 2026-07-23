@@ -1895,6 +1895,19 @@ else:
                 "source_newswire_project_ids", {}
             )
             _prior_project_id = _project_map.get(_workflow_key)
+            _durable_project_id = _workbench.latest_project_from_pack(
+                _publication_pack,
+                _newswire_platform,
+                WORKBENCH_SOURCE_CONTEXT_VERSION,
+            )
+            if _durable_project_id and (
+                not _prior_project_id
+                or _durable_project_id != _prior_project_id
+            ):
+                _prior_project_id = _durable_project_id
+                _project_map = dict(_project_map)
+                _project_map[_workflow_key] = _durable_project_id
+                st.session_state["source_newswire_project_ids"] = _project_map
             _prior_project = None
             if _prior_project_id:
                 try:
@@ -1920,6 +1933,19 @@ else:
                     )
                 )
             )
+            _is_resume = bool(
+                _prior_project
+                and not _is_rebuild
+                and _prior_project["stage"] != "package_ready"
+            )
+            if _prior_project:
+                _prior_usage = _workbench.usage_summary(_prior_project_id)
+                st.caption(
+                    "Authoritative project: "
+                    f"{_prior_project_id[:12]} · "
+                    f"stage={_prior_project['stage']} · "
+                    f"paid_calls={_prior_usage['calls']}/4."
+                )
             _prior_preflight = None
             if _prior_project and _prior_project.get("article_text"):
                 try:
@@ -2068,15 +2094,22 @@ else:
                             st.caption(
                                 "• " + str(_edit.get("issue") or _edit)
                             )
+            _pending_key = f"pending_newswire_run:{_workflow_key}"
+            _pending_project_id = st.session_state.get(_pending_key)
             if st.button(
                 (
                     "Rebuild With Latest Workflow"
-                    if _is_rebuild else "Build Draft Automatically"
+                    if _is_rebuild
+                    else (
+                        "Resume Current Workflow"
+                        if _is_resume else "Build Draft Automatically"
+                    )
                 ),
                 type="primary",
                 use_container_width=True,
                 disabled=(
                     not _ready_to_run
+                    or bool(_pending_project_id)
                     or bool(
                         _prior_preflight
                         and not _prior_preflight["system_contract"]["passed"]
@@ -2093,12 +2126,38 @@ else:
                 ),
                 key=f"build_newswire_{product_key or _quick_slug}",
             ):
-                _project_id = _workbench.create_project_from_pack(
-                    _publication_pack, _newswire_platform, vertical="auto",
-                    force_new=_is_rebuild,
-                )
+                if _is_resume:
+                    _project_id = _prior_project_id
+                else:
+                    _project_id = _workbench.create_project_from_pack(
+                        _publication_pack, _newswire_platform, vertical="auto",
+                        force_new=_is_rebuild,
+                    )
+                if _is_rebuild and _project_id == _prior_project_id:
+                    raise RuntimeError(
+                        "Rebuild transaction did not create a new project."
+                    )
+                _created = _workbench.get(_project_id)
+                if not _is_resume and _created["stage"] != "source_ready":
+                    raise RuntimeError(
+                        "New project did not begin at source_ready."
+                    )
+                if (
+                    not _is_resume
+                    and _workbench.usage_summary(_project_id)["calls"] != 0
+                ):
+                    raise RuntimeError(
+                        "New project inherited paid-call usage."
+                    )
+                _project_map = dict(_project_map)
                 _project_map[_workflow_key] = _project_id
                 st.session_state["source_newswire_project_ids"] = _project_map
+                st.session_state[_pending_key] = _project_id
+                st.rerun()
+
+            _pending_project_id = st.session_state.get(_pending_key)
+            if _pending_project_id:
+                _project_id = _pending_project_id
                 _master_path = os.path.join(
                     os.path.dirname(__file__), "MBK_Project_Instructions_All_Platforms.txt"
                 )
@@ -2111,11 +2170,15 @@ else:
                     def _show_newswire_progress(message):
                         _run_status.update(label=str(message))
 
-                    _result = _workbench.run_to_completion(
-                        _project_id,
-                        _master_rules,
-                        progress_callback=_show_newswire_progress,
-                    )
+                    try:
+                        _result = _workbench.run_to_completion(
+                            _project_id,
+                            _master_rules,
+                            progress_callback=_show_newswire_progress,
+                        )
+                    except Exception:
+                        st.session_state.pop(_pending_key, None)
+                        raise
                     _run_status.update(
                         label=(
                             "Newswire package completed."
@@ -2138,6 +2201,7 @@ else:
                             st.session_state[
                                 f"wordpress_delivery_error_{_project_id}"
                             ] = str(_wordpress_error)
+                st.session_state.pop(_pending_key, None)
                 st.rerun()
 
             _active_project_id = _project_map.get(_workflow_key)

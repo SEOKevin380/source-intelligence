@@ -12,8 +12,8 @@ REQUIRED_CALL_PATH = (
     "final_signoff",
 )
 RUN_CALL_LIMIT = len(REQUIRED_CALL_PATH)
-RUN_COST_LIMIT_USD = 1.50
-RUN_SECONDS_LIMIT = 480.0
+PROVIDER_TIMEOUT_SECONDS = 90.0
+EXPECTED_COST_USD = 1.50
 
 
 def execution_budget() -> dict:
@@ -30,8 +30,15 @@ def execution_budget() -> dict:
         "required_call_path": list(REQUIRED_CALL_PATH),
         "required_calls": RUN_CALL_LIMIT,
         "calls": RUN_CALL_LIMIT,
-        "estimated_cost": RUN_COST_LIMIT_USD,
-        "seconds": RUN_SECONDS_LIMIT,
+        "provider_timeout_seconds": PROVIDER_TIMEOUT_SECONDS,
+        "expected_cost": EXPECTED_COST_USD,
+        "hard_limits": {
+            "paid_calls": RUN_CALL_LIMIT,
+            "seconds_per_provider_call": PROVIDER_TIMEOUT_SECONDS,
+        },
+        "advisory_limits": {
+            "expected_cost": EXPECTED_COST_USD,
+        },
         "configured_overrides": {
             "calls": configured_calls,
             "estimated_cost": configured_cost,
