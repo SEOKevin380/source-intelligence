@@ -247,17 +247,42 @@ class WorkbenchEngine:
                   SELECT RAISE(ABORT, 'workbench events are immutable');
                 END;
             """)
+            def add_column_if_missing(table, name, declaration):
+                """Apply an additive migration safely across concurrent app sessions."""
+                columns = {
+                    row[1] for row in conn.execute(f"PRAGMA table_info({table})")
+                }
+                if name in columns:
+                    return False
+                try:
+                    conn.execute(
+                        f"ALTER TABLE {table} ADD COLUMN {name} {declaration}"
+                    )
+                    return True
+                except sqlite3.OperationalError as exc:
+                    # Another Streamlit session may have completed the same
+                    # additive migration after our PRAGMA snapshot.
+                    if "duplicate column name" not in str(exc).lower():
+                        raise
+                    return False
+
             columns = {r[1] for r in conn.execute("PRAGMA table_info(projects)")}
             if "run_token" not in columns:
-                conn.execute("ALTER TABLE projects ADD COLUMN run_token TEXT DEFAULT ''")
+                add_column_if_missing(
+                    "projects", "run_token", "TEXT DEFAULT ''"
+                )
             if "run_started_at" not in columns:
-                conn.execute("ALTER TABLE projects ADD COLUMN run_started_at TEXT DEFAULT ''")
+                add_column_if_missing(
+                    "projects", "run_started_at", "TEXT DEFAULT ''"
+                )
             if "release_title" not in columns:
-                conn.execute("ALTER TABLE projects ADD COLUMN release_title TEXT DEFAULT ''")
+                add_column_if_missing(
+                    "projects", "release_title", "TEXT DEFAULT ''"
+                )
                 conn.execute("UPDATE projects SET release_title=title WHERE release_title='' OR release_title IS NULL")
             if "fact_source_hash" not in columns:
-                conn.execute(
-                    "ALTER TABLE projects ADD COLUMN fact_source_hash TEXT DEFAULT ''"
+                add_column_if_missing(
+                    "projects", "fact_source_hash", "TEXT DEFAULT ''"
                 )
             rows = conn.execute(
                 "SELECT id,source_text FROM projects "
@@ -275,9 +300,8 @@ class WorkbenchEngine:
             }
             for name in ("remote_content_hash", "post_type", "remote_status"):
                 if name not in wordpress_columns:
-                    conn.execute(
-                        f"ALTER TABLE wordpress_drafts "
-                        f"ADD COLUMN {name} TEXT DEFAULT ''"
+                    add_column_if_missing(
+                        "wordpress_drafts", name, "TEXT DEFAULT ''"
                     )
             llm_columns = {
                 r[1] for r in conn.execute("PRAGMA table_info(llm_calls)")
@@ -288,9 +312,7 @@ class WorkbenchEngine:
                 ("output_hash", "TEXT DEFAULT ''"),
             ):
                 if name not in llm_columns:
-                    conn.execute(
-                        f"ALTER TABLE llm_calls ADD COLUMN {name} {declaration}"
-                    )
+                    add_column_if_missing("llm_calls", name, declaration)
         self._backfill_issue_memory()
 
     def create_project(self, title, platform, source_text, vertical="auto"):
