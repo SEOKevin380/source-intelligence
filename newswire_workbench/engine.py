@@ -136,8 +136,17 @@ class WorkbenchEngine:
     def _connect(self):
         conn = sqlite3.connect(str(self.db_path), timeout=30)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=30000")
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.OperationalError as exc:
+            # Two Streamlit sessions can open the same new database at once.
+            # The connection enabling WAL briefly holds an exclusive schema
+            # lock; the other connection is still valid and will observe WAL
+            # after the first initializer commits.
+            if "locked" not in str(exc).lower():
+                conn.close()
+                raise
         return conn
 
     @staticmethod
