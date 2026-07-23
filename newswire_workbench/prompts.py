@@ -92,6 +92,15 @@ Operating rules:
   pause, ask questions, or request operator approval.
 - Write in plain English, use scannable formatting, and maximize defensible
   SEO and conversion value.
+- Perform a final human copyedit before returning the draft. Use American
+  English spelling and punctuation, natural sentence-length variation, varied
+  paragraph openings, and idiomatic phrasing. Remove robotic transitions,
+  repeated conclusions, throat-clearing, generic AI filler, and sentences that
+  merely restate a heading.
+- Treat the locked generation blueprint as the completed SEO plan. Use its
+  primary intent, recommended headline, title promise, and H2 spine. Improve
+  wording only when the result remains on the same intent and is more specific,
+  accurate, and compelling than supplied ranking titles.
 - Editorial depth contract: {depth_contract}
 - Keep the opening disclosure concise: “Paid Advertorial: A commission may be
   earned when a purchase is made through links in this article.” Do not explain
@@ -228,6 +237,12 @@ Review all applicable categories:
     with explicit seller/offer attribution. `excluded_publication_claims`
     remain prohibited. Do not demand deletion of a permitted attributed claim
     merely because independent verification is unavailable.
+17. Human editorial quality: verify American English grammar, spelling,
+    punctuation, agreement, idiom, sentence flow, varied openings, and natural
+    cadence. Flag robotic repetition, canned transitions, generic filler,
+    title/section redundancy, or prose that sounds assembled from a template.
+    Recommend value-enhancing edits only when they remain inside the sealed
+    facts and locked SEO intent.
 
 Return JSON only matching this shape:
 {{

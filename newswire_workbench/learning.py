@@ -4,7 +4,7 @@ import hashlib
 import re
 
 
-PROMPT_VERSION = "newswire-v1.5-source-aware-fixed-point"
+PROMPT_VERSION = "newswire-v1.6-human-editorial-serp"
 
 PUBLICATION_BLOCKER_IDS = frozenset({
     "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9",

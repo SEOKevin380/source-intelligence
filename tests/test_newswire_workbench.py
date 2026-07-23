@@ -112,12 +112,14 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert project["stage"] == "source_ready"
     assert (
         "AUTOMATION CONTEXT VERSION: "
-        "serp-differentiation-depth-v9-source-aware-fixed-point"
+        "serp-differentiation-depth-v10-human-editorial-serp"
         in project["source_text"]
     )
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
     assert "LOCKED GENERATION BLUEPRINT" in project["source_text"]
     assert "SEO strategy is complete" in project["source_text"]
+    assert "Recommended headline:" in project["source_text"]
+    assert "polished American English" in project["source_text"]
     assert any(e["event_type"] == "sealed_source_pack_imported" for e in engine.events(first))
 
 

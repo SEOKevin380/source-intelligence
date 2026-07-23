@@ -259,6 +259,27 @@ def build_generation_blueprint(pack: dict, exemplars: list[dict]) -> str:
         "review": "a source-grounded evaluation for prospective buyers",
         "buyer_fit": "who may find the offer relevant and what to verify first",
     }
+    headline_patterns = {
+        "features": (
+            f"{product_name} Features and Pricing 2026: "
+            "What Seller Materials Say Before You Buy"
+        ),
+        "how_it_works": (
+            f"How {product_name} Works: Seller Claims, Evidence, and Buyer Fit"
+        ),
+        "pricing": (
+            f"{product_name} Pricing 2026: Packages, Offer Gaps, and Buyer Fit"
+        ),
+        "trust": (
+            f"{product_name} Buyer Guide 2026: Sources, Terms, and Trust Checks"
+        ),
+        "review": (
+            f"{product_name} Review 2026: A Source-Grounded Buyer Assessment"
+        ),
+        "buyer_fit": (
+            f"{product_name} 2026: Who It May Fit and What to Verify First"
+        ),
+    }
     h2_spines = {
         "features": (
             f"What {product_name} Is Designed to Offer",
@@ -293,6 +314,7 @@ def build_generation_blueprint(pack: dict, exemplars: list[dict]) -> str:
         f"Platform: {pack.get('intake_manifest', {}).get('publishing_channel', '')}",
         f"Primary SEO intent: {selected_intent}",
         f"Title promise: {promises[selected_intent]}",
+        f"Recommended headline: {headline_patterns[selected_intent]}",
         "Use approved Barchart advertorial formatting from the precedent corpus.",
         "SEO strategy is complete. Do not invent a different angle.",
         "Required H2 spine:",
@@ -308,6 +330,11 @@ def build_generation_blueprint(pack: dict, exemplars: list[dict]) -> str:
         )
     lines.extend((
         "Fill this blueprint only with current sealed product facts.",
+        "Write polished American English with natural human cadence.",
+        "Vary sentence and paragraph openings; remove AI-style filler, repeated "
+        "transitions, canned summaries, and mechanical section introductions.",
+        "Every section must add a new sourced fact, useful explanation, buyer "
+        "question, or decision aid. Delete repetition instead of padding.",
         "Do not import facts from exemplars, previous coverage, or competitors.",
         "═══════════════════════════════════════════════",
         "",
