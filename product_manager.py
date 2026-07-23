@@ -388,6 +388,102 @@ def get_prompt_completeness(product_key: str, db: ProductDatabase = None) -> dic
     keywords = data.get("keywords", {})
     competitive = data.get("competitive", {})
 
+    # Non-health products must never inherit supplement/PubMed scorecards.
+    # Their completeness is based on identity, captured sources, offer facts,
+    # terms, claims, company/contact data, and category-appropriate compliance.
+    product_type = str(product.get("product_type", "")).strip().lower()
+    health_types = {"supplement", "topical", "cannabis", "food", "telehealth"}
+    if product_type not in health_types:
+        sections = {}
+        missing_critical = []
+        total = 109
+        earned = 0
+
+        identity_ok = bool(product.get("product_name") and product.get("official_url"))
+        sections["Identity"] = {
+            "status": "complete" if identity_ok else "missing",
+            "detail": "Product and official URL captured" if identity_ok else "Product identity or official URL missing",
+        }
+        earned += 15 if identity_ok else 0
+        if not identity_ok:
+            missing_critical.append("Product identity or official URL missing")
+
+        artifacts = data.get("all_artifacts") or []
+        manifest = data.get("source_manifest") or []
+        source_count = len(artifacts) or sum(
+            1 for item in manifest if isinstance(item, dict)
+            and str(item.get("status", "")).lower() in {"captured", "success", "fetched", "available", "reused"}
+        )
+        sections["Sources"] = {
+            "status": "complete" if source_count >= 2 else "partial" if source_count else "missing",
+            "detail": f"{source_count} source records captured" if source_count else "No source records captured",
+        }
+        earned += 20 if source_count >= 2 else 10 if source_count else 0
+        if not source_count:
+            missing_critical.append("No captured source material")
+
+        claims = product.get("claims", []) or data.get("publication_claims", {})
+        claim_count = len(claims) if isinstance(claims, list) else sum(
+            len(items or []) for items in claims.values()
+        ) if isinstance(claims, dict) else 0
+        sections["Claims"] = {
+            "status": "complete" if claim_count >= 3 else "partial" if claim_count else "missing",
+            "detail": f"{claim_count} source-backed claims" if claim_count else "No publishable claims extracted",
+        }
+        earned += 15 if claim_count >= 3 else 7 if claim_count else 0
+
+        pricing = product.get("pricing", [])
+        sections["Pricing"] = {
+            "status": "complete" if pricing else "missing",
+            "detail": "Pricing captured" if pricing else "Pricing unavailable — omit from copy",
+        }
+        earned += 10 if pricing else 0
+
+        refund = product.get("refund_policy")
+        sections["Terms"] = {
+            "status": "complete" if refund else "partial",
+            "detail": "Refund/offer terms captured" if refund else "Refund terms unavailable — omit from copy",
+        }
+        earned += 8 if refund else 3
+
+        company = product.get("company", {}) or {}
+        contact_ok = bool(company.get("name") or product.get("brand_name") or product.get("contact_info"))
+        sections["Company & Contact"] = {
+            "status": "complete" if contact_ok else "partial",
+            "detail": "Company/contact information captured" if contact_ok else "Limited company/contact information",
+        }
+        earned += 8 if contact_ok else 3
+
+        sections["Compliance"] = {
+            "status": "complete" if compliance else "missing",
+            "detail": f"Category-specific risk: {compliance.get('risk_level', 'unknown')}" if compliance else "No category-specific compliance result",
+        }
+        earned += 15 if compliance else 0
+        if not compliance:
+            missing_critical.append("No category-specific compliance result")
+
+        strategy_points = (5 if keywords else 0) + (4 if competitive else 0)
+        sections["Search Strategy"] = {
+            "status": "complete" if strategy_points >= 7 else "partial" if strategy_points else "missing",
+            "detail": "Keyword and competitive inputs available" if strategy_points >= 7 else "Search inputs are limited",
+        }
+        earned += strategy_points
+
+        access = product.get("delivery") or product.get("access_terms") or product.get("shipping_policy")
+        sections["Delivery / Access"] = {
+            "status": "complete" if access else "partial",
+            "detail": "Delivery or access details captured" if access else "Delivery/access details unavailable — omit from copy",
+        }
+        earned += 9 if access else 4
+
+        score = min(100, round(earned / total * 100))
+        return {
+            "score": score,
+            "sections": sections,
+            "ready_for_editorial_review": not missing_critical and score >= 55,
+            "missing_critical": missing_critical,
+        }
+
     sections = {}
     missing_critical = []
     total = 0
