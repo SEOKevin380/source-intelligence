@@ -39,7 +39,7 @@ from .execution_budget import (
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v24-unified-depth-contract"
+    "serp-differentiation-depth-v25-autonomous-depth-recovery"
 )
 
 STAGES = (
@@ -1134,9 +1134,34 @@ class WorkbenchEngine:
             self._set_article(p, article, "drafted", "01-claude-draft.html")
         elif stage == "drafted":
             report = self._openai_review(p, final=False)
-            if report.get("verdict") == "approved":
+            draft_findings = deterministic_findings(
+                p["article_text"], p["platform"], p["vertical"]
+            )
+            draft_blockers, _ = partition_findings(draft_findings)
+            if report.get("verdict") == "approved" and not draft_blockers:
                 self._set_report(
                     p, report, "signed_off", "02-openai-review.json"
+                )
+            elif report.get("verdict") == "approved":
+                # Deterministic publication requirements outrank a semantic
+                # reviewer's approval. Continue directly into the one reserved
+                # repair call instead of surfacing an operator stop.
+                self._set_report(
+                    p,
+                    report,
+                    "compliance_reviewed",
+                    "02-openai-review.json",
+                )
+                self._event(
+                    p["id"],
+                    "approved_draft_requires_owned_repair",
+                    "compliance_reviewed",
+                    p["article_hash"],
+                    {
+                        "blockers": draft_blockers,
+                        "next_action": "reserved_compliance_repair",
+                        "operator_decision_required": False,
+                    },
                 )
             else:
                 self._set_report(

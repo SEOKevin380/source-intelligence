@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 
 from newswire_workbench.engine import WorkbenchEngine, _source_affiliate_link
 from newswire_workbench.prompts import detect_vertical
-from newswire_workbench.prompts import generation_prompt
+from newswire_workbench.prompts import generation_prompt, revision_prompt
 from newswire_workbench.learning import deterministic_findings, partition_findings
 from newswire_workbench.audit import audit_article, audit_system_contract
 from newswire_workbench.wordpress import WordPressDraftPublisher
@@ -66,6 +66,23 @@ def test_generation_prompt_preserves_client_advocacy_without_invention():
     assert "client's strongest compliant advocate" in prompt
     assert "must not replace the article with a prosecution brief" in prompt
     assert "missing evidence" in prompt
+
+
+def test_barchart_prompts_target_excellence_above_the_rejection_floor():
+    draft_prompt = generation_prompt(
+        "sealed source", "Barchart Advertorial", "device", "rules"
+    )
+    repair_prompt = revision_prompt(
+        "sealed source",
+        "<p>draft</p>",
+        {"mandatory_edits": []},
+        "Barchart Advertorial",
+        "device",
+    )
+    for prompt in (draft_prompt, repair_prompt):
+        assert "1,600–1,900 useful words" in prompt
+        assert "hard rejection floor" in prompt
+        assert "banked niche" in prompt
 
 
 def test_fenced_plain_text_is_converted_to_submission_html():
@@ -132,7 +149,7 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert project["stage"] == "source_ready"
     assert (
         "AUTOMATION CONTEXT VERSION: "
-            "serp-differentiation-depth-v24-unified-depth-contract"
+            "serp-differentiation-depth-v25-autonomous-depth-recovery"
         in project["source_text"]
     )
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
@@ -191,7 +208,7 @@ def test_explicit_rebuild_reuses_active_project_then_rebuilds_terminal(tmp_path)
     assert engine.latest_project_from_pack(
         pack,
         "AccessNewsWire",
-            "serp-differentiation-depth-v24-unified-depth-contract",
+            "serp-differentiation-depth-v25-autonomous-depth-recovery",
     ) == rebuilt
     assert engine.latest_project_from_pack(
         pack, "AccessNewsWire", "nonexistent-future-workflow"
@@ -220,7 +237,7 @@ def test_only_latest_durable_project_is_authoritative_run_target(tmp_path):
     newer = engine.create_project_from_pack(
         pack, "Barchart Advertorial", force_new=True
     )
-    version = "serp-differentiation-depth-v24-unified-depth-contract"
+    version = "serp-differentiation-depth-v25-autonomous-depth-recovery"
     assert not engine.is_authoritative_run_target(
         older, pack, "Barchart Advertorial", version
     )
@@ -887,6 +904,44 @@ def test_pre_signoff_does_not_spend_review_call_on_known_blocker(tmp_path):
         item["event_type"] == "pre_signoff_blocked"
         for item in engine.events(pid)
     )
+
+
+def test_approved_thin_draft_flows_into_reserved_repair_not_operator_stop(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    engine._set_article(
+        engine.get(pid),
+        (
+            "<p><strong>Paid Advertorial:</strong> "
+            "Compensation may be received.</p>"
+            "<p>Seller materials describe Literal product fact 1.</p>"
+        ),
+        "drafted",
+        "thin-approved.html",
+    )
+    approval = _independent_approval(engine, pid)
+    with patch.object(engine, "_openai_review", return_value=approval):
+        result = engine.run_next(pid, "")
+    assert result["stage"] == "compliance_reviewed"
+    assert any(
+        event["event_type"] == "approved_draft_requires_owned_repair"
+        for event in engine.events(pid)
+    )
+
 
 def test_locked_admin_pre_signoff_recovers_mechanical_html_without_paid_call(
     tmp_path,

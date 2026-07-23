@@ -49,6 +49,28 @@ def generation_prompt(source_text: str, platform: str, vertical: str,
         "Use the length needed to answer the reader's material questions fully; "
         "never add filler merely to reach a word count."
     )
+    barchart_coverage_plan = (
+        """
+- Barchart device execution plan: produce 1,600–1,900 useful words on the
+  first attempt. Treat 1,400 as a hard rejection floor, never as the target.
+  Before writing, allocate coverage across these reader jobs, varying their
+  order and headings to match the locked blueprint and banked niche exemplar:
+  opening thesis and quick buyer orientation (140–190 words); product identity
+  and seller-described value proposition (180–240); attributed mechanism,
+  specifications, setup, and intended operation (260–340); evidence status and
+  what the record does or does not establish (180–240); recorded pricing and
+  current offer interpretation (140–200); best-fit and not-fit buyers
+  (180–240); trust, contact, terms, and verification questions (180–240);
+  consolidated material limitations (130–180); decision summary and reader
+  FAQs (260–340). These are coverage budgets, not mandatory section titles.
+  When a fact is unavailable, add reader value by explaining exactly what is
+  known, what remains unestablished, why that distinction matters to a buying
+  decision, and what the buyer should verify—without inventing an answer.
+  Complete a silent word-count and coverage check before returning HTML.
+"""
+        if platform == "Barchart Advertorial" and vertical == "device"
+        else ""
+    )
     return f"""You are the first-draft writer in a multi-stage editorial system.
 
 Create a complete, publishable {platform} advertorial draft from the supplied
@@ -113,6 +135,7 @@ Operating rules:
   wording only when the result remains on the same intent and is more specific,
   accurate, and compelling than supplied ranking titles.
 - Editorial depth contract: {depth_contract}
+{barchart_coverage_plan}
 - Keep the opening disclosure concise: “Paid Advertorial: A commission may be
   earned when a purchase is made through links in this article.” Do not explain
   link routing, intermediary domains, or tracking mechanics to the reader.
@@ -301,6 +324,22 @@ ARTICLE_END
 def revision_prompt(source_text: str, article: str, report: dict,
                     platform: str, vertical: str, memory: str = "",
                     release_title: str = "") -> str:
+    barchart_repair_plan = (
+        """
+- Barchart device repair plan: return 1,600–1,900 useful words. Treat 1,400 as
+  a hard rejection floor. Preserve compliant material, then expand missing
+  reader jobs with source-grounded analysis: product/value orientation,
+  attributed mechanism and specifications, evidence status, recorded pricing,
+  fit/not-fit, trust and current terms, one consolidated limitations section,
+  decision summary, and FAQs. Use the banked niche body profile for pacing and
+  section roles. Do not solve a source violation by collapsing the article.
+  When facts are missing, explain the decision significance and the exact
+  verification question rather than repeating a caveat or inventing an answer.
+  Silently count the completed article before returning it.
+"""
+        if platform == "Barchart Advertorial" and vertical == "device"
+        else ""
+    )
     return f"""Revise the {platform} {vertical} advertorial using the independent
 compliance report below.
 
@@ -362,6 +401,7 @@ compliance report below.
   be repaired without adding a fact, delete only that sentence and strengthen
   neighboring sections using permitted claims, recorded prices, recorded
   contact facts, buyer questions, and clearly labeled verification gaps.
+{barchart_repair_plan}
 - Do not invent connective factual claims. In particular, do not infer risks
   to appliances, compatibility with existing electrical systems, available
   customer support, return rights, or comparative value unless those exact
