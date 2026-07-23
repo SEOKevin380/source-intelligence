@@ -39,7 +39,7 @@ from .execution_budget import (
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v21-exemplar-assembly-contract"
+    "serp-differentiation-depth-v22-authoritative-project-binding"
 )
 
 STAGES = (
@@ -615,7 +615,7 @@ class WorkbenchEngine:
             params.append(
                 f"%AUTOMATION CONTEXT VERSION: {workflow_version}%"
             )
-        query += " ORDER BY created_at DESC LIMIT 1"
+        query += " ORDER BY created_at DESC, updated_at DESC, rowid DESC LIMIT 1"
         with self._connect() as conn:
             row = conn.execute(query, params).fetchone()
         return row["id"] if row else None

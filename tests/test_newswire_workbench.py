@@ -130,7 +130,7 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert project["stage"] == "source_ready"
     assert (
         "AUTOMATION CONTEXT VERSION: "
-        "serp-differentiation-depth-v21-exemplar-assembly-contract"
+        "serp-differentiation-depth-v22-authoritative-project-binding"
         in project["source_text"]
     )
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
@@ -184,7 +184,7 @@ def test_explicit_rebuild_creates_new_project_and_preserves_source(tmp_path):
     assert engine.latest_project_from_pack(
         pack,
         "AccessNewsWire",
-        "serp-differentiation-depth-v21-exemplar-assembly-contract",
+        "serp-differentiation-depth-v22-authoritative-project-binding",
     ) == rebuilt
     assert engine.latest_project_from_pack(
         pack, "AccessNewsWire", "nonexistent-future-workflow"
@@ -212,7 +212,7 @@ def test_only_latest_durable_project_is_authoritative_run_target(tmp_path):
     newer = engine.create_project_from_pack(
         pack, "Barchart Advertorial", force_new=True
     )
-    version = "serp-differentiation-depth-v21-exemplar-assembly-contract"
+    version = "serp-differentiation-depth-v22-authoritative-project-binding"
     assert not engine.is_authoritative_run_target(
         older, pack, "Barchart Advertorial", version
     )
