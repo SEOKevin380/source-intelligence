@@ -1933,12 +1933,22 @@ else:
                 _delivery_state = _prior_preflight.get(
                     "wordpress_delivery", {}
                 )
-                if _policy_state.get("current"):
+                if (
+                    _policy_state.get("current")
+                    and _policy_state.get("exact_snapshot_match")
+                ):
                     st.caption(
                         "Policy intelligence: current authoritative snapshot "
                         f"{_policy_state.get('snapshot_hash', '')[:12]} · "
                         f"{_policy_state.get('applicable_source_count', 0)} "
                         "applicable sources."
+                    )
+                elif _policy_state.get("current"):
+                    st.error(
+                        "This project's policy snapshot does not match the "
+                        "current authoritative snapshot. Create one clean "
+                        "latest-workflow rebuild; do not spend calls repairing "
+                        "the stale project."
                     )
                 else:
                     st.error(
@@ -2062,6 +2072,11 @@ else:
                         and not _prior_preflight.get(
                             "policy_intelligence", {}
                         ).get("current", False)
+                        or _prior_preflight
+                        and not _prior_preflight.get(
+                            "policy_intelligence", {}
+                        ).get("exact_snapshot_match", False)
+                        and not _is_rebuild
                     )
                 ),
                 key=f"build_newswire_{product_key or _quick_slug}",

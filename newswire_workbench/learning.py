@@ -153,9 +153,9 @@ def deterministic_findings(article, platform, vertical):
     depth_floor = 0
     depth_label = ""
     if platform == "AccessNewsWire" and vertical == "financial":
-        depth_floor, depth_label = 2200, "financial AccessNewsWire"
+        depth_floor, depth_label = 1800, "financial AccessNewsWire"
     elif platform == "Barchart Advertorial" and vertical == "device":
-        depth_floor, depth_label = 2000, "device Barchart"
+        depth_floor, depth_label = 1400, "device Barchart"
     if depth_floor and word_count < depth_floor:
         findings.append({
             "id": "D18", "category": "Editorial depth gate",

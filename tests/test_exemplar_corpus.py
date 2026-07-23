@@ -1,5 +1,6 @@
 from exemplar_corpus import (
     build_approval_playbook,
+    build_generation_blueprint,
     format_exemplar_guidance,
     infer_intents,
     infer_niche,
@@ -53,5 +54,25 @@ def test_accesswire_financial_precedents_are_available():
     assert all(item["vertical"] == "financial" for item in matches)
 
     block = format_exemplar_guidance(matches)
-    assert "STRUCTURE ONLY" in block
+    assert "SEO METADATA" in block
     assert "Never transfer names, prices, claims" in block
+
+
+def test_blueprint_uses_actual_publisher_and_intent_specific_spine():
+    pack = {
+        "product": {
+            "product_name": "Example Device",
+            "product_type": "device",
+            "category": "gadgets",
+        },
+        "intake_manifest": {"publishing_channel": "AccessNewsWire"},
+        "contextual_source_profiles": [{
+            "source_type": "previous_release",
+            "title": "Example Device Features and Pricing",
+            "headings": ["How It Works", "Price"],
+        }],
+    }
+    blueprint = build_generation_blueprint(pack, [])
+    assert "AccessNewsWire formatting" in blueprint
+    assert "Barchart advertorial formatting" not in blueprint
+    assert "Required H2 spine:" in blueprint

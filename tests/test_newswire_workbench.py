@@ -82,6 +82,9 @@ def test_zero_cost_auth_failure_does_not_consume_call_ceiling(tmp_path):
     engine._record_llm_call(pid, "draft", route, status="failed", error="401 invalid key")
     # A rejected credential never reached paid generation and must remain retryable.
     engine._assert_call_budget(pid, "draft", route)
+    usage = engine.usage_summary(pid)
+    assert usage["calls"] == 0
+    assert usage["attempts"] == 1
 
 
 def test_project_and_immutable_audit(tmp_path):
@@ -112,7 +115,7 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert project["stage"] == "source_ready"
     assert (
         "AUTOMATION CONTEXT VERSION: "
-        "serp-differentiation-depth-v12.1-governed-intelligence"
+        "serp-differentiation-depth-v13-fixed-point-control"
         in project["source_text"]
     )
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
@@ -1323,9 +1326,36 @@ def test_same_source_failure_memory_is_available_to_next_attempt(tmp_path):
     )
     next_project = engine.get(second)
     guidance = engine._source_failure_guidance(
-        next_project["source_hash"], "Barchart Advertorial", "device"
+        next_project["fact_source_hash"], "Barchart Advertorial", "device"
     )
     assert "unsupported utility billing claims" in guidance
+
+
+def test_forced_rebuild_keeps_stable_fact_source_identity(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": {},
+        "required_facts": {"missing": []},
+    })
+    first = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    second = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    first_project = engine.get(first)
+    second_project = engine.get(second)
+    assert first_project["source_hash"] != second_project["source_hash"]
+    assert (
+        first_project["fact_source_hash"]
+        == second_project["fact_source_hash"]
+        == pack["source_pack_contract"]["sha256"]
+    )
 
 
 def test_independent_rescue_rejection_cannot_be_synthetically_approved(tmp_path):
@@ -1437,6 +1467,13 @@ def test_nonblocking_house_format_target_cannot_block_wordpress_handoff(
         "post_id": 123,
         "edit_url": "https://example.com/wp-admin/post.php?post=123&action=edit",
         "site_url": "https://example.com",
+    }
+    publisher.get_draft.return_value = {
+        "post_id": 123,
+        "status": "draft",
+        "post_type": "post",
+        "title_raw": "Test",
+        "content_raw": p["article_text"],
     }
     with patch(
         "newswire_workbench.engine.deterministic_findings",

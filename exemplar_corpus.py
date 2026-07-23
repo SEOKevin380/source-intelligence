@@ -256,10 +256,10 @@ def format_exemplar_guidance(exemplars: list[dict]) -> str:
         intent for item in exemplars for intent in item.get("intents", ["overview"])
     )
     lines = [
-        "═══ APPROVED PUBLICATION PRECEDENTS — STRUCTURE ONLY ═══",
+        "═══ APPROVED PUBLICATION PRECEDENTS — SEO METADATA ═══",
         f"Matched {len(exemplars)} previously published release(s) on this platform.",
-        "These precedents prove that the FORMAT and editorial approach have been",
-        "published before. They are not factual sources for the current product.",
+        "These records prove approved title and search-intent precedent. They do",
+        "not prove full-body structure unless a body profile is supplied separately.",
         "Never transfer names, prices, claims, results, or other product facts.",
         "",
         "PROVEN SEARCH-INTENT EMPHASIS:",
@@ -278,8 +278,8 @@ def format_exemplar_guidance(exemplars: list[dict]) -> str:
         lines.append(f"    Published URL: {item['live_url']}")
     lines.extend((
         "",
-        "Use these only to choose a familiar article shape, reader-question order,",
-        "and differentiated SEO angle. Current sealed source records control facts.",
+        "Use these for differentiated SEO angles. Current sealed source records",
+        "control facts; explicit body profiles control article-shape precedent.",
         "═══════════════════════════════════════════════",
         "",
     ))
@@ -301,11 +301,16 @@ def build_approval_playbook(exemplars: list[dict], platform: str,
         item.get("published_date", "") for item in exemplars
         if item.get("published_date")
     )
+    body_profiles = [
+        item for item in exemplars
+        if item.get("headings") or item.get("opening_excerpt")
+    ]
     return {
         "schema_version": 1,
         "platform": normalize_platform(platform),
         "niche": niche,
         "approved_sample_size": len(exemplars),
+        "body_profile_sample_size": len(body_profiles),
         "title_patterns": [name for name, _ in patterns.most_common(5)],
         "accepted_intents": [name for name, _ in intents.most_common()],
         "oldest_approval": dates[0] if dates else "",
@@ -326,6 +331,8 @@ def format_approval_playbook(playbook: dict) -> str:
         f"Publisher: {playbook.get('platform', '')}",
         f"Niche: {playbook.get('niche', '')}",
         f"Approved sample: {playbook.get('approved_sample_size', 0)}",
+        "Full-body structural profiles: "
+        f"{playbook.get('body_profile_sample_size', 0)}",
         f"Observed approval window: {playbook.get('oldest_approval') or 'unknown'} "
         f"to {playbook.get('latest_approval') or 'unknown'}",
         "Accepted search intents: "
@@ -335,7 +342,10 @@ def format_approval_playbook(playbook: dict) -> str:
             f"  • {pattern}"
             for pattern in playbook.get("title_patterns") or ["No stable pattern"]
         ],
-        "Use this envelope aggressively for editorial structure and SEO only.",
+        (
+            "Use title and intent precedent aggressively for SEO. Use body "
+            "structure only when a full-body profile is explicitly present."
+        ),
         playbook["fact_boundary"],
         "═══════════════════════════════════════════════",
         "",
@@ -431,6 +441,42 @@ def build_generation_blueprint(pack: dict, exemplars: list[dict]) -> str:
             "Material Limitations and Questions to Verify",
             "The Source-Grounded Takeaway",
         ),
+        "pricing": (
+            f"Current {product_name} Package Information",
+            "What Each Available Offer Includes",
+            "Seller-Described Features That Shape Value",
+            "What Pricing Does Not Establish",
+            "Who May Find the Current Offer Relevant",
+            "Terms and Material Details to Verify",
+            "How to Review the Current Offer",
+        ),
+        "trust": (
+            f"What the Current Sources Establish About {product_name}",
+            "Seller Identity and Available Contact Information",
+            "Product Claims and Their Evidence Status",
+            "Current Pricing and Offer Transparency",
+            "Who May Find the Product Worth Evaluating",
+            "Material Limitations and Buyer Checks",
+            "The Source-Grounded Assessment",
+        ),
+        "review": (
+            f"What {product_name} Is",
+            "The Strongest Seller-Described Features",
+            "How the Available Evidence Should Be Read",
+            "Current Pricing and Package Information",
+            "Best-Fit and Poor-Fit Buyers",
+            "Material Limitations and Questions to Verify",
+            "The Source-Grounded Takeaway",
+        ),
+        "buyer_fit": (
+            f"Who {product_name} Is Designed For",
+            "Seller-Described Features That May Matter",
+            "How the Product Is Positioned to Work",
+            "Current Pricing and Offer Details",
+            "Who May Want a Different Approach",
+            "Material Limitations and Questions to Verify",
+            "How to Evaluate the Current Offer",
+        ),
     }
     spine = h2_spines.get(selected_intent, h2_spines["features"])
     avoid = [
@@ -451,7 +497,8 @@ def build_generation_blueprint(pack: dict, exemplars: list[dict]) -> str:
         f"Primary SEO intent: {selected_intent}",
         f"Title promise: {promises[selected_intent]}",
         f"Recommended headline: {headline_patterns[selected_intent]}",
-        "Use approved Barchart advertorial formatting from the precedent corpus.",
+        f"Use approved {channel or 'target-publisher'} formatting from the "
+        "matching precedent corpus.",
         "SEO strategy is complete. Do not invent a different angle.",
         "Required H2 spine:",
     ]

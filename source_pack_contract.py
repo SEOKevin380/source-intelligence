@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 
 CONTRACT_NAME = "mbk.source-intelligence.publication-pack"
-CONTRACT_VERSION = 1
+CONTRACT_VERSION = 2
 
 DEVICE_ATTRIBUTABLE_CLAIM_TYPES = frozenset({
     "feature",
@@ -149,25 +149,40 @@ def seal_source_pack(full_data: dict) -> dict:
                 or ""
             ).strip().casefold()
             compliance_blocked = str(claim.get("text", "")).strip().casefold() in blocked_texts
-            attribution_required = bool(
+            seller_attribution_required = bool(
                 product_type == "device"
                 and claim_type in DEVICE_ATTRIBUTABLE_CLAIM_TYPES
-                and status == "needs_verification"
                 and metadata.get("excerpt_is_literal") is True
                 and has_artifact
                 and source_class in SELLER_SOURCE_CLASSES
+                and status in {"accepted", "unreviewed", "needs_verification"}
+                and not compliance_blocked
+            )
+            source_attribution_required = bool(
+                status == "unreviewed"
+                and literal
+                and has_artifact
+                and not seller_attribution_required
                 and not compliance_blocked
             )
             safe = not compliance_blocked and (
                 status == "accepted"
                 or (status == "unreviewed" and literal and has_artifact)
-                or attribution_required
+                or seller_attribution_required
             )
             if safe:
                 publication_claim = copy.deepcopy(claim)
-                if attribution_required:
+                if seller_attribution_required:
                     publication_claim["publication_treatment"] = (
                         "seller_attribution_required"
+                    )
+                elif source_attribution_required:
+                    publication_claim["publication_treatment"] = (
+                        "source_attribution_required"
+                    )
+                else:
+                    publication_claim.setdefault(
+                        "publication_treatment", "direct_fact_allowed"
                     )
                 publication_claims.setdefault(claim_type, []).append(
                     publication_claim

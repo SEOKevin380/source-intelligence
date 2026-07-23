@@ -44,3 +44,17 @@ class WordPressDraftPublisher:
             "edit_url": f"{self.site_url}/wp-admin/post.php?post={data['id']}&action=edit",
             "link": data.get("link", ""),
         }
+
+    def get_draft(self, post_id):
+        """Read back the exact editable WordPress artifact for verification."""
+        data = self._request(
+            "GET", f"posts/{int(post_id)}", params={"context": "edit"}
+        )
+        return {
+            "post_id": data["id"],
+            "status": data.get("status", ""),
+            "post_type": data.get("type", ""),
+            "title_raw": (data.get("title") or {}).get("raw", ""),
+            "content_raw": (data.get("content") or {}).get("raw", ""),
+            "link": data.get("link", ""),
+        }

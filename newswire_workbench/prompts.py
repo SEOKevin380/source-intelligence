@@ -28,14 +28,15 @@ def generation_prompt(source_text: str, platform: str, vertical: str,
                       master_instructions: str,
                       learned_guidance: str = "") -> str:
     depth_contract = (
-        "For an AccessNewsWire financial newsletter/research review, target "
-        "2,200–3,000 useful words when the supplied source record supports it. "
+        "For an AccessNewsWire financial newsletter/research review, ordinarily "
+        "target 1,800–2,400 useful words when the sealed record supports it. "
         "Cover who, what, why, how, how much, access, fit, limitations, trust "
         "questions, and the advertiser's specific thesis. Do not pad with "
         "generic investing advice."
         if platform == "AccessNewsWire" and vertical == "financial"
         else
-        "For a Barchart device review, target 2,200–2,800 useful words when "
+        "For a Barchart device review, ordinarily target 1,400–2,000 useful "
+        "words when "
         "the supplied official, prior-release, and competitor records support "
         "it. Answer what it is, how the claimed mechanism works, what evidence "
         "supports or limits the claims, price, setup, best fit, poor fit, "
@@ -68,8 +69,10 @@ Operating rules:
 - In a sealed JSON pack, `publication_claims` are the only claim-ledger items
   available for publication. Items marked
   `publication_treatment: seller_attribution_required` may be described only
-  as seller/offer statements. Never use `excluded_publication_claims`, even
-  with attribution.
+  as seller/offer statements. Items marked
+  `publication_treatment: source_attribution_required` must name or describe
+  their recorded source. Only `direct_fact_allowed` claims may be stated
+  directly. Never use `excluded_publication_claims`, even with attribution.
 - For device specifications, setup, placement, operation, optimization time,
   and functions taken from seller or third-party descriptions, use explicit
   attribution such as “seller materials state” or “the offer describes.”
@@ -226,7 +229,7 @@ Review all applicable categories:
     STRONG.key-takeaway phrases,
     and 5–6 strategic links in AccessNewsWire long-form copy.
 13. Editorial depth: an AccessNewsWire financial newsletter/research review
-    should ordinarily provide 2,200–3,000 useful words when the source record
+    should ordinarily provide 1,800–2,400 useful words when the source record
     supports that depth. Flag generic padding, but also flag a thin draft that
     fails to answer who, what, why, how, how much, access, fit, limitations,
     trust questions, and the advertiser's specific thesis.
@@ -243,9 +246,12 @@ Review all applicable categories:
 16. Sealed-pack claim policy: `publication_claims` are usable according to
     their treatment. A claim marked
     `publication_treatment: seller_attribution_required` is permitted only
-    with explicit seller/offer attribution. `excluded_publication_claims`
-    remain prohibited. Do not demand deletion of a permitted attributed claim
-    merely because independent verification is unavailable.
+    with explicit seller/offer attribution. A claim marked
+    `source_attribution_required` requires explicit attribution to its recorded
+    source. Only `direct_fact_allowed` may be stated directly.
+    `excluded_publication_claims` remain prohibited. Do not demand deletion of
+    a permitted attributed claim merely because independent verification is
+    unavailable.
 17. Human editorial quality: verify American English grammar, spelling,
     punctuation, agreement, idiom, sentence flow, varied openings, and natural
     cadence. Flag robotic repetition, canned transitions, generic filler,
@@ -306,7 +312,9 @@ compliance report below.
   sealed record explicitly identifies independent verification.
 - Preserve permitted `publication_claims` marked
   `publication_treatment: seller_attribution_required` with explicit
-  seller/offer attribution. Never restore an `excluded_publication_claim`.
+  seller/offer attribution. Preserve `source_attribution_required` claims only
+  with explicit recorded-source attribution. Never restore an
+  `excluded_publication_claim`.
 - Return the complete revised article HTML only.
 - Begin the model response with the revised release headline in H1 so the
   workbench can store it in WordPress's separate title field; the saved article
@@ -331,9 +339,9 @@ compliance report below.
   contains STRONG; 10–14 additional STRONG.key-takeaway phrases; 5–6 strategic links for
   AccessNewsWire long form; and a scannable contact block.
 - If this is an AccessNewsWire financial newsletter/research review, build
-  toward 2,200–3,000 useful, source-grounded words. Expand missing reader
+  toward 1,800–2,400 useful, source-grounded words. Expand missing reader
   questions and product-specific analysis, never generic investment filler.
-- If this is a Barchart device review, build toward 2,200–2,800 useful,
+- If this is a Barchart device review, build toward 1,400–2,000 useful,
   source-grounded words and fully answer mechanism, evidence, price, setup,
   fit/not-fit, limitations, trust, and current terms. Keep alternatives to one
   compact neutral comparison section and never advocate competing products.

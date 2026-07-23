@@ -28,3 +28,25 @@ def test_extract_pack_and_map_attributed_claim():
     assert ledger["mappings"][0]["claims"][0]["publication_treatment"] == (
         "seller_attribution_required"
     )
+    assert ledger["passed"] is True
+
+
+def test_unattributed_mapped_seller_claim_fails_provenance():
+    pack = {
+        "source_pack_contract": {"sha256": "packhash"},
+        "publication_claims": {
+            "feature": [{
+                "claim_id": "c1",
+                "text": "The device filters dirty electricity",
+                "artifact_id": "a1",
+                "source_class": "official_vendor",
+                "publication_treatment": "seller_attribution_required",
+            }]
+        },
+        "excluded_publication_claims": [],
+    }
+    ledger = build_article_claim_ledger(
+        pack, "<p>The device filters dirty electricity.</p>"
+    )
+    assert ledger["passed"] is False
+    assert ledger["attribution_violations"]

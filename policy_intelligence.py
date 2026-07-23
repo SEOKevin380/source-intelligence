@@ -94,6 +94,12 @@ def record_observation(
     adopted_hash = snapshot.setdefault("adoptions", {}).get(source["id"], {}).get(
         "adopted_hash", ""
     )
+    baseline_hash = (
+        adopted_hash
+        or prior.get("baseline_hash", "")
+        or prior_hash
+        or digest
+    )
     snapshot["sources"][source["id"]] = {
         "title": source["title"],
         "url": source["url"],
@@ -102,11 +108,12 @@ def record_observation(
         "verticals": source.get("verticals", ["all"]),
         "checked_at": checked_at,
         "observed_hash": digest,
+        "baseline_hash": baseline_hash,
         "content_type": content_type,
         "etag": etag,
         "last_modified": last_modified,
         "status": status,
-        "requires_review": bool(adopted_hash and adopted_hash != digest),
+        "requires_review": bool(baseline_hash != digest),
     }
     snapshot["generated_at"] = checked_at
     snapshot["snapshot_hash"] = snapshot_hash(snapshot)
@@ -128,6 +135,7 @@ def adopt_source(snapshot: dict, source_id: str, rule_version: str,
         "adopted_at": _now(),
     }
     observed["requires_review"] = False
+    observed["baseline_hash"] = observed["observed_hash"]
     snapshot["snapshot_hash"] = snapshot_hash(snapshot)
 
 

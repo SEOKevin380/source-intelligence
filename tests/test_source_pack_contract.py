@@ -137,3 +137,37 @@ def test_device_attribution_needs_explicit_literal_seller_provenance():
     assert {
         item["text"] for item in pack["excluded_publication_claims"]
     } == {"Inferred seller feature", "Competitor description"}
+
+
+def test_accepted_seller_device_claim_still_requires_attribution():
+    raw = _pack()
+    raw["all_artifacts"]["art-1"]["source_class"] = "official_vendor"
+    raw["claims_by_type"] = {
+        "feature": [{
+            "text": "The device filters dirty electricity",
+            "artifact_id": "art-1",
+            "review_status": "accepted",
+            "metadata": {"excerpt_is_literal": True},
+        }]
+    }
+    pack = seal_source_pack(raw)
+    assert pack["publication_claims"]["feature"][0][
+        "publication_treatment"
+    ] == "seller_attribution_required"
+
+
+def test_unreviewed_literal_news_claim_requires_source_attribution():
+    raw = _pack()
+    raw["all_artifacts"]["art-1"]["source_class"] = "news_media"
+    raw["claims_by_type"] = {
+        "company_info": [{
+            "text": "The company launched in 2025",
+            "artifact_id": "art-1",
+            "review_status": "unreviewed",
+            "metadata": {"excerpt_is_literal": True},
+        }]
+    }
+    pack = seal_source_pack(raw)
+    assert pack["publication_claims"]["company_info"][0][
+        "publication_treatment"
+    ] == "source_attribution_required"

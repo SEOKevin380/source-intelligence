@@ -62,6 +62,7 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
             })
 
     mappings = []
+    attribution_violations = []
     for sentence in _sentences(article):
         sentence_tokens = _tokens(sentence)
         matches = []
@@ -74,6 +75,34 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
                 })
         if matches:
             mappings.append({"article_sentence": sentence, "claims": matches})
+            sentence_lower = sentence.casefold()
+            seller_attributed = bool(re.search(
+                r"\b(?:seller|offer|vendor|manufacturer|product page|"
+                r"sales page|source materials?|materials?)\b.{0,50}"
+                r"\b(?:states?|says?|describes?|lists?|reports?|claims?|"
+                r"presents?|identifies?)\b|"
+                r"\baccording to\b",
+                sentence_lower,
+            ))
+            source_attributed = seller_attributed or bool(re.search(
+                r"\b(?:according to|the source|the record|the cited|"
+                r"documentation|reported by|published by)\b",
+                sentence_lower,
+            ))
+            for claim in matches:
+                treatment = claim.get("publication_treatment")
+                if (
+                    treatment == "seller_attribution_required"
+                    and not seller_attributed
+                ) or (
+                    treatment == "source_attribution_required"
+                    and not source_attributed
+                ):
+                    attribution_violations.append({
+                        "article_sentence": sentence,
+                        "claim_id": claim["claim_id"],
+                        "required_treatment": treatment,
+                    })
 
     used_ids = {
         claim["claim_id"] for mapping in mappings for claim in mapping["claims"]
@@ -88,6 +117,8 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
         "mapped_sentence_count": len(mappings),
         "used_claim_count": len(used_ids),
         "mappings": mappings,
+        "attribution_violations": attribution_violations,
+        "passed": not attribution_violations,
         "excluded_claims": pack.get("excluded_publication_claims") or [],
         "scope_note": (
             "This deterministic ledger identifies textual claim support. "

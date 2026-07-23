@@ -34,7 +34,7 @@ from .audit import audit_article
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v12.1-governed-intelligence"
+    "serp-differentiation-depth-v13-fixed-point-control"
 )
 
 STAGES = (
@@ -58,6 +58,34 @@ def _now():
 
 def _hash(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _fact_source_hash(source_text):
+    """Stable current-product identity across rebuild UUIDs and workflow versions."""
+    marker = "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══"
+    if marker in str(source_text or ""):
+        try:
+            pack = json.loads(str(source_text).split(marker, 1)[1].strip())
+            sealed = str(
+                (pack.get("source_pack_contract") or {}).get("sha256") or ""
+            )
+            if re.fullmatch(r"[a-f0-9]{64}", sealed, re.I):
+                return sealed.lower()
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass
+    stable = re.sub(
+        r"(?m)^EXPLICIT REBUILD RUN:\s*\S+\s*$", "", str(source_text or "")
+    )
+    return _hash(stable.strip())
+
+
+def _source_policy_hash(source_text):
+    match = re.search(
+        r"(?m)^Snapshot hash:\s*([a-f0-9]{64})\s*$",
+        str(source_text or ""),
+        re.I,
+    )
+    return match.group(1).lower() if match else ""
 
 
 def _source_affiliate_link(source_text):
@@ -110,6 +138,7 @@ class WorkbenchEngine:
                     stage TEXT NOT NULL,
                     source_text TEXT NOT NULL,
                     source_hash TEXT NOT NULL,
+                    fact_source_hash TEXT DEFAULT '',
                     article_text TEXT DEFAULT '',
                     article_hash TEXT DEFAULT '',
                     last_report TEXT DEFAULT '{}',
@@ -154,6 +183,9 @@ class WorkbenchEngine:
                     site_url TEXT NOT NULL,
                     post_id INTEGER NOT NULL,
                     article_hash TEXT NOT NULL,
+                    remote_content_hash TEXT DEFAULT '',
+                    post_type TEXT DEFAULT '',
+                    remote_status TEXT DEFAULT '',
                     edit_url TEXT DEFAULT '',
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY(project_id, site_url)
@@ -188,6 +220,30 @@ class WorkbenchEngine:
             if "release_title" not in columns:
                 conn.execute("ALTER TABLE projects ADD COLUMN release_title TEXT DEFAULT ''")
                 conn.execute("UPDATE projects SET release_title=title WHERE release_title='' OR release_title IS NULL")
+            if "fact_source_hash" not in columns:
+                conn.execute(
+                    "ALTER TABLE projects ADD COLUMN fact_source_hash TEXT DEFAULT ''"
+                )
+            rows = conn.execute(
+                "SELECT id,source_text FROM projects "
+                "WHERE fact_source_hash='' OR fact_source_hash IS NULL"
+            ).fetchall()
+            for row in rows:
+                conn.execute(
+                    "UPDATE projects SET fact_source_hash=? WHERE id=?",
+                    (_fact_source_hash(row["source_text"]), row["id"]),
+                )
+            wordpress_columns = {
+                r[1] for r in conn.execute(
+                    "PRAGMA table_info(wordpress_drafts)"
+                )
+            }
+            for name in ("remote_content_hash", "post_type", "remote_status"):
+                if name not in wordpress_columns:
+                    conn.execute(
+                        f"ALTER TABLE wordpress_drafts "
+                        f"ADD COLUMN {name} TEXT DEFAULT ''"
+                    )
         self._backfill_issue_memory()
 
     def create_project(self, title, platform, source_text, vertical="auto"):
@@ -196,17 +252,21 @@ class WorkbenchEngine:
             raise ValueError("Project name and source record are required")
         if vertical == "auto":
             vertical = detect_vertical(source_text)
+        if "═══ GOVERNED POLICY SNAPSHOT ═══" not in source_text:
+            from policy_intelligence import format_policy_context
+            source_text += "\n\n" + format_policy_context(vertical)
         pid = uuid.uuid4().hex[:12]
         now = _now()
         with self._connect() as conn:
             conn.execute(
                 """INSERT INTO projects
                 (id,title,release_title,platform,vertical,stage,source_text,source_hash,
-                 article_text,article_hash,last_report,revision_round,
+                 fact_source_hash,article_text,article_hash,last_report,revision_round,
                  run_token,run_started_at,created_at,updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (pid, title.strip(), title.strip(), platform, vertical, "source_ready",
-                 source_text, _hash(source_text), "", "", "{}", 0,
+                 source_text, _hash(source_text), _fact_source_hash(source_text),
+                 "", "", "{}", 0,
                  "", "", now, now),
             )
         self._event(pid, "project_created", "source_ready", "", {
@@ -404,10 +464,24 @@ class WorkbenchEngine:
             extract_sealed_pack(p["source_text"]),
             p.get("article_text") or "",
         )
+        result["ready_for_packaging"] = bool(
+            result["ready_for_packaging"]
+            and result["claim_provenance"]["passed"]
+        )
         from policy_intelligence import policy_status
         result["policy_intelligence"] = policy_status(p["vertical"])
+        source_policy_hash = _source_policy_hash(p["source_text"])
+        current_policy_hash = result["policy_intelligence"]["snapshot_hash"]
+        result["policy_intelligence"]["source_snapshot_hash"] = (
+            source_policy_hash
+        )
+        result["policy_intelligence"]["exact_snapshot_match"] = bool(
+            source_policy_hash
+            and source_policy_hash == current_policy_hash
+        )
         result["pre_run_authorized"] = bool(
             result["policy_intelligence"]["current"]
+            and result["policy_intelligence"]["exact_snapshot_match"]
             and not result["blockers"]
         )
         wordpress = self.wordpress_draft(project_id)
@@ -420,6 +494,10 @@ class WorkbenchEngine:
             "exact_hash_match": bool(
                 wordpress
                 and wordpress.get("article_hash") == p["article_hash"]
+                and wordpress.get("remote_content_hash")
+                == _hash(p["article_text"])
+                and wordpress.get("post_type") == "post"
+                and wordpress.get("remote_status") == "draft"
             ),
         }
         result["publication_ready"] = bool(
@@ -473,7 +551,8 @@ class WorkbenchEngine:
         """Return the WordPress draft bound to this exact project, if any."""
         with self._connect() as conn:
             row = conn.execute(
-                """SELECT site_url,post_id,article_hash,edit_url,updated_at
+                """SELECT site_url,post_id,article_hash,remote_content_hash,
+                post_type,remote_status,edit_url,updated_at
                 FROM wordpress_drafts WHERE project_id=?
                 ORDER BY updated_at DESC LIMIT 1""",
                 (project_id,),
@@ -554,18 +633,50 @@ class WorkbenchEngine:
             p.get("release_title") or p["title"], p["article_text"],
             existing_post_id=row["post_id"] if row else None,
         )
+        remote = publisher.get_draft(result["post_id"])
+        expected_title = p.get("release_title") or p["title"]
+        remote_content_hash = _hash(remote.get("content_raw") or "")
+        identity_errors = []
+        if int(remote.get("post_id") or 0) != int(result["post_id"]):
+            identity_errors.append("post_id")
+        if remote.get("status") != "draft":
+            identity_errors.append("status")
+        if remote.get("post_type") != "post":
+            identity_errors.append("post_type")
+        if (remote.get("title_raw") or "").strip() != expected_title.strip():
+            identity_errors.append("title")
+        if remote_content_hash != _hash(p["article_text"]):
+            identity_errors.append("content_hash")
+        if identity_errors:
+            raise RuntimeError(
+                "WordPress remote read-back did not match the approved "
+                "artifact: " + ", ".join(identity_errors)
+            )
         with self._connect() as conn:
             conn.execute(
-                """INSERT INTO wordpress_drafts(project_id,site_url,post_id,article_hash,edit_url,updated_at)
-                VALUES(?,?,?,?,?,?) ON CONFLICT(project_id,site_url) DO UPDATE SET
+                """INSERT INTO wordpress_drafts(
+                project_id,site_url,post_id,article_hash,remote_content_hash,
+                post_type,remote_status,edit_url,updated_at)
+                VALUES(?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(project_id,site_url) DO UPDATE SET
                 post_id=excluded.post_id,article_hash=excluded.article_hash,
+                remote_content_hash=excluded.remote_content_hash,
+                post_type=excluded.post_type,
+                remote_status=excluded.remote_status,
                 edit_url=excluded.edit_url,updated_at=excluded.updated_at""",
-                (project_id, publisher.site_url, result["post_id"], p["article_hash"],
-                 result["edit_url"], _now()),
+                (
+                    project_id, publisher.site_url, result["post_id"],
+                    p["article_hash"], remote_content_hash,
+                    remote["post_type"], remote["status"],
+                    result["edit_url"], _now(),
+                ),
             )
         self._event(project_id, "wordpress_draft_saved", "package_ready", p["article_hash"], {
             "site_url": publisher.site_url, "post_id": result["post_id"],
             "edit_url": result["edit_url"],
+            "remote_content_hash": remote_content_hash,
+            "remote_status": remote["status"],
+            "post_type": remote["post_type"],
         })
         return result
 
@@ -779,7 +890,7 @@ class WorkbenchEngine:
             memory = "\n".join(filter(None, (
                 self._learned_guidance(p["platform"], p["vertical"]),
                 self._source_failure_guidance(
-                    p["source_hash"], p["platform"], p["vertical"]
+                    p["fact_source_hash"], p["platform"], p["vertical"]
                 ),
             )))
             article = self._claude(generation_prompt(
@@ -1118,6 +1229,42 @@ class WorkbenchEngine:
                     report.setdefault("recommended_edits", []).append(item)
             report["mandatory_count"] = len(existing)
             report["verdict"] = "not_approved" if existing else "approved"
+        from article_provenance import (
+            build_article_claim_ledger,
+            extract_sealed_pack,
+        )
+        provenance = build_article_claim_ledger(
+            extract_sealed_pack(p["source_text"]), p["article_text"]
+        )
+        if provenance["attribution_violations"]:
+            existing = report.setdefault("mandatory_edits", [])
+            existing_ids = {item.get("id") for item in existing}
+            for index, violation in enumerate(
+                provenance["attribution_violations"], 1
+            ):
+                finding_id = f"P-ATTR-{index}"
+                if finding_id in existing_ids:
+                    continue
+                sentence = violation["article_sentence"]
+                treatment = violation["required_treatment"]
+                prefix = (
+                    "Seller materials state that "
+                    if treatment == "seller_attribution_required"
+                    else "According to the recorded source, "
+                )
+                replacement = prefix + sentence[:1].lower() + sentence[1:]
+                existing.append({
+                    "id": finding_id,
+                    "category": "Claim provenance",
+                    "issue": (
+                        "A mapped publication claim is missing its required "
+                        f"{treatment.replace('_', ' ')}."
+                    ),
+                    "exact_text": sentence,
+                    "replacement": replacement,
+                })
+            report["mandatory_count"] = len(existing)
+            report["verdict"] = "not_approved"
         return report
 
     def _record_llm_call(self, project_id, stage, route, input_tokens=0,
@@ -1181,7 +1328,11 @@ class WorkbenchEngine:
     def usage_summary(self, project_id):
         with self._connect() as conn:
             row = conn.execute(
-                """SELECT COUNT(*) calls, COALESCE(SUM(input_tokens),0) input_tokens,
+                """SELECT
+                COALESCE(SUM(CASE WHEN status='success' OR estimated_cost>0
+                    THEN 1 ELSE 0 END),0) calls,
+                COUNT(*) attempts,
+                COALESCE(SUM(input_tokens),0) input_tokens,
                 COALESCE(SUM(output_tokens),0) output_tokens,
                 COALESCE(SUM(estimated_cost),0) estimated_cost
                 FROM llm_calls WHERE project_id=?""", (project_id,),
@@ -1347,12 +1498,24 @@ class WorkbenchEngine:
         claim_ledger = build_article_claim_ledger(
             extract_sealed_pack(p["source_text"]), p["article_text"]
         )
+        if not claim_ledger["passed"]:
+            raise RuntimeError(
+                "Package creation is blocked because one or more mapped "
+                "publication claims are missing their required seller/source "
+                "attribution."
+            )
         from policy_intelligence import policy_status
         policy = policy_status(p["vertical"])
-        if not policy["current"]:
+        source_policy_hash = _source_policy_hash(p["source_text"])
+        if (
+            not policy["current"]
+            or not source_policy_hash
+            or source_policy_hash != policy["snapshot_hash"]
+        ):
             raise RuntimeError(
                 "Package creation is blocked because an applicable authoritative "
-                "policy source is missing or changed and awaiting review."
+                "policy source is missing, changed, awaiting review, or differs "
+                "from the snapshot bound to this project."
             )
         manifest = {
             "project_id": p["id"], "title": p["title"],
@@ -1817,18 +1980,18 @@ class WorkbenchEngine:
             sanitized.append(row)
         return sanitized
 
-    def _source_failure_guidance(self, source_hash, platform, vertical):
+    def _source_failure_guidance(self, fact_source_hash, platform, vertical):
         """Use recent same-source failures immediately, without global promotion."""
         with self._connect() as conn:
             rows = conn.execute("""
                 SELECT io.category,io.issue,COUNT(*) AS occurrences
                 FROM issue_observations io
                 JOIN projects p ON p.id=io.project_id
-                WHERE p.source_hash=? AND p.platform=? AND p.vertical=?
+                WHERE p.fact_source_hash=? AND p.platform=? AND p.vertical=?
                 GROUP BY io.fingerprint
                 ORDER BY occurrences DESC, MAX(io.created_at) DESC
                 LIMIT 12
-            """, (source_hash, platform, vertical)).fetchall()
+            """, (fact_source_hash, platform, vertical)).fetchall()
         rows = self._sanitize_guidance_rows(rows)
         if not rows:
             return ""

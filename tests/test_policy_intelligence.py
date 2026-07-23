@@ -25,6 +25,19 @@ def test_changed_policy_requires_review_after_adoption():
     assert snapshot["sources"]["rule"]["requires_review"] is True
 
 
+def test_unadopted_change_remains_blocked_across_repeated_refreshes():
+    source = {
+        "id": "rule", "title": "Rule", "url": "https://example.com/rule",
+        "authority": "regulator", "verticals": ["all"],
+    }
+    snapshot = {"schema_version": 1, "sources": {}, "adoptions": {}}
+    record_observation(snapshot, source, b"version one")
+    record_observation(snapshot, source, b"version two")
+    assert snapshot["sources"]["rule"]["requires_review"] is True
+    record_observation(snapshot, source, b"version two")
+    assert snapshot["sources"]["rule"]["requires_review"] is True
+
+
 def test_policy_status_is_fail_closed_for_missing_and_changed_sources():
     registry = {
         "sources": [{
