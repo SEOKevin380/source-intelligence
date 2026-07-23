@@ -109,6 +109,34 @@ def test_structured_device_record_migrates_to_attributed_claim_ledger():
     )
 
 
+def test_structured_facts_reconcile_when_raw_claims_all_fail():
+    raw = _pack()
+    raw["claims_by_type"] = {
+        "manufacturer_claim": [{
+            "text": "Can save up to 47% on electricity",
+            "artifact_id": "art-1",
+            "source_class": "third_party_web_search",
+            "review_status": "needs_verification",
+            "metadata": {"excerpt_is_literal": False},
+        }],
+    }
+    raw["product"].update({
+        "key_features": [
+            "Voltage stabilization",
+            "Power factor correction",
+            "Dirty electricity filtering",
+        ],
+        "specifications": {"voltage_range": "90V–250V"},
+    })
+    pack = seal_source_pack(raw)
+    assert pack["source_pack_contract"]["readiness"] == "complete"
+    assert pack["publication_claim_summary"]["publication_claim_count"] == 4
+    assert pack["publication_claim_summary"]["excluded_claim_count"] == 1
+    assert pack["excluded_publication_claims"][0]["text"] == (
+        "Can save up to 47% on electricity"
+    )
+
+
 def test_tampering_is_detected():
     pack = seal_source_pack(_pack())
     tampered = copy.deepcopy(pack)

@@ -35,7 +35,7 @@ from .execution_budget import execution_budget
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v15-end-to-end-budget-contract"
+    "serp-differentiation-depth-v16-claim-ledger-reconciliation"
 )
 
 STAGES = (

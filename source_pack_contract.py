@@ -178,6 +178,24 @@ def _structured_product_claims(pack: dict) -> dict:
     return migrated
 
 
+def _merge_structured_claims(source_claims: dict, pack: dict) -> dict:
+    """Add missing structured facts even when an unusable raw ledger exists."""
+    merged = copy.deepcopy(source_claims or {})
+    existing = {
+        str(claim.get("text", "")).strip().casefold()
+        for items in merged.values()
+        for claim in (items or [])
+        if isinstance(claim, dict)
+    }
+    for claim_type, items in _structured_product_claims(pack).items():
+        for claim in items:
+            key = str(claim.get("text", "")).strip().casefold()
+            if key and key not in existing:
+                merged.setdefault(claim_type, []).append(claim)
+                existing.add(key)
+    return merged
+
+
 def assess_readiness(full_data: dict) -> tuple:
     """Return (state, reasons). Limited packs remain publishable."""
     product = full_data.get("product", {}) or {}
@@ -247,8 +265,7 @@ def seal_source_pack(full_data: dict) -> dict:
         or pack.get("publication_claims")
         or {}
     )
-    if not any(source_claims.values()):
-        source_claims = _structured_product_claims(pack)
+    source_claims = _merge_structured_claims(source_claims, pack)
     for claim_type, items in source_claims.items():
         for claim in items or []:
             status = str(claim.get("review_status", "unreviewed")).lower()
