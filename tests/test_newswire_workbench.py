@@ -112,7 +112,7 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert project["stage"] == "source_ready"
     assert (
         "AUTOMATION CONTEXT VERSION: "
-        "serp-differentiation-depth-v12-governed-intelligence"
+        "serp-differentiation-depth-v12.1-governed-intelligence"
         in project["source_text"]
     )
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
@@ -179,7 +179,11 @@ def test_invalid_legacy_package_is_automatically_rebuilt(tmp_path):
     legacy = engine.create_project_from_pack(pack, "Barchart Advertorial")
     engine._set_article(
         engine.get(legacy),
-        "<p>**Paid Advertorial:** Compensation may be received.</p>",
+        (
+                "<p><strong>Paid Advertorial:</strong> Compensation may be "
+                "received.</p><p>Utilities only bill kilowatt-hours regardless. "
+                "Utilities measure reactive power in every home.</p>"
+        ),
         "package_ready",
         "legacy.html",
     )
@@ -264,7 +268,7 @@ def test_article_diagnostics_proves_html_contract(tmp_path):
     assert diagnostics["has_article_html"] is True
 
 
-def test_barchart_device_cannot_package_thin_long_form():
+def test_barchart_device_depth_is_visible_without_arbitrary_word_count_block():
     article = (
         "<p>Paid Advertorial: A commission may be earned.</p>"
         "<h2><strong>What It Is</strong></h2>"
@@ -275,8 +279,9 @@ def test_barchart_device_cannot_package_thin_long_form():
     )
     ids = {item["id"] for item in findings}
     assert "D18" in ids
-    blockers, _ = partition_findings(findings)
-    assert "D18" in {item["id"] for item in blockers}
+    blockers, recommendations = partition_findings(findings)
+    assert "D18" not in {item["id"] for item in blockers}
+    assert "D18" in {item["id"] for item in recommendations}
 
 
 def test_repetitive_caveat_stacking_is_client_advocacy_warning():
@@ -394,9 +399,47 @@ def test_publication_repair_neutralizes_prosecutorial_device_headings():
 def test_offline_system_audit_owns_every_blocker_and_route():
     report = audit_system_contract("device")
     assert report["passed"] is True
-    assert report["blocker_count"] == 17
+    assert report["blocker_count"] == 8
+    assert not report["missing_blocker_rationales"]
+    assert not report["stale_blocker_rationales"]
     assert report["missing_gate_owners"] == []
     assert report["route_errors"] == []
+
+
+def test_house_optimization_gates_never_become_publication_blockers():
+    house_quality_ids = {
+        "D4", "D8", "D9", "D10", "D11", "D12", "D13", "D14",
+        "D15", "D16", "D18", "D19",
+    }
+    findings = [
+        {
+            "id": gate_id,
+            "category": "House quality preference",
+            "issue": "Improve presentation.",
+            "exact_text": "",
+            "replacement": "Improve presentation.",
+        }
+        for gate_id in sorted(house_quality_ids)
+    ]
+    blockers, recommendations = partition_findings(findings)
+    assert blockers == []
+    assert {item["id"] for item in recommendations} == house_quality_ids
+
+
+def test_preflight_capacity_respects_single_project_call_ceiling(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Device", "Barchart Advertorial", "device source", "device"
+    )
+    route = route_for("draft", "device")
+    for _ in range(4):
+        engine._record_llm_call(pid, "draft", route, 10, 10)
+    preflight = engine.offline_preflight(pid)
+    assert preflight["semantic_review"]["remaining_calls"] == 0
+    assert (
+        preflight["semantic_review"]["reviewer_capacity"]["project"]["remaining"]
+        == 0
+    )
 
 
 def test_ecowatt_shaped_preflight_exposes_all_semantic_failures_together():
@@ -424,9 +467,9 @@ def test_ecowatt_shaped_preflight_exposes_all_semantic_failures_together():
     assert {"D17", "D1", "D18", "D19", "D20"}.issubset(initial_ids)
     assert not ({item["id"] for item in report["mechanical_remaining"]})
     assert {"D18", "D19", "D20"}.issubset(final_ids)
-    assert "D19" not in {
+    assert {"D18", "D19"}.isdisjoint({
         item["id"] for item in report["semantic_remaining"]
-    }
+    })
     assert report["passed"] is False
 
 
@@ -1220,8 +1263,9 @@ def test_quality_rescue_exhaustion_escalates_to_war_room_rebuild(tmp_path):
     for _ in range(normal.max_calls):
         engine._record_llm_call(pid, "quality_rescue", normal, 10, 10)
     blocker = [{
-        "id": "D18", "category": "Depth", "issue": "Too thin.",
-        "exact_text": "", "replacement": "Rebuild completely.",
+        "id": "D20", "category": "Source grounding",
+        "issue": "Unsupported technical assertions.",
+        "exact_text": "unsupported claim", "replacement": "Rebuild completely.",
     }]
     rebuilt = (
         "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"

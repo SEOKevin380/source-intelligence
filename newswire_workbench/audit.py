@@ -5,7 +5,12 @@ from __future__ import annotations
 from dataclasses import asdict
 
 from .formatting import repair_publication_gates
-from .learning import PUBLICATION_BLOCKER_IDS, deterministic_findings, partition_findings
+from .learning import (
+    HARD_BLOCKER_RATIONALE,
+    PUBLICATION_BLOCKER_IDS,
+    deterministic_findings,
+    partition_findings,
+)
 from .routing import route_for
 
 
@@ -13,26 +18,31 @@ MECHANICAL_GATES = frozenset({
     "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9",
     "D10", "D11", "D12", "D13", "D14", "D17",
 })
-SEMANTIC_GATES = frozenset({"D18", "D20"})
-QUALITY_GATES = frozenset({"D15", "D16", "D19"})
+SEMANTIC_GATES = frozenset({"D20"})
+QUALITY_GATES = frozenset({
+    "D4", "D8", "D9", "D10", "D11", "D12", "D13", "D14",
+    "D15", "D16", "D18", "D19",
+})
 REQUIRED_ROUTES = (
     "draft",
+    "compliance",
     "compliance_repair",
-    "quality_rescue",
-    "war_room_rebuild",
     "final_signoff",
-    "post_seo_signoff",
-    "independent_rescue_signoff",
-    "executive_rescue_signoff",
-    "war_room_signoff",
 )
+ALL_GATE_IDS = frozenset(f"D{number}" for number in range(1, 21))
 
 
 def audit_system_contract(vertical: str) -> dict:
     """Prove that every known blocker is owned and every route has a budget."""
-    owned = MECHANICAL_GATES | SEMANTIC_GATES
+    owned = MECHANICAL_GATES | SEMANTIC_GATES | QUALITY_GATES
     missing_owners = sorted(PUBLICATION_BLOCKER_IDS - owned)
-    unknown_owners = sorted(owned - PUBLICATION_BLOCKER_IDS)
+    unknown_owners = sorted(owned - ALL_GATE_IDS)
+    missing_rationales = sorted(
+        PUBLICATION_BLOCKER_IDS - set(HARD_BLOCKER_RATIONALE)
+    )
+    stale_rationales = sorted(
+        set(HARD_BLOCKER_RATIONALE) - PUBLICATION_BLOCKER_IDS
+    )
     routes = {}
     route_errors = []
     for purpose in REQUIRED_ROUTES:
@@ -44,13 +54,19 @@ def audit_system_contract(vertical: str) -> dict:
         except Exception as exc:  # pragma: no cover - defensive contract report
             route_errors.append(f"{purpose}: {exc}")
     return {
-        "passed": not missing_owners and not unknown_owners and not route_errors,
+        "passed": not (
+            missing_owners or unknown_owners or missing_rationales
+            or stale_rationales or route_errors
+        ),
         "blocker_count": len(PUBLICATION_BLOCKER_IDS),
         "mechanical_gates": sorted(MECHANICAL_GATES),
         "semantic_gates": sorted(SEMANTIC_GATES),
         "quality_gates": sorted(QUALITY_GATES),
         "missing_gate_owners": missing_owners,
         "unknown_gate_owners": unknown_owners,
+        "hard_blocker_rationales": HARD_BLOCKER_RATIONALE,
+        "missing_blocker_rationales": missing_rationales,
+        "stale_blocker_rationales": stale_rationales,
         "route_errors": route_errors,
         "routes": routes,
     }

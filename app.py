@@ -1940,6 +1940,17 @@ else:
                         f"{_policy_state.get('applicable_source_count', 0)} "
                         "applicable sources."
                     )
+                else:
+                    st.error(
+                        "Authoritative policy refresh/review is required before "
+                        "another paid run: "
+                        + ", ".join(
+                            _policy_state.get("missing_observations", [])
+                            + _policy_state.get(
+                                "changes_requiring_review", []
+                            )
+                        )
+                    )
                 if _delivery_state.get("exact_hash_match"):
                     st.caption(
                         "WordPress delivery: exact article hash is bound to "
@@ -1951,17 +1962,6 @@ else:
                         "Editorial package is approved, but publication is not "
                         "ready until the correct WordPress draft is associated "
                         "with the exact approved article hash."
-                    )
-                else:
-                    st.error(
-                        "Authoritative policy refresh/review is required before "
-                        "another paid run: "
-                        + ", ".join(
-                            _policy_state.get("missing_observations", [])
-                            + _policy_state.get(
-                                "changes_requiring_review", []
-                            )
-                        )
                     )
                 if _contract["passed"]:
                     st.caption(

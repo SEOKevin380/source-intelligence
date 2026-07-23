@@ -34,7 +34,7 @@ from .audit import audit_article
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v12-governed-intelligence"
+    "serp-differentiation-depth-v12.1-governed-intelligence"
 )
 
 STAGES = (
@@ -356,19 +356,27 @@ class WorkbenchEngine:
                 "signed_off", "post_seo_signed_off", "package_ready"
             }
         )
-        reviewer_capacity = {}
-        for purpose in (
-            "independent_rescue_signoff",
-            "executive_rescue_signoff",
-            "war_room_signoff",
-        ):
-            route = route_for(purpose, p["vertical"])
-            used = self._billable_call_count(project_id, purpose)
-            reviewer_capacity[purpose] = {
+        purpose = "final_signoff"
+        route = route_for(purpose, p["vertical"])
+        used = self._billable_call_count(project_id, purpose)
+        total_used = int(self.usage_summary(project_id)["calls"])
+        project_call_maximum = int(
+            os.environ.get("NEWSWIRE_MAX_RUN_CALLS", "4")
+        )
+        project_remaining = max(project_call_maximum - total_used, 0)
+        route_remaining = max(route.max_calls - used, 0)
+        reviewer_capacity = {
+            purpose: {
                 "used": used,
                 "maximum": route.max_calls,
-                "remaining": max(route.max_calls - used, 0),
-            }
+                "remaining": min(route_remaining, project_remaining),
+            },
+            "project": {
+                "used": total_used,
+                "maximum": project_call_maximum,
+                "remaining": project_remaining,
+            },
+        }
         unresolved = last_report.get("mandatory_edits") or []
         result["semantic_review"] = {
             "passed": exact_semantic_approval,
@@ -383,9 +391,7 @@ class WorkbenchEngine:
             ),
             "unresolved_edits": unresolved,
             "reviewer_capacity": reviewer_capacity,
-            "remaining_calls": sum(
-                item["remaining"] for item in reviewer_capacity.values()
-            ),
+            "remaining_calls": min(route_remaining, project_remaining),
         }
         result["ready_for_packaging"] = bool(
             result["passed"] and exact_semantic_approval

@@ -4,12 +4,22 @@ import hashlib
 import re
 
 
-PROMPT_VERSION = "newswire-v1.8-governed-intelligence"
+PROMPT_VERSION = "newswire-v1.8.1-governed-intelligence"
 
 PUBLICATION_BLOCKER_IDS = frozenset({
-    "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9",
-    "D10", "D11", "D12", "D13", "D14", "D17", "D18", "D20",
+    "D1", "D2", "D3", "D5", "D6", "D7", "D17", "D20",
 })
+
+HARD_BLOCKER_RATIONALE = {
+    "D1": ("legal_disclosure", "Paid native advertising must be identifiable."),
+    "D2": ("deliverable_integrity", "Internal production language cannot publish."),
+    "D3": ("factual_accuracy", "A destination cannot be falsely described as official."),
+    "D5": ("legal_disclosure", "Material affiliate compensation must be disclosed."),
+    "D6": ("financial_claim", "Financial copy cannot imply a guaranteed outcome."),
+    "D7": ("financial_disclosure", "Material investment-loss risk must be stated."),
+    "D17": ("deliverable_integrity", "Reader-facing output must be rendered HTML."),
+    "D20": ("source_accuracy", "Material assertions must be grounded in the sealed record."),
+}
 
 
 def partition_findings(findings):
