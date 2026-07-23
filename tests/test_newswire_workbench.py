@@ -6,6 +6,10 @@ import pytest
 from newswire_workbench.engine import WorkbenchEngine
 from newswire_workbench.prompts import detect_vertical
 from newswire_workbench.learning import deterministic_findings
+from newswire_workbench.wordpress import WordPressDraftPublisher
+from newswire_workbench.formatting import ensure_affiliate_links, normalize_master_html
+from newswire_workbench.routing import risk_tier, route_for
+from source_pack_contract import seal_source_pack
 
 
 def test_vertical_detection_is_category_aware():
@@ -25,6 +29,41 @@ def test_project_and_immutable_audit(tmp_path):
     with engine._connect() as conn:
         with pytest.raises(Exception):
             conn.execute("UPDATE events SET event_type='tampered' WHERE project_id=?", (pid,))
+
+
+def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {"product_name": "Test Device", "official_url": "https://example.com"},
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": {},
+        "required_facts": {"missing": []},
+    })
+    first = engine.create_project_from_pack(pack, "AccessNewsWire")
+    second = engine.create_project_from_pack(pack, "AccessNewsWire")
+    assert first == second
+    assert engine.get(first)["stage"] == "source_ready"
+    assert any(e["event_type"] == "sealed_source_pack_imported" for e in engine.events(first))
+
+
+def test_routing_uses_stronger_final_review_only_for_higher_risk():
+    assert risk_tier("general_consumer") == 0
+    assert risk_tier("financial") == 3
+    assert route_for("final_signoff", "general_consumer").model == "gpt-5.4-mini"
+    assert route_for("final_signoff", "financial").model == "gpt-5.4"
+    assert route_for("repair", "financial").max_calls == 2
+
+
+def test_llm_call_budget_blocks_repeat_stage_calls(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project("Test", "AccessNewsWire", "device source", "general_consumer")
+    route = route_for("draft", "general_consumer")
+    engine._record_llm_call(pid, "draft", route, 100, 100)
+    with pytest.raises(RuntimeError, match="call ceiling"):
+        engine._assert_call_budget(pid, "draft", route)
+    summary = engine.usage_summary(pid)
+    assert summary["calls"] == 1
+    assert summary["estimated_cost"] > 0
 
 
 def test_manual_path_and_hash_bound_report(tmp_path):
@@ -153,6 +192,50 @@ def test_long_advertorial_requires_early_distributed_ctas():
         article, "AccessNewsWire", "financial"
     )}
     assert {"D10", "D11"}.issubset(ids)
+
+
+def test_master_format_gate_requires_bold_headings_ctas_and_link_count():
+    article = ("<h1>Title</h1><h2>Section</h2>" +
+               '<p><a href="https://example.com/offer">Review offer</a></p>' +
+               ("<p>Useful sourced discussion for readers.</p>" * 400))
+    ids = {item["id"] for item in deterministic_findings(
+        article, "AccessNewsWire", "financial"
+    )}
+    assert {"D12", "D13", "D14", "D15", "D16"}.issubset(ids)
+
+
+def test_wordpress_connector_is_draft_only(monkeypatch):
+    seen = []
+    class Response:
+        status_code = 200
+        def json(self):
+            return {"id": 42, "name": "Editor", "status": "draft", "link": "https://example.com/?p=42"}
+    def fake_request(method, url, **kwargs):
+        seen.append((method, url, kwargs))
+        return Response()
+    monkeypatch.setattr("newswire_workbench.wordpress.requests.request", fake_request)
+    publisher = WordPressDraftPublisher("https://example.com", "user", "secret")
+    result = publisher.save_draft("Title", "<p>Body</p>")
+    assert result["status"] == "draft"
+    assert seen[0][2]["json"]["status"] == "draft"
+
+
+def test_master_formatter_caps_conversion_bolding_and_bolds_ctas():
+    body = '<h2>Section</h2><a href="https://example.com">Offer</a>'
+    body += "".join(f"<p><strong>Useful takeaway {i}</strong></p>" for i in range(30))
+    normalized = normalize_master_html(body, 2400)
+    assert '<h2><strong>Section</strong></h2>' in normalized
+    assert '<a href="https://example.com"><strong>Offer</strong></a>' in normalized
+    assert normalized.count('class="key-takeaway"') == 12
+
+
+def test_affiliate_link_formatter_adds_early_varied_ctas_to_five():
+    href = "https://partner.example/offer"
+    body = "<p>Disclosure</p><p>Lead</p>" + ("<h2>Section</h2><p>Text</p>" * 8)
+    body += f'<p><a href="{href}"><strong>Existing CTA</strong></a></p>'
+    normalized = ensure_affiliate_links(body, href, target=5)
+    assert normalized.count(f'href="{href}"') == 5
+    assert "See current subscription pricing" in normalized
 
 
 def test_recurring_review_issues_become_memory(tmp_path):

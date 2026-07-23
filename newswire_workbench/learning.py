@@ -106,6 +106,47 @@ def deterministic_findings(article, platform, vertical):
             "issue": "Long-form copy does not distribute enough clean CTAs through the article.",
             "exact_text": "", "replacement": "Use at least three naturally spaced descriptive CTA links in long-form copy.",
         })
+    if re.search(r"<h1\b", article, re.I):
+        findings.append({
+            "id": "D12", "category": "MBK HTML format gate",
+            "issue": "The article body contains an H1; WordPress stores the release title separately.",
+            "exact_text": "", "replacement": "Move the headline to the WordPress title field and use only H2/H3 in article HTML.",
+        })
+    unbold_heading = re.search(r"<h[23]\b[^>]*>(?!\s*<strong\b)", article, re.I)
+    if unbold_heading:
+        findings.append({
+            "id": "D13", "category": "MBK HTML format gate",
+            "issue": "Every H2/H3 must explicitly wrap its heading text in STRONG.",
+            "exact_text": unbold_heading.group(0),
+            "replacement": "Use <h2><strong>Heading text</strong></h2> or the H3 equivalent.",
+        })
+    unbold_cta = re.search(r"<a\b[^>]*>(?!\s*<strong\b)", article, re.I)
+    if unbold_cta:
+        findings.append({
+            "id": "D14", "category": "MBK HTML format gate",
+            "issue": "Every CTA link must explicitly bold its anchor text with STRONG.",
+            "exact_text": unbold_cta.group(0),
+            "replacement": "Preserve the href and wrap the descriptive anchor text in STRONG.",
+        })
+    bold_key_phrases = len(re.findall(
+        r"<strong\b[^>]*class=[\"'][^\"']*\bkey-takeaway\b[^\"']*[\"']",
+        article, re.I,
+    ))
+    bold_target = 10 if word_count < 1600 else 11 if word_count < 2200 else 12
+    if bold_key_phrases != bold_target:
+        findings.append({
+            "id": "D15", "category": "MBK multi-speed reading gate",
+            "issue": f"Article has {bold_key_phrases} conversion scan-path phrases; its length calls for {bold_target} to avoid over-formatting.",
+            "exact_text": "", "replacement": f"Distribute exactly {bold_target} genuinely useful STRONG.key-takeaway phrases through the article.",
+        })
+    hrefs = re.findall(r"<a\b[^>]*href=[\"']([^\"']+)[\"']", article, re.I)
+    dominant_link_count = max((hrefs.count(href) for href in set(hrefs)), default=0)
+    if platform == "AccessNewsWire" and word_count >= 1200 and not 5 <= dominant_link_count <= 6:
+        findings.append({
+            "id": "D16", "category": "MBK strategic link gate",
+            "issue": f"AccessNewsWire long-form article has {dominant_link_count} affiliate-destination links; MBK requires 5–6.",
+            "exact_text": "", "replacement": "Use 5–6 natural, evenly distributed affiliate links with bold descriptive anchors and no raw URLs.",
+        })
     if vertical == "financial":
         guaranteed_trial = re.search(r"\bguaranteed trial\b", article, re.I)
         if guaranteed_trial:

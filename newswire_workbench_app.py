@@ -12,7 +12,7 @@ from newswire_workbench.prompts import PLATFORMS
 
 st.set_page_config(page_title="Newswire Compliance Workbench", page_icon="📰", layout="wide")
 st.title("Newswire Compliance Workbench")
-st.caption("Source Intelligence → Claude draft → ChatGPT review → Claude revision → ChatGPT sign-off → SEO → post-SEO sign-off")
+st.caption("Verified source pack → routed draft → independent compliance → bounded repair → SEO regression → approved package")
 
 engine = WorkbenchEngine()
 caps = engine.capabilities()
@@ -58,11 +58,13 @@ project_id = st.selectbox("Project", list(labels), format_func=labels.get,
 st.session_state.project_id = project_id
 p = engine.get(project_id)
 
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Stage", p["stage"].replace("_", " ").title())
 c2.metric("Product type", p["vertical"].replace("_", " ").title())
 c3.metric("Revision rounds", p["revision_round"])
 c4.metric("Mandatory edits", p["last_report"].get("mandatory_count", "—"))
+usage = engine.usage_summary(project_id)
+c5.metric("AI cost", f"${usage['estimated_cost']:.3f}")
 
 st.subheader("Next step")
 st.write(engine.next_action(p))
@@ -124,4 +126,13 @@ if p["stage"] == "package_ready":
             mime="application/zip",
             type="primary",
         )
+    if caps.get("wordpress"):
+        if st.button("Send approved draft to ZingFast WordPress", use_container_width=True):
+            try:
+                with st.spinner("Saving approved copy as a WordPress draft…"):
+                    wp_result = engine.send_to_wordpress_draft(project_id)
+                st.success("WordPress draft saved. Nothing was published.")
+                st.link_button("Open draft in WordPress", wp_result["edit_url"])
+            except Exception as exc:
+                st.error(str(exc))
     st.caption(f"Local audit folder: {folder}")

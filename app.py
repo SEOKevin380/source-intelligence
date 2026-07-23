@@ -1759,9 +1759,6 @@ else:
     _pack_contract = _publication_pack["source_pack_contract"]
     _pack_readiness = _pack_contract["readiness"]
 
-    st.markdown("#### Copy Prompt for Claude")
-    st.caption("Click the copy icon (top-right of the box) → paste into [claude.ai](https://claude.ai)")
-    st.code(_quick_prompt, language="text", wrap_lines=True)
     if _pack_readiness == "complete":
         st.success(
             "Ready for automated publishing. The verified source pack is "
@@ -1777,7 +1774,12 @@ else:
             "Not ready for automation because source material was not captured. "
             "Run Update Report after fixing the source URL or attachment."
         )
-    with st.expander("Download files", expanded=False):
+    with st.expander("Manual export / fallback files", expanded=False):
+        st.caption(
+            "Use these only if automated drafting is unavailable. The normal team "
+            "workflow below does not require copying a prompt between tools."
+        )
+        st.code(_quick_prompt, language="text", wrap_lines=True)
         dl_col1, dl_col2, dl_col3 = st.columns(3)
         with dl_col1:
             st.download_button(
@@ -1804,6 +1806,93 @@ else:
                 mime="text/markdown",
                 use_container_width=True,
             )
+
+    # ================================================================
+    # ONE-CLICK NEWSWIRE HANDOFF — sealed source pack, no copy/paste
+    # ================================================================
+    _newswire_platform = None
+    if "access" in rd_platform.lower():
+        _newswire_platform = "AccessNewsWire"
+    elif "barchart" in rd_platform.lower():
+        _newswire_platform = "Barchart Advertorial"
+
+    if _newswire_platform and _pack_readiness != "blocked":
+        st.markdown("#### Build Compliant Newswire Draft")
+        st.caption(
+            "Uses this exact sealed source pack. Drafting, compliance repair, "
+            "SEO checks, and final packaging run automatically without copy/paste."
+        )
+        try:
+            for _secret_name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+                if not os.environ.get(_secret_name) and _secret_name in st.secrets:
+                    os.environ[_secret_name] = str(st.secrets[_secret_name])
+            from newswire_workbench import WorkbenchEngine
+            _workbench = WorkbenchEngine()
+            _workbench_caps = _workbench.capabilities()
+            _ready_to_run = _workbench_caps["anthropic"] and _workbench_caps["openai"]
+            if st.button(
+                "Build Draft Automatically",
+                type="primary",
+                use_container_width=True,
+                disabled=not _ready_to_run,
+                key=f"build_newswire_{product_key or _quick_slug}",
+            ):
+                _project_id = _workbench.create_project_from_pack(
+                    _publication_pack, _newswire_platform, vertical="auto"
+                )
+                st.session_state["source_newswire_project_id"] = _project_id
+                _master_path = os.path.join(
+                    os.path.dirname(__file__), "MBK_Project_Instructions_All_Platforms.txt"
+                )
+                with open(_master_path, encoding="utf-8") as _master_file:
+                    _master_rules = _master_file.read()
+                with st.spinner(
+                    "Building, checking, and correcting the draft. No team input is needed…"
+                ):
+                    _result = _workbench.run_to_completion(_project_id, _master_rules)
+                    if _result["stage"] == "package_ready" and _workbench_caps.get("wordpress"):
+                        _wp_result = _workbench.send_to_wordpress_draft(_project_id)
+                        st.session_state["source_newswire_wordpress"] = _wp_result
+                st.rerun()
+
+            _active_project_id = st.session_state.get("source_newswire_project_id")
+            if _active_project_id:
+                _active_project = _workbench.get(_active_project_id)
+                _usage = _workbench.usage_summary(_active_project_id)
+                if _active_project["stage"] == "package_ready":
+                    st.success(
+                        "Draft approved and packaged. "
+                        f"Estimated AI cost: ${_usage['estimated_cost']:.3f}."
+                    )
+                    _wp_saved = st.session_state.get("source_newswire_wordpress")
+                    if _wp_saved:
+                        st.link_button("Open WordPress Draft", _wp_saved["edit_url"])
+                    _export = _workbench.export_path(_active_project_id)
+                    if _export.exists():
+                        st.download_button(
+                            "Download Submission Package",
+                            _export.read_bytes(),
+                            file_name=f"{_quick_slug}-submission-package.zip",
+                            mime="application/zip",
+                            use_container_width=True,
+                        )
+                elif _active_project["stage"] == "admin_review":
+                    st.warning(
+                        "The automated system found a genuine unresolved conflict and sent it "
+                        "to the admin queue. The VA can continue to the next project."
+                    )
+                else:
+                    st.info(
+                        "Newswire project status: "
+                        + _active_project["stage"].replace("_", " ").title()
+                    )
+            if not _ready_to_run:
+                st.info(
+                    "Newswire automation is installed but its dedicated Anthropic/OpenAI "
+                    "keys are not configured in this environment."
+                )
+        except Exception as _workbench_error:
+            st.error(f"Newswire workflow could not start: {_workbench_error}")
 
     st.divider()
 

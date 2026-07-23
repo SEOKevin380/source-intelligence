@@ -63,16 +63,16 @@ artifact-history gaps that ordinary happy-path tests did not catch.
 
 ### P1 quality and cost controls
 
-1. **Direct Source Intelligence handoff.** Projects still accept pasted/uploaded
-   source records. Add a signed pack import or API handoff so the workbench can
-   verify source hash, retrieval time, artifact list, and offering identity.
+1. **Shared durable handoff hosting.** The in-process sealed-pack import now
+   validates integrity and reuses identical projects. Move its SQLite queue and
+   artifacts to shared durable storage before relying on it across machines.
 2. **Factual diff gate.** Add deterministic extraction of price, guarantee,
    phone, URL, ingredient/feature list, and priority code, then compare those
    fields against every final article. Model review should be a second line,
    not the only factual checker.
-3. **Usage telemetry and budgets.** Persist provider, model, latency, input/output
-   tokens, estimated cost, retry count, and failure reason per call. Enforce a
-   per-project ceiling before another repair call.
+3. **Telemetry expansion.** Provider, model, token use, estimated cost, status,
+   errors, stage ceilings, and a per-project budget are now persisted. Add exact
+   latency, provider retry count, and dashboard cohort comparisons.
 4. **Idempotent provider jobs.** A response received immediately before a crash
    can still be billed without being stored. Persist a call intent and request
    fingerprint before sending, then reconcile incomplete calls on restart.
@@ -112,4 +112,3 @@ artifact-history gaps that ordinary happy-path tests did not catch.
 An article is ready only when the current article hash matches an approved
 structured report, deterministic gates return zero findings, the post-SEO review
 is approved, and the submission manifest is generated from that same hash.
-

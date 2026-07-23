@@ -21,6 +21,8 @@ from .learning import (
     PROMPT_VERSION, deterministic_findings, issue_fingerprint,
     learned_guidance,
 )
+from .formatting import ensure_affiliate_links, normalize_master_html
+from .routing import estimated_cost, route_for
 
 
 STAGES = (
@@ -72,6 +74,7 @@ class WorkbenchEngine:
                 CREATE TABLE IF NOT EXISTS projects (
                     id TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
+                    release_title TEXT DEFAULT '',
                     platform TEXT NOT NULL,
                     vertical TEXT NOT NULL,
                     stage TEXT NOT NULL,
@@ -116,6 +119,28 @@ class WorkbenchEngine:
                     payload TEXT DEFAULT '{}',
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS wordpress_drafts (
+                    project_id TEXT NOT NULL,
+                    site_url TEXT NOT NULL,
+                    post_id INTEGER NOT NULL,
+                    article_hash TEXT NOT NULL,
+                    edit_url TEXT DEFAULT '',
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(project_id, site_url)
+                );
+                CREATE TABLE IF NOT EXISTS llm_calls (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    project_id TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    input_tokens INTEGER DEFAULT 0,
+                    output_tokens INTEGER DEFAULT 0,
+                    estimated_cost REAL DEFAULT 0,
+                    status TEXT NOT NULL,
+                    error TEXT DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
                 CREATE TRIGGER IF NOT EXISTS trg_events_no_update
                 BEFORE UPDATE ON events BEGIN
                   SELECT RAISE(ABORT, 'workbench events are immutable');
@@ -130,6 +155,9 @@ class WorkbenchEngine:
                 conn.execute("ALTER TABLE projects ADD COLUMN run_token TEXT DEFAULT ''")
             if "run_started_at" not in columns:
                 conn.execute("ALTER TABLE projects ADD COLUMN run_started_at TEXT DEFAULT ''")
+            if "release_title" not in columns:
+                conn.execute("ALTER TABLE projects ADD COLUMN release_title TEXT DEFAULT ''")
+                conn.execute("UPDATE projects SET release_title=title WHERE release_title='' OR release_title IS NULL")
         self._backfill_issue_memory()
 
     def create_project(self, title, platform, source_text, vertical="auto"):
@@ -143,11 +171,11 @@ class WorkbenchEngine:
         with self._connect() as conn:
             conn.execute(
                 """INSERT INTO projects
-                (id,title,platform,vertical,stage,source_text,source_hash,
+                (id,title,release_title,platform,vertical,stage,source_text,source_hash,
                  article_text,article_hash,last_report,revision_round,
                  run_token,run_started_at,created_at,updated_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (pid, title.strip(), platform, vertical, "source_ready",
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (pid, title.strip(), title.strip(), platform, vertical, "source_ready",
                  source_text, _hash(source_text), "", "", "{}", 0,
                  "", "", now, now),
             )
@@ -155,6 +183,27 @@ class WorkbenchEngine:
             "source_hash": _hash(source_text), "vertical": vertical,
         })
         self._write(pid, "00-source-record.txt", source_text)
+        return pid
+
+    def create_project_from_pack(self, pack, platform, vertical="auto"):
+        """Create or reuse a workbench job from a sealed Source Intelligence pack."""
+        from source_pack_contract import validate_source_pack
+        validate_source_pack(pack, allow_limited=True)
+        product = pack.get("product") or {}
+        title = str(product.get("product_name") or "Untitled source project").strip()
+        source_text = json.dumps(pack, sort_keys=True, ensure_ascii=False, default=str)
+        source_hash = _hash(source_text)
+        with self._connect() as conn:
+            existing = conn.execute(
+                "SELECT id FROM projects WHERE source_hash=? AND platform=? ORDER BY created_at DESC LIMIT 1",
+                (source_hash, platform),
+            ).fetchone()
+        if existing:
+            return existing["id"]
+        pid = self.create_project(title, platform, source_text, vertical)
+        self._event(pid, "sealed_source_pack_imported", "source_ready", "", {
+            "contract": pack["source_pack_contract"],
+        })
         return pid
 
     def list_projects(self):
@@ -180,10 +229,49 @@ class WorkbenchEngine:
         return [dict(r) for r in rows]
 
     def capabilities(self):
+        from .wordpress import WordPressDraftPublisher
         return {
             "anthropic": bool(os.environ.get("ANTHROPIC_API_KEY")),
             "openai": bool(os.environ.get("OPENAI_API_KEY")),
+            "wordpress": WordPressDraftPublisher().configured,
         }
+
+    def send_to_wordpress_draft(self, project_id):
+        from .wordpress import WordPressDraftPublisher
+        p = self.get(project_id)
+        if p["stage"] != "package_ready" or p["last_report"].get("verdict") != "approved":
+            raise RuntimeError("Only a currently approved submission package can be sent to WordPress")
+        findings = deterministic_findings(p["article_text"], p["platform"], p["vertical"])
+        if findings:
+            raise RuntimeError(
+                "The approved article predates current formatting gates and must be repaired first: " +
+                ", ".join(item["id"] for item in findings)
+            )
+        publisher = WordPressDraftPublisher()
+        publisher.test_connection()
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT post_id FROM wordpress_drafts WHERE project_id=? AND site_url=?",
+                (project_id, publisher.site_url),
+            ).fetchone()
+        result = publisher.save_draft(
+            p.get("release_title") or p["title"], p["article_text"],
+            existing_post_id=row["post_id"] if row else None,
+        )
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO wordpress_drafts(project_id,site_url,post_id,article_hash,edit_url,updated_at)
+                VALUES(?,?,?,?,?,?) ON CONFLICT(project_id,site_url) DO UPDATE SET
+                post_id=excluded.post_id,article_hash=excluded.article_hash,
+                edit_url=excluded.edit_url,updated_at=excluded.updated_at""",
+                (project_id, publisher.site_url, result["post_id"], p["article_hash"],
+                 result["edit_url"], _now()),
+            )
+        self._event(project_id, "wordpress_draft_saved", "package_ready", p["article_hash"], {
+            "site_url": publisher.site_url, "post_id": result["post_id"],
+            "edit_url": result["edit_url"],
+        })
+        return result
 
     def next_action(self, project):
         return {
@@ -267,7 +355,7 @@ class WorkbenchEngine:
         if stage == "source_ready":
             article = self._claude(generation_prompt(
                 p["source_text"], p["platform"], p["vertical"], master_instructions
-            ))
+            ), p["id"], "draft", p["vertical"])
             self._set_article(p, article, "drafted", "01-claude-draft.html")
         elif stage == "drafted":
             report = self._openai_review(p, final=False)
@@ -277,12 +365,13 @@ class WorkbenchEngine:
             article = self._claude(revision_prompt(
                 p["source_text"], p["article_text"], p["last_report"],
                 p["platform"], p["vertical"], memory,
-            ))
+                release_title=p.get("release_title", p["title"]),
+            ), p["id"], "repair", p["vertical"])
             self._set_article(p, article, "revised", "03-claude-revision.html", bump=True)
         elif stage == "revised":
             report = self._openai_review(p, final=True)
             if report.get("verdict") != "approved":
-                if p["revision_round"] >= 3:
+                if p["revision_round"] >= 2:
                     if self._adjudication_count(p["id"]) < 2:
                         self._set_report(p, report, "revised", "04-openai-signoff.json")
                         if not self._adjudicate_current(self.get(p["id"]), report):
@@ -295,8 +384,9 @@ class WorkbenchEngine:
                 self._set_report(p, report, "signed_off", "04-openai-signoff.json")
         elif stage == "signed_off":
             article = self._claude(seo_prompt(
-                p["source_text"], p["article_text"], p["platform"], p["vertical"]
-            ))
+                p["source_text"], p["article_text"], p["platform"], p["vertical"],
+                release_title=p.get("release_title", p["title"]),
+            ), p["id"], "seo", p["vertical"])
             self._set_article(p, article, "seo_optimized", "05-claude-seo.html")
         elif stage == "seo_optimized":
             report = self._openai_review(p, final=True)
@@ -310,13 +400,14 @@ class WorkbenchEngine:
             article = self._claude(revision_prompt(
                 p["source_text"], p["article_text"], p["last_report"],
                 p["platform"], p["vertical"], memory,
-            ))
+                release_title=p.get("release_title", p["title"]),
+            ), p["id"], "repair", p["vertical"])
             self._set_article(p, article, "seo_repaired", "07-claude-seo-repair.html", bump=True)
         elif stage == "seo_repaired":
             report = self._openai_review(p, final=True)
             if report.get("verdict") == "approved":
                 self._set_report(p, report, "post_seo_signed_off", "08-openai-post-seo-signoff.json")
-            elif p["revision_round"] < 6:
+            elif p["revision_round"] < 2:
                 self._set_report(p, report, "seo_repair_needed", "08-openai-post-seo-signoff.json")
             elif self._adjudication_count(p["id"]) < 4:
                 self._set_report(p, report, "seo_repaired", "08-openai-post-seo-signoff.json")
@@ -356,23 +447,35 @@ class WorkbenchEngine:
             target = "post_seo_signed_off"
         self._set_report(p, report, target, "manual-openai-report.json")
 
-    def _claude(self, prompt):
+    def _claude(self, prompt, project_id, purpose, vertical):
         key = os.environ.get("ANTHROPIC_API_KEY")
         if not key:
             raise RuntimeError("ANTHROPIC_API_KEY is not configured")
+        route = route_for(purpose, vertical)
+        self._assert_call_budget(project_id, purpose, route)
         import anthropic
         client = anthropic.Anthropic(
             api_key=key,
             timeout=float(os.environ.get("NEWSWIRE_PROVIDER_TIMEOUT", "180")),
             max_retries=int(os.environ.get("NEWSWIRE_PROVIDER_RETRIES", "2")),
         )
-        msg = client.messages.create(
-            model=os.environ.get("ANTHROPIC_GENERATION_MODEL", "claude-sonnet-4-5-20250929"),
-            max_tokens=12000,
-            system="You are a client-positive, evidence-bound newsroom writer. Deliver compliant copy without process commentary.",
-            messages=[{"role": "user", "content": prompt}],
-        )
+        try:
+            msg = client.messages.create(
+                model=route.model,
+                max_tokens=route.max_tokens,
+                system="You are a client-positive, evidence-bound newsroom writer. Deliver compliant copy without process commentary.",
+                messages=[{"role": "user", "content": prompt}],
+            )
+        except Exception as exc:
+            self._record_llm_call(project_id, purpose, route, status="failed", error=str(exc))
+            raise
         text = "".join(block.text for block in msg.content if getattr(block, "type", "") == "text").strip()
+        usage = getattr(msg, "usage", None)
+        self._record_llm_call(
+            project_id, purpose, route,
+            input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+            output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+        )
         if getattr(msg, "stop_reason", None) == "max_tokens":
             raise RuntimeError("Claude output was truncated at the token limit; no partial article was saved")
         return text
@@ -390,9 +493,14 @@ class WorkbenchEngine:
         prompt = compliance_prompt(
             p["source_text"], p["article_text"], p["platform"], p["vertical"],
             p["last_report"], final=final,
+            release_title=p.get("release_title", p["title"]),
         )
-        response = client.responses.create(
-            model=os.environ.get("OPENAI_COMPLIANCE_MODEL", "gpt-5.4-mini"),
+        purpose = "final_signoff" if final else "compliance"
+        route = route_for(purpose, p["vertical"])
+        self._assert_call_budget(p["id"], purpose, route)
+        try:
+            response = client.responses.create(
+            model=route.model,
             input=[{"role": "system", "content": "You are an independent, publication-focused compliance editor. Return valid JSON only."},
                    {"role": "user", "content": prompt}],
             text={"format": {
@@ -434,6 +542,15 @@ class WorkbenchEngine:
                                  "recommended_edits", "approved_elements", "notes"],
                 },
             }},
+            )
+        except Exception as exc:
+            self._record_llm_call(p["id"], purpose, route, status="failed", error=str(exc))
+            raise
+        usage = getattr(response, "usage", None)
+        self._record_llm_call(
+            p["id"], purpose, route,
+            input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+            output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
         )
         text = response.output_text.strip()
         if text.startswith("```"):
@@ -455,12 +572,57 @@ class WorkbenchEngine:
             report["verdict"] = "not_approved"
         return report
 
+    def _record_llm_call(self, project_id, stage, route, input_tokens=0,
+                         output_tokens=0, status="success", error=""):
+        cost = estimated_cost(route, input_tokens, output_tokens)
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO llm_calls(project_id,stage,provider,model,input_tokens,
+                output_tokens,estimated_cost,status,error,created_at)
+                VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (project_id, stage, route.provider, route.model, input_tokens,
+                 output_tokens, cost, status, error[:2000], _now()),
+            )
+
+    def _assert_call_budget(self, project_id, stage, route):
+        with self._connect() as conn:
+            stage_calls = conn.execute(
+                "SELECT COUNT(*) FROM llm_calls WHERE project_id=? AND stage=?",
+                (project_id, stage),
+            ).fetchone()[0]
+            spent = conn.execute(
+                "SELECT COALESCE(SUM(estimated_cost),0) FROM llm_calls WHERE project_id=?",
+                (project_id,),
+            ).fetchone()[0]
+        if stage_calls >= route.max_calls:
+            raise RuntimeError(
+                f"Automated {stage} call ceiling reached; routed to admin review instead of repeating paid work"
+            )
+        ceiling = float(os.environ.get("NEWSWIRE_PROJECT_BUDGET_USD", "1.50"))
+        if spent >= ceiling:
+            raise RuntimeError(
+                f"Project AI budget ceiling (${ceiling:.2f}) reached; no additional paid call was made"
+            )
+
+    def usage_summary(self, project_id):
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT COUNT(*) calls, COALESCE(SUM(input_tokens),0) input_tokens,
+                COALESCE(SUM(output_tokens),0) output_tokens,
+                COALESCE(SUM(estimated_cost),0) estimated_cost
+                FROM llm_calls WHERE project_id=?""", (project_id,),
+            ).fetchone()
+        return dict(row)
+
     def _remove_house_rule_conflicts(self, report):
         """Prevent a reviewer from turning its own house-rule conflicts into blockers."""
         kept, rejected = [], []
         for item in report.get("mandatory_edits", []) or []:
             exact = str(item.get("exact_text", "") or "")
             replacement = str(item.get("replacement", "") or "")
+            if str(item.get("id", "")).startswith("D"):
+                rejected.append({"id": item.get("id"), "reason": "deterministic_gate_requires_mechanical_or_model_repair"})
+                continue
             reason = ""
             if self._unsafe_reviewer_replacement(replacement):
                 reason = "replacement_conflicts_with_house_disclosure_or_cta_rules"
@@ -485,12 +647,23 @@ class WorkbenchEngine:
         article = article.strip()
         if not article:
             raise ValueError("Model returned an empty article")
-        digest = _hash(article)
+        title = p.get("release_title") or p["title"]
+        title_match = re.search(r"<h1\b[^>]*>(.*?)</h1>", article, re.I | re.S)
+        if title_match:
+            title = re.sub(r"<[^>]+>", "", title_match.group(1)).strip() or title
+            article = (article[:title_match.start()] + article[title_match.end():]).strip()
+        plain = re.sub(r"<[^>]+>", " ", article)
+        word_count = len(re.findall(r"\b[\w’'-]+\b", plain))
+        article = normalize_master_html(article, word_count)
+        affiliate_match = re.search(r"(?im)^AFFILIATE LINK:\s*(\S+)", p["source_text"])
+        if p["platform"] == "AccessNewsWire" and word_count >= 1200 and affiliate_match:
+            article = ensure_affiliate_links(article, affiliate_match.group(1), target=5)
+        digest = _hash(title + "\n" + article)
         round_no = p["revision_round"] + (1 if bump else 0)
         with self._connect() as conn:
             conn.execute(
-                "UPDATE projects SET article_text=?,article_hash=?,stage=?,last_report='{}',revision_round=?,updated_at=? WHERE id=?",
-                (article, digest, stage, round_no, _now(), p["id"]),
+                "UPDATE projects SET release_title=?,article_text=?,article_hash=?,stage=?,last_report='{}',revision_round=?,updated_at=? WHERE id=?",
+                (title, article, digest, stage, round_no, _now(), p["id"]),
             )
         self._write(p["id"], filename, article)
         self._event(p["id"], "article_created", stage, digest, {"filename": filename})
@@ -526,7 +699,8 @@ class WorkbenchEngine:
 
     def _build_package(self, p):
         manifest = {
-            "project_id": p["id"], "title": p["title"], "platform": p["platform"],
+            "project_id": p["id"], "title": p["title"],
+            "release_title": p.get("release_title", p["title"]), "platform": p["platform"],
             "vertical": p["vertical"], "source_hash": p["source_hash"],
             "article_hash": p["article_hash"], "approved_at": _now(),
             "approval_report": p["last_report"],
@@ -568,7 +742,7 @@ class WorkbenchEngine:
             "this advertorial may earn compensation",
             "this advertorial may receive compensation",
             "we may earn", "we receive compensation", "our affiliate",
-            "promotional offer page", "paid placement",
+            "promotional offer", "paid placement",
         ))
 
     def _adjudicate_current(self, p, report, target_stage="revised"):

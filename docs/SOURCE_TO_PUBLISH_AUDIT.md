@@ -30,8 +30,8 @@ loop. Unsupported or altered facts must not enter publication automation.
 
 ## Remaining high-priority work
 
-1. Add a service/API handoff so the cloud app can enqueue packs directly rather
-   than relying on a download for team-operated jobs.
+1. Move the new in-process sealed-pack handoff to durable shared hosting so
+   every team session sees the same workbench queue and artifacts.
 2. Add PubMed relevance scoring at the study-to-ingredient level. A PubMed hit
    proves retrieval, not that the paper supports a product outcome.
 3. Version and provenance-tag the shared ingredient knowledge cache. Cached
