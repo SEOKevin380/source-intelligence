@@ -11,6 +11,7 @@ REQUIRED_CALL_PATH = (
     "compliance_repair",
     "final_signoff",
 )
+PURPOSE_CALL_LIMITS = {purpose: 1 for purpose in REQUIRED_CALL_PATH}
 RUN_CALL_LIMIT = len(REQUIRED_CALL_PATH)
 PROVIDER_TIMEOUT_SECONDS = 90.0
 EXPECTED_COST_USD = 1.50
@@ -29,6 +30,7 @@ def execution_budget() -> dict:
     return {
         "required_call_path": list(REQUIRED_CALL_PATH),
         "required_calls": RUN_CALL_LIMIT,
+        "purpose_call_limits": dict(PURPOSE_CALL_LIMITS),
         "calls": RUN_CALL_LIMIT,
         "provider_timeout_seconds": PROVIDER_TIMEOUT_SECONDS,
         "expected_cost": EXPECTED_COST_USD,

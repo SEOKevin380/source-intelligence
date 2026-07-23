@@ -1946,6 +1946,44 @@ else:
                     f"stage={_prior_project['stage']} · "
                     f"paid_calls={_prior_usage['calls']}/4."
                 )
+                _usage_ledger = _workbench.usage_details(_prior_project_id)
+                _diagnostic_events = [
+                    event for event in _workbench.events(_prior_project_id)
+                    if event["event_type"] in {
+                        "workflow_error",
+                        "workflow_run_limit",
+                        "reviewer_output_invalid",
+                        "reviewer_report_received",
+                        "global_repair_budget_exhausted",
+                        "global_review_budget_exhausted",
+                        "autonomous_repair_exhausted",
+                        "semantic_review_exhausted",
+                    }
+                ]
+                if _usage_ledger or _diagnostic_events:
+                    with st.expander("Authoritative run ledger"):
+                        for _call in _usage_ledger:
+                            _call_error = str(_call.get("error") or "").strip()
+                            st.caption(
+                                f"Call {_call['id']}: stage={_call['stage']} · "
+                                f"provider={_call['provider']} · "
+                                f"model={_call['model']} · "
+                                f"status={_call['status']} · "
+                                f"tokens={_call['input_tokens']}+"
+                                f"{_call['output_tokens']} · "
+                                f"cost=${float(_call['estimated_cost']):.4f}"
+                                + (
+                                    f" · error={_call_error[:300]}"
+                                    if _call_error else ""
+                                )
+                            )
+                        for _event in _diagnostic_events[-8:]:
+                            st.caption(
+                                f"Event {_event['id']}: "
+                                f"{_event['event_type']} · "
+                                f"stage={_event['stage']} · "
+                                f"details={_event['payload'][:500]}"
+                            )
             _prior_preflight = None
             if _prior_project and _prior_project.get("article_text"):
                 try:

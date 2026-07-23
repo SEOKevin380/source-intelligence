@@ -31,11 +31,15 @@ from .formatting import (
 )
 from .routing import estimated_cost, route_for
 from .audit import audit_article
-from .execution_budget import execution_budget
+from .execution_budget import (
+    PURPOSE_CALL_LIMITS,
+    REQUIRED_CALL_PATH,
+    execution_budget,
+)
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v17-durable-run-transaction"
+    "serp-differentiation-depth-v18-purpose-reserved-ledger"
 )
 
 STAGES = (
@@ -1231,9 +1235,40 @@ class WorkbenchEngine:
         text = response.output_text.strip()
         if text.startswith("```"):
             text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.S)
-        report = json.loads(text)
+        try:
+            report = json.loads(text)
+        except (TypeError, json.JSONDecodeError) as exc:
+            self._event(
+                p["id"],
+                "reviewer_output_invalid",
+                p["stage"],
+                p["article_hash"],
+                {
+                    "purpose": purpose,
+                    "error": str(exc),
+                    "output_excerpt": text[:500],
+                    "paid_call_consumed": True,
+                    "operator_decision_required": False,
+                },
+            )
+            raise RuntimeError(
+                f"{purpose} returned an invalid structured report; its reserved "
+                "call was consumed and cannot be borrowed by another stage"
+            ) from exc
         report["reviewed_article_hash"] = p["article_hash"]
         report["prompt_version"] = PROMPT_VERSION
+        self._event(
+            p["id"],
+            "reviewer_report_received",
+            p["stage"],
+            p["article_hash"],
+            {
+                "purpose": purpose,
+                "verdict": report.get("verdict"),
+                "mandatory_count": report.get("mandatory_count"),
+                "reviewed_article_hash": p["article_hash"],
+            },
+        )
         report = self._remove_house_rule_conflicts(report)
         deterministic = deterministic_findings(
             p["article_text"], p["platform"], p["vertical"]
@@ -1307,6 +1342,27 @@ class WorkbenchEngine:
                 "Complete-run paid-call ceiling reached; no additional paid "
                 "call was made"
             )
+        project = self.get(project_id)
+        is_current_bounded_run = (
+            "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══"
+            in project["source_text"]
+            and (
+                "AUTOMATION CONTEXT VERSION: "
+                + WORKBENCH_SOURCE_CONTEXT_VERSION
+            ) in project["source_text"]
+        )
+        if is_current_bounded_run:
+            if stage not in REQUIRED_CALL_PATH:
+                raise RuntimeError(
+                    f"Paid purpose {stage} is outside the locked four-stage "
+                    "publication route"
+                )
+            purpose_limit = PURPOSE_CALL_LIMITS[stage]
+            if self._billable_call_count(project_id, stage) >= purpose_limit:
+                raise RuntimeError(
+                    f"Reserved {stage} call was already consumed; no other "
+                    "purpose may borrow its budget"
+                )
         stage_calls = self._billable_call_count(project_id, stage)
         if stage_calls >= route.max_calls:
             raise RuntimeError(
@@ -1335,6 +1391,17 @@ class WorkbenchEngine:
                 FROM llm_calls WHERE project_id=?""", (project_id,),
             ).fetchone()
         return dict(row)
+
+    def usage_details(self, project_id):
+        """Return the complete provider-stage ledger for operator diagnosis."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT id,stage,provider,model,input_tokens,output_tokens,
+                estimated_cost,status,error,created_at
+                FROM llm_calls WHERE project_id=? ORDER BY id""",
+                (project_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def _remove_house_rule_conflicts(self, report):
         """Prevent a reviewer from turning its own house-rule conflicts into blockers."""

@@ -130,7 +130,7 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert project["stage"] == "source_ready"
     assert (
         "AUTOMATION CONTEXT VERSION: "
-        "serp-differentiation-depth-v17-durable-run-transaction"
+        "serp-differentiation-depth-v18-purpose-reserved-ledger"
         in project["source_text"]
     )
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
@@ -184,7 +184,7 @@ def test_explicit_rebuild_creates_new_project_and_preserves_source(tmp_path):
     assert engine.latest_project_from_pack(
         pack,
         "AccessNewsWire",
-        "serp-differentiation-depth-v17-durable-run-transaction",
+        "serp-differentiation-depth-v18-purpose-reserved-ledger",
     ) == rebuilt
 
 
@@ -502,6 +502,32 @@ def test_zero_cost_packaging_finishes_after_fourth_paid_call(tmp_path):
         result = engine.run_to_completion(pid, "")
     assert result["stage"] == "package_ready"
     run_next.assert_called_once()
+
+
+def test_current_workflow_reserves_one_call_per_required_purpose(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    draft = route_for("draft", "device")
+    engine._record_llm_call(pid, "draft", draft, 100, 100)
+    with pytest.raises(RuntimeError, match="Reserved draft call"):
+        engine._assert_call_budget(pid, "draft", draft)
+    with pytest.raises(RuntimeError, match="outside the locked four-stage"):
+        engine._assert_call_budget(
+            pid, "quality_rescue", route_for("quality_rescue", "device")
+        )
+    assert engine.usage_details(pid)[0]["stage"] == "draft"
 
 
 def test_house_optimization_gates_never_become_publication_blockers():
