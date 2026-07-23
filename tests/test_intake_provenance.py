@@ -622,7 +622,8 @@ def test_label_vision_retries_empty_response_and_transcribes(tmp_path):
         ],
     })
 
-    with patch("research_product.call_claude",
+    with patch("research_product.ANTHROPIC_API_KEY", "test-anthropic-key"), \
+         patch("research_product.call_claude",
                side_effect=["", transcription]) as vision:
         result = extract_label_image(str(image_path))
 

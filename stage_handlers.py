@@ -872,6 +872,13 @@ def _product_data_from_verified_claims(job: Job, base_product: dict) -> dict:
     """Project verified label claims back into structured product data."""
     from claims import ClaimsLedger, ReviewStatus
 
+    # Unit-created and legacy jobs may not yet have an offering identity. There
+    # cannot be ledger claims for an empty identity, and opening the default
+    # database here makes otherwise pure compliance handling depend on local
+    # database state.
+    if not job.offering_id:
+        return deepcopy(base_product)
+
     sf = {"ingredients": []}
     for claim in ClaimsLedger().get_claims(job.offering_id):
         if claim.review_status == ReviewStatus.REJECTED or not claim.source_artifact_id:
