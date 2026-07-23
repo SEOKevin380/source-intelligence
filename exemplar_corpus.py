@@ -241,9 +241,21 @@ def retrieve_exemplars(
     # precedent. Use it only when no same-vertical precedent exists at all.
     selected_pool = same_niche or same_vertical or ranked
     selected_pool.sort(key=lambda item: (-item[0], item[1].get("title", "")))
-    return [
-        release for _, release in selected_pool[: max(1, min(limit, 8))]
+    selected = [
+        dict(release)
+        for _, release in selected_pool[: max(1, min(limit, 8))]
     ]
+    try:
+        from body_exemplar_corpus import profiles_by_url
+        body_profiles = profiles_by_url()
+    except (ImportError, OSError, ValueError, json.JSONDecodeError):
+        body_profiles = {}
+    for release in selected:
+        profile = body_profiles.get(release.get("live_url", ""))
+        if profile:
+            release["body_profile"] = profile
+            release["headings"] = profile.get("heading_sequence", [])
+    return selected
 
 
 def format_exemplar_guidance(exemplars: list[dict]) -> str:
@@ -301,10 +313,7 @@ def build_approval_playbook(exemplars: list[dict], platform: str,
         item.get("published_date", "") for item in exemplars
         if item.get("published_date")
     )
-    body_profiles = [
-        item for item in exemplars
-        if item.get("headings") or item.get("opening_excerpt")
-    ]
+    body_profiles = [item for item in exemplars if item.get("body_profile")]
     return {
         "schema_version": 1,
         "platform": normalize_platform(platform),
@@ -363,6 +372,13 @@ def build_generation_blueprint(pack: dict, exemplars: list[dict]) -> str:
     )
     channel = pack.get("intake_manifest", {}).get("publishing_channel", "")
     playbook = build_approval_playbook(exemplars, channel, niche)
+    try:
+        from body_exemplar_corpus import format_body_playbook
+        body_playbook = format_body_playbook(
+            normalize_platform(channel), niche
+        )
+    except (ImportError, OSError, ValueError, json.JSONDecodeError):
+        body_playbook = ""
     profiles = pack.get("contextual_source_profiles") or []
     prior_profiles = [
         item for item in profiles
@@ -519,6 +535,7 @@ def build_generation_blueprint(pack: dict, exemplars: list[dict]) -> str:
         "Every section must add a new sourced fact, useful explanation, buyer "
         "question, or decision aid. Delete repetition instead of padding.",
         "Do not import facts from exemplars, previous coverage, or competitors.",
+        body_playbook,
         "═══════════════════════════════════════════════",
         "",
     ))

@@ -34,7 +34,7 @@ from .audit import audit_article
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v13-fixed-point-control"
+    "serp-differentiation-depth-v14-niche-body-intelligence"
 )
 
 STAGES = (
