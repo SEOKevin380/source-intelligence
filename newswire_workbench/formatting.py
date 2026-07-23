@@ -59,6 +59,29 @@ def _repair_mixed_markdown(value):
             continue
         fragment = BeautifulSoup(repaired, "html.parser")
         node.replace_with(*list(fragment.contents))
+
+    # Markdown emphasis can straddle an HTML element, leaving the opening and
+    # closing delimiters in separate text nodes (for example
+    # **<a href="...">label</a>**). It is already structurally emphasized by
+    # the enclosed HTML, so remove only paired boundary delimiters.
+    for parent in list(soup.find_all(["p", "li", "div", "blockquote"])):
+        contents = list(parent.contents)
+        if len(contents) < 3:
+            continue
+        first, last = contents[0], contents[-1]
+        if not isinstance(first, NavigableString) or not isinstance(
+            last, NavigableString
+        ):
+            continue
+        opening = re.match(r"^(\s*)(\*\*|__)", str(first))
+        closing = re.search(r"(\*\*|__)(\s*)$", str(last))
+        if opening and closing and opening.group(2) == closing.group(1):
+            first.replace_with(
+                str(first)[:opening.start(2)] + str(first)[opening.end(2):]
+            )
+            last.replace_with(
+                str(last)[:closing.start(1)] + str(last)[closing.end(1):]
+            )
     return str(soup)
 
 
@@ -73,7 +96,7 @@ def _repair_escaped_article_tags(value):
         value = collapsed
     tag_pattern = re.compile(
         r"&lt;(/?)(strong|h[1-6]|a|p|ul|ol|li|blockquote)"
-        r"((?:\s+[^&<>]*?)?)&gt;",
+        r"((?:(?!&gt;).)*?)&gt;",
         re.I,
     )
 

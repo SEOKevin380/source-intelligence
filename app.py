@@ -1931,10 +1931,20 @@ else:
                     )
                 except Exception:
                     _prior_diagnostics = None
+            _mechanical_resume = bool(
+                _prior_project
+                and _workbench.can_recover_locked_pre_signoff(
+                    _prior_project_id
+                )
+            )
             _is_rebuild = bool(
                 _prior_project
                 and (
-                    _prior_project["stage"] in {"package_ready", "admin_review"}
+                    _prior_project["stage"] == "package_ready"
+                    or (
+                        _prior_project["stage"] == "admin_review"
+                        and not _mechanical_resume
+                    )
                     or (
                         _prior_diagnostics
                         and _prior_diagnostics.get("workflow_version")
@@ -1944,7 +1954,7 @@ else:
             )
             _is_resume = bool(
                 _prior_project
-                and not _is_rebuild
+                and (not _is_rebuild or _mechanical_resume)
                 and _prior_project["stage"] != "package_ready"
             )
             if _prior_project:

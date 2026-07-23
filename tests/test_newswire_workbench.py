@@ -1,3 +1,4 @@
+import hashlib
 import json
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -463,6 +464,28 @@ def test_publication_repair_canonicalizes_markdown_embedded_in_html():
         )
     }
 
+def test_publication_repair_handles_markdown_wrapped_html_and_escaped_query_link():
+    article = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        '<p>**<a href="https://partner.example/offer?a=1&amp;b=2">'
+        "Review details</a>**</p>"
+        "<p>&lt;a href=&quot;https://partner.example/offer?a=1&amp;b=2&quot;"
+        "&gt;Current offer&lt;/a&gt;</p>"
+    )
+    repaired = repair_publication_gates(
+        article,
+        "Barchart Advertorial",
+        "device",
+        "https://partner.example/offer?a=1&b=2",
+    )
+    assert "**" not in repaired
+    assert "&lt;a " not in repaired
+    assert "D17" not in {
+        item["id"] for item in deterministic_findings(
+            repaired, "Barchart Advertorial", "device"
+        )
+    }
+
 
 def test_alternative_dominant_device_copy_triggers_advocacy_gate():
     article = (
@@ -864,6 +887,48 @@ def test_pre_signoff_does_not_spend_review_call_on_known_blocker(tmp_path):
         item["event_type"] == "pre_signoff_blocked"
         for item in engine.events(pid)
     )
+
+def test_locked_admin_pre_signoff_recovers_mechanical_html_without_paid_call(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    article = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        '<p>**<a href="https://partner.example/offer">Review details</a>**</p>'
+    )
+    digest = hashlib.sha256(("Test Device\n" + article).encode()).hexdigest()
+    with engine._connect() as conn:
+        conn.execute(
+            "UPDATE projects SET article_text=?,article_hash=?,stage='admin_review' "
+            "WHERE id=?",
+            (article, digest, pid),
+        )
+    engine._event(
+        pid,
+        "pre_signoff_blocked",
+        "admin_review",
+        digest,
+        {"blockers": [{"id": "D17"}]},
+    )
+
+    assert engine._recover_locked_pre_signoff(pid) is True
+    recovered = engine.get(pid)
+    assert recovered["stage"] == "revised"
+    assert "**" not in recovered["article_text"]
+    assert engine.usage_summary(pid)["calls"] == 0
 
 
 def test_house_optimization_gates_never_become_publication_blockers():

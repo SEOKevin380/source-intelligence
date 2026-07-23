@@ -30,7 +30,7 @@ from .formatting import (
     repair_source_grounding,
 )
 from .routing import estimated_cost, route_for
-from .audit import audit_article
+from .audit import MECHANICAL_GATES, audit_article
 from .execution_budget import (
     PURPOSE_CALL_LIMITS,
     REQUIRED_CALL_PATH,
@@ -715,6 +715,25 @@ class WorkbenchEngine:
             ).fetchall()
         return [dict(r) for r in rows]
 
+    def can_recover_locked_pre_signoff(self, project_id):
+        """Return whether an admin stop contains only owned mechanical gates."""
+        p = self.get(project_id)
+        if p["stage"] != "admin_review" or not self._uses_locked_call_path(p):
+            return False
+        relevant = [
+            event for event in self.events(project_id)
+            if event["event_type"] == "pre_signoff_blocked"
+        ]
+        if not relevant:
+            return False
+        payload = relevant[-1].get("payload") or "{}"
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        blockers = payload.get("blockers") or []
+        return bool(blockers) and all(
+            item.get("id") in MECHANICAL_GATES for item in blockers
+        )
+
     def capabilities(self):
         from .wordpress import WordPressDraftPublisher
         anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
@@ -876,6 +895,8 @@ class WorkbenchEngine:
                 return self.get(project_id)
             if project["stage"] == "admin_review":
                 if self._uses_locked_call_path(project):
+                    if self._recover_locked_pre_signoff(project_id):
+                        continue
                     return project
                 if self._recover_mechanical_admin_review(project_id):
                     continue
@@ -919,6 +940,45 @@ class WorkbenchEngine:
         )
         self._set_stage(project_id, "admin_review")
         return self.get(project_id)
+
+    def _recover_locked_pre_signoff(self, project_id):
+        """Apply owned deterministic repairs without opening a paid rescue path."""
+        p = self.get(project_id)
+        if not self.can_recover_locked_pre_signoff(project_id):
+            return False
+        relevant = [
+            event for event in self.events(project_id)
+            if event["event_type"] == "pre_signoff_blocked"
+        ]
+        payload = relevant[-1].get("payload") or "{}"
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        blockers = payload.get("blockers") or []
+        if not blockers or any(
+            item.get("id") not in MECHANICAL_GATES for item in blockers
+        ):
+            return False
+        preflight = audit_article(
+            p["article_text"],
+            p["platform"],
+            p["vertical"],
+            _source_affiliate_link(p["source_text"]),
+        )
+        if preflight["mechanical_remaining"]:
+            return False
+        self._persist_preflight_article(p, preflight, "revised")
+        self._event(
+            project_id,
+            "locked_pre_signoff_mechanical_recovered",
+            "revised",
+            self.get(project_id)["article_hash"],
+            {
+                "repaired_gates": [item.get("id") for item in blockers],
+                "paid_calls_added": 0,
+                "operator_decision_required": False,
+            },
+        )
+        return True
 
     def _recover_mechanical_admin_review(self, project_id):
         """Resume legacy admin jobs, including source conflicts the engine can resolve."""
@@ -1144,6 +1204,8 @@ class WorkbenchEngine:
                 p["vertical"],
                 _source_affiliate_link(p["source_text"]),
             )
+            self._persist_preflight_article(p, preflight, "revised")
+            p = self.get(project_id)
             if preflight["blockers"]:
                 self._set_stage(project_id, "admin_review")
                 self._event(
@@ -1746,6 +1808,35 @@ class WorkbenchEngine:
             )
         self._write(p["id"], filename, article)
         self._event(p["id"], "article_created", stage, digest, {"filename": filename})
+
+    def _persist_preflight_article(self, p, preflight, stage):
+        """Persist a fixed-point mechanical repair without consuming a model call."""
+        repaired = preflight["article"]
+        if repaired == p["article_text"]:
+            return False
+        digest = _hash(
+            (p.get("release_title") or p["title"]) + "\n" + repaired
+        )
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE projects SET article_text=?,article_hash=?,stage=?,"
+                "updated_at=? WHERE id=?",
+                (repaired, digest, stage, _now(), p["id"]),
+            )
+        self._write(p["id"], "03b-pre-signoff-mechanical-repair.html", repaired)
+        self._event(
+            p["id"],
+            "pre_signoff_mechanical_repair",
+            stage,
+            digest,
+            {
+                "repair_passes": preflight["repair_passes"],
+                "initial_findings": preflight["initial_findings"],
+                "final_findings": preflight["final_findings"],
+                "paid_calls_added": 0,
+            },
+        )
+        return True
 
     def _set_report(self, p, report, stage, filename):
         self._validate_report(report)
