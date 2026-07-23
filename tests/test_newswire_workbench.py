@@ -130,7 +130,7 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert project["stage"] == "source_ready"
     assert (
         "AUTOMATION CONTEXT VERSION: "
-        "serp-differentiation-depth-v18-purpose-reserved-ledger"
+        "serp-differentiation-depth-v19-cross-version-run-history"
         in project["source_text"]
     )
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
@@ -184,7 +184,13 @@ def test_explicit_rebuild_creates_new_project_and_preserves_source(tmp_path):
     assert engine.latest_project_from_pack(
         pack,
         "AccessNewsWire",
-        "serp-differentiation-depth-v18-purpose-reserved-ledger",
+        "serp-differentiation-depth-v19-cross-version-run-history",
+    ) == rebuilt
+    assert engine.latest_project_from_pack(
+        pack, "AccessNewsWire", "nonexistent-future-workflow"
+    ) is None
+    assert engine.latest_project_from_pack(
+        pack, "AccessNewsWire"
     ) == rebuilt
 
 

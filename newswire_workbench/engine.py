@@ -39,7 +39,7 @@ from .execution_budget import (
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v18-purpose-reserved-ledger"
+    "serp-differentiation-depth-v19-cross-version-run-history"
 )
 
 STAGES = (

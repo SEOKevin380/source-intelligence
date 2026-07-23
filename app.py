@@ -1900,6 +1900,15 @@ else:
                 _newswire_platform,
                 WORKBENCH_SOURCE_CONTEXT_VERSION,
             )
+            if not _durable_project_id:
+                # Preserve diagnostic visibility across deployments. A stale
+                # workflow project may not be resumed, but its paid-call and
+                # failure ledger must never disappear with browser session
+                # state.
+                _durable_project_id = _workbench.latest_project_from_pack(
+                    _publication_pack,
+                    _newswire_platform,
+                )
             if _durable_project_id and (
                 not _prior_project_id
                 or _durable_project_id != _prior_project_id
