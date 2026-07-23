@@ -287,6 +287,7 @@ if db:
     _run_import_if_needed(db)
 
 st.sidebar.title("Source Intelligence")
+st.sidebar.caption("Build: 2026.07.22 · Universal Vertical Routing")
 
 # Browser rendering status
 try:
