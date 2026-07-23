@@ -355,6 +355,38 @@ def repair_publication_gates(html, platform, vertical, affiliate_href=""):
     )
 
     soup = BeautifulSoup(serialized, "html.parser")
+    # Neutralize prosecutorial framing mechanically while preserving the
+    # underlying buyer questions. Semantic balance is still enforced by D19.
+    advocacy_heading_rewrites = (
+        (r"\bthe critical issue\b", "What Buyers Should Understand"),
+        (
+            r"\bwhat (?:information )?(?:is|remains) missing or unverified\b",
+            "Material Limitations and Questions to Verify",
+        ),
+        (
+            r"\bwhat (?:information )?(?:is|remains) missing\b",
+            "Material Limitations and Questions to Verify",
+        ),
+        (
+            r"\bverified alternatives?(?: with clear documentation)?\b",
+            "How This Product Fits a Broader Buying Decision",
+        ),
+        (
+            r"\bclaims? (?:versus|vs\.?) [^<]+",
+            "How to Evaluate the Available Claims",
+        ),
+    )
+    for heading in soup.find_all(["h2", "h3"]):
+        heading_text = heading.get_text(" ", strip=True)
+        rewritten = heading_text
+        for pattern, replacement in advocacy_heading_rewrites:
+            rewritten = re.sub(pattern, replacement, rewritten, flags=re.I)
+        if rewritten != heading_text:
+            heading.clear()
+            strong = soup.new_tag("strong")
+            strong.string = rewritten
+            heading.append(strong)
+
     for anchor in soup.find_all("a"):
         if re.match(r"^(?:https?://|www\.)", anchor.get_text(" ", strip=True), re.I):
             anchor.clear()

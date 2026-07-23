@@ -273,7 +273,8 @@ def test_alternative_dominant_device_copy_triggers_advocacy_gate():
         "<h2><strong>Verified Alternatives</strong></h2>"
         "<p>Energy audit, smart thermostat, programmable thermostat, LED "
         "lighting, insulation, air sealing, smart power strip, whole-home "
-        "surge protection, and LED lighting are alternatives.</p>"
+        "surge protection, energy audit, smart thermostat, LED lighting, "
+        "insulation, and air sealing are alternatives.</p>"
     )
     ids = {
         item["id"] for item in deterministic_findings(
@@ -281,6 +282,45 @@ def test_alternative_dominant_device_copy_triggers_advocacy_gate():
         )
     }
     assert "D19" in ids
+
+
+def test_distinct_limitations_do_not_false_positive_advocacy_gate():
+    article = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<h2><strong>Product Features and Setup</strong></h2>"
+        "<p>The plug-and-play device is marketed for voltage stabilization, "
+        "power factor correction, dirty electricity filtering, surge reduction, "
+        "24/7 operation, and zero maintenance. A green indicator light shows "
+        "operation. The current offer lists a single unit and bundle price.</p>"
+        "<h2><strong>Best Fit and Material Limitations</strong></h2>"
+        "<p>Independent testing is not available. Warranty terms are missing. "
+        "Certification is not documented. Shipping timing is not verified. "
+        "Those are separate buyer questions to confirm before ordering.</p>"
+    )
+    ids = {
+        item["id"] for item in deterministic_findings(
+            article, "Barchart Advertorial", "device"
+        )
+    }
+    assert "D19" not in ids
+
+
+def test_publication_repair_neutralizes_prosecutorial_device_headings():
+    article = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<h2>The Critical Issue: Billing</h2><p>Useful detail.</p>"
+        "<h2>What Information Is Missing or Unverified</h2><p>Limits.</p>"
+        "<h2>Verified Alternatives With Clear Documentation</h2><p>Context.</p>"
+    )
+    repaired = repair_publication_gates(
+        article, "Barchart Advertorial", "device"
+    )
+    assert "The Critical Issue" not in repaired
+    assert "Missing or Unverified" not in repaired
+    assert "Verified Alternatives" not in repaired
+    assert "What Buyers Should Understand" in repaired
+    assert "Material Limitations and Questions to Verify" in repaired
+    assert "How This Product Fits a Broader Buying Decision" in repaired
 
 
 def test_unsourced_categorical_background_triggers_source_grounding_gate():

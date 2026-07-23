@@ -189,17 +189,25 @@ def deterministic_findings(article, platform, vertical):
     client_case_markers = len(re.findall(
         r"\b(?:best fit|may appeal|may suit|designed for|marketed to|"
         r"key feature|product feature|plug-and-play|current offer|"
-        r"ordering information)\b",
+        r"ordering information|voltage stabili[sz]ation|power factor|"
+        r"dirty electricity|electrical noise|surge reduction|"
+        r"green (?:indicator )?light|zero maintenance|24/7 operation|"
+        r"setup|installation|single unit|bundle|price|support|"
+        r"buyer fit|potential fit|product details|stated mechanism|"
+        r"sourced feature|offer details)\b",
         plain_lower,
     ))
     advocacy_imbalance = (
-        len(negative_case_markers) >= 12
-        and len(negative_case_markers) > client_case_markers * 2
+        len(negative_case_markers) >= 16
+        and len(negative_case_markers) > max(client_case_markers * 2, 12)
     )
-    alternatives_dominate = alternatives_headings and alternative_branding >= 6
+    alternatives_dominate = (
+        alternatives_headings
+        and alternative_branding >= 10
+        and alternative_branding > client_case_markers
+    )
     if (
-        len(caveat_phrases) > 4
-        or repeated_caveat > 2
+        repeated_caveat > 2
         or adversarial_headings >= 2
         or advocacy_imbalance
         or alternatives_dominate
@@ -209,14 +217,20 @@ def deterministic_findings(article, platform, vertical):
             "category": "Client advocacy drift gate",
             "issue": (
                 "The article repeats evidentiary caveats or uses an adversarial "
-                "frame that overwhelms the strongest supportable client case."
+                "frame that overwhelms the strongest supportable client case "
+                f"(repeated caveat: {repeated_caveat}; adversarial headings: "
+                f"{adversarial_headings}; negative/value markers: "
+                f"{len(negative_case_markers)}/{client_case_markers}; "
+                f"alternative markers: {alternative_branding})."
             ),
             "exact_text": "",
             "replacement": (
                 "Keep every material limitation, but state each one once. "
-                "Consolidate repeated caveats, lead with verified features and "
-                "offer value, identify best-fit readers, and build toward a "
-                "clear compliant next action without inventing benefits."
+                "Use a product-first structure: sourced value and features, "
+                "how it works, price/setup, best fit, one consolidated "
+                "limitations section, then a clear compliant next action. "
+                "Keep alternatives to one short neutral paragraph. Do not use "
+                "prosecutorial headings or invent benefits."
             ),
         })
     categorical_external_claims = re.findall(

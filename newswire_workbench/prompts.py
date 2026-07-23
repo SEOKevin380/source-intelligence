@@ -287,6 +287,13 @@ compliance report below.
   source-grounded words and fully answer mechanism, evidence, price, setup,
   fit/not-fit, limitations, trust, and current terms. Keep alternatives to one
   compact neutral comparison section and never advocate competing products.
+- If D19 is present, reconstruct instead of merely paraphrasing. Put at least
+  two product-value sections before limitations. Explain sourced features,
+  operation, setup, price, and best-fit readers affirmatively. Use exactly one
+  consolidated Material Limitations section. State each missing proof point
+  once. Keep alternatives to one short neutral paragraph without prices,
+  brands, or a shopping list. Never use headings such as “critical issue,”
+  “claims versus,” “missing or unverified,” or “verified alternatives.”
 
 LEARNED ISSUE MEMORY:
 {memory}
