@@ -293,10 +293,15 @@ class WorkbenchEngine:
         if p["stage"] != "package_ready" or p["last_report"].get("verdict") != "approved":
             raise RuntimeError("Only a currently approved submission package can be sent to WordPress")
         findings = deterministic_findings(p["article_text"], p["platform"], p["vertical"])
-        if findings:
+        blockers = [
+            item for item in findings
+            if item.get("id") in PUBLICATION_BLOCKER_IDS
+        ]
+        if blockers:
             raise RuntimeError(
-                "The approved article predates current formatting gates and must be repaired first: " +
-                ", ".join(item["id"] for item in findings)
+                "The approved article has a current publication blocker and must "
+                "be repaired first: " +
+                ", ".join(item["id"] for item in blockers)
             )
         publisher = WordPressDraftPublisher()
         publisher.test_connection()
@@ -731,10 +736,15 @@ class WorkbenchEngine:
             existing = report.setdefault("mandatory_edits", [])
             existing_ids = {item.get("id") for item in existing}
             for item in deterministic:
-                if item["id"] not in existing_ids:
+                if (
+                    item["id"] in PUBLICATION_BLOCKER_IDS
+                    and item["id"] not in existing_ids
+                ):
                     existing.append(item)
+                elif item["id"] not in PUBLICATION_BLOCKER_IDS:
+                    report.setdefault("recommended_edits", []).append(item)
             report["mandatory_count"] = len(existing)
-            report["verdict"] = "not_approved"
+            report["verdict"] = "not_approved" if existing else "approved"
         return report
 
     def _record_llm_call(self, project_id, stage, route, input_tokens=0,

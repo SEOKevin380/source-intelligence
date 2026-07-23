@@ -506,6 +506,56 @@ def test_nonblocking_house_format_target_cannot_strand_va(tmp_path):
     )
 
 
+def test_nonblocking_house_format_target_cannot_block_wordpress_handoff(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Test", "AccessNewsWire", "financial source", "financial"
+    )
+    engine.import_manual_article(
+        pid,
+        "<p><strong>Paid Advertorial</strong></p>"
+        "<p>Investments carry risk, including loss of principal.</p>",
+    )
+    p = engine.get(pid)
+    approval = {
+        "verdict": "approved",
+        "mandatory_count": 0,
+        "mandatory_edits": [],
+        "recommended_edits": [],
+        "approved_elements": [],
+        "notes": [],
+        "reviewed_article_hash": p["article_hash"],
+    }
+    engine._set_report(p, approval, "package_ready", "approved.json")
+    style_finding = [{
+        "id": "D16",
+        "category": "MBK strategic link gate",
+        "issue": "Affiliate-link count differs from house target.",
+        "exact_text": "",
+        "replacement": "Improve link distribution.",
+    }]
+    from unittest.mock import MagicMock, patch
+    publisher = MagicMock()
+    publisher.configured = True
+    publisher.site_url = "https://example.com"
+    publisher.save_draft.return_value = {
+        "post_id": 123,
+        "edit_url": "https://example.com/wp-admin/post.php?post=123&action=edit",
+        "site_url": "https://example.com",
+    }
+    with patch(
+        "newswire_workbench.engine.deterministic_findings",
+        return_value=style_finding,
+    ), patch(
+        "newswire_workbench.wordpress.WordPressDraftPublisher",
+        return_value=publisher,
+    ):
+        result = engine.send_to_wordpress_draft(pid)
+    assert result["post_id"] == 123
+
+
 def test_deterministic_publication_defects_self_repair_without_admin(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     source = (
