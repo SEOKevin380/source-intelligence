@@ -14,6 +14,53 @@ def _even_indices(total, wanted):
     return {round(i * (total - 1) / (wanted - 1)) for i in range(wanted)}
 
 
+def _repair_mixed_markdown(value):
+    """Canonicalize Markdown residue embedded inside otherwise valid HTML."""
+    value = re.sub(r"```(?:html|markdown|md)?", "", value, flags=re.I)
+    value = value.replace("```", "").replace("~~~", "")
+    soup = BeautifulSoup(value, "html.parser")
+
+    # A model commonly places Markdown headings inside paragraph tags after it
+    # has otherwise switched to HTML. Promote those paragraphs mechanically.
+    for paragraph in list(soup.find_all("p")):
+        if paragraph.find(True):
+            continue
+        match = re.fullmatch(
+            r"\s*(#{1,6})\s+(.+?)\s*",
+            paragraph.get_text(),
+            flags=re.S,
+        )
+        if not match:
+            continue
+        level = 2 if len(match.group(1)) <= 2 else 3
+        heading = soup.new_tag(f"h{level}")
+        heading.string = match.group(2).strip()
+        paragraph.replace_with(heading)
+
+    # Convert only text nodes, never attributes or existing link markup.
+    for node in list(soup.find_all(string=True)):
+        if node.parent and node.parent.name in {"script", "style", "code", "pre"}:
+            continue
+        raw = str(node)
+        repaired = re.sub(
+            r"\[([^\]\n]+)\]\((https?://[^\s)]+)\)",
+            r'<a href="\2">\1</a>',
+            raw,
+        )
+        repaired = re.sub(r"\*\*([^*\n]+?)\*\*", r"<strong>\1</strong>", repaired)
+        repaired = re.sub(r"__([^_\n]+?)__", r"<strong>\1</strong>", repaired)
+        repaired = re.sub(
+            r"(?m)^\s*#{1,6}\s+(.+?)\s*$",
+            r"<strong>\1</strong>",
+            repaired,
+        )
+        if repaired == raw:
+            continue
+        fragment = BeautifulSoup(repaired, "html.parser")
+        node.replace_with(*list(fragment.contents))
+    return str(soup)
+
+
 def ensure_article_html(value):
     """Remove model fences and convert plain-text drafts to article-body HTML."""
     value = (value or "").strip()
@@ -22,9 +69,9 @@ def ensure_article_html(value):
     if not value:
         return value
 
-    # Already-structured output only needs the fence removed.
+    # Already-structured output may still contain Markdown residue inside HTML.
     if re.search(r"<(?:p|h[1-6]|ul|ol|li|div|blockquote)\b", value, re.I):
-        return value
+        return _repair_mixed_markdown(value)
 
     blocks = [
         re.sub(r"\s*\n\s*", " ", block).strip()

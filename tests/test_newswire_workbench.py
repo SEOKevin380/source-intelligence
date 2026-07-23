@@ -239,6 +239,34 @@ def test_markdown_bold_residue_is_a_publication_blocker():
     assert "D17" in ids
 
 
+def test_publication_repair_canonicalizes_markdown_embedded_in_html():
+    article = (
+        "```html\n"
+        "<p>**Paid Advertorial:** Compensation may be received.</p>"
+        "<p>## What Buyers Should Know</p>"
+        "<p>[Review details](https://partner.example/offer)</p>"
+        + "<p>Useful source-grounded product detail for the reader.</p>" * 120
+        + "\n```"
+    )
+    repaired = repair_publication_gates(
+        article,
+        "Barchart Advertorial",
+        "device",
+        "https://partner.example/offer",
+    )
+    assert "**" not in repaired
+    assert "## " not in repaired
+    assert "```" not in repaired
+    assert "[Review details](" not in repaired
+    assert "<h2><strong>What Buyers Should Know</strong></h2>" in repaired
+    assert 'href="https://partner.example/offer"' in repaired
+    assert "D17" not in {
+        item["id"] for item in deterministic_findings(
+            repaired, "Barchart Advertorial", "device"
+        )
+    }
+
+
 def test_alternative_dominant_device_copy_triggers_advocacy_gate():
     article = (
         "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
