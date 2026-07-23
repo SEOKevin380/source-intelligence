@@ -1928,6 +1928,41 @@ else:
                 _preflight_blockers = _prior_preflight["blockers"]
                 _semantic_blockers = _prior_preflight["semantic_remaining"]
                 _semantic_review = _prior_preflight["semantic_review"]
+                _policy_state = _prior_preflight.get("policy_intelligence", {})
+                _claim_state = _prior_preflight.get("claim_provenance", {})
+                _delivery_state = _prior_preflight.get(
+                    "wordpress_delivery", {}
+                )
+                if _policy_state.get("current"):
+                    st.caption(
+                        "Policy intelligence: current authoritative snapshot "
+                        f"{_policy_state.get('snapshot_hash', '')[:12]} · "
+                        f"{_policy_state.get('applicable_source_count', 0)} "
+                        "applicable sources."
+                    )
+                if _delivery_state.get("exact_hash_match"):
+                    st.caption(
+                        "WordPress delivery: exact article hash is bound to "
+                        f"post {_delivery_state.get('post_id')} at "
+                        f"{_delivery_state.get('site_url')}."
+                    )
+                elif _prior_project.get("stage") == "package_ready":
+                    st.warning(
+                        "Editorial package is approved, but publication is not "
+                        "ready until the correct WordPress draft is associated "
+                        "with the exact approved article hash."
+                    )
+                else:
+                    st.error(
+                        "Authoritative policy refresh/review is required before "
+                        "another paid run: "
+                        + ", ".join(
+                            _policy_state.get("missing_observations", [])
+                            + _policy_state.get(
+                                "changes_requiring_review", []
+                            )
+                        )
+                    )
                 if _contract["passed"]:
                     st.caption(
                         "Offline preflight: all "
@@ -1983,6 +2018,15 @@ else:
                         f"Last verdict: {_semantic_review['last_verdict']}."
                     )
                 with st.expander("Offline preflight details"):
+                    st.markdown("**Claim provenance**")
+                    st.caption(
+                        f"{_claim_state.get('used_claim_count', 0)} of "
+                        f"{_claim_state.get('publication_claim_count', 0)} "
+                        "sealed publication claims are textually mapped into "
+                        f"{_claim_state.get('mapped_sentence_count', 0)} "
+                        "article sentences. Implied claims remain subject to "
+                        "independent semantic review."
+                    )
                     for _finding in (
                         _prior_preflight["blockers"]
                         + _prior_preflight["recommendations"]
@@ -2014,6 +2058,10 @@ else:
                     or bool(
                         _prior_preflight
                         and not _prior_preflight["system_contract"]["passed"]
+                        or _prior_preflight
+                        and not _prior_preflight.get(
+                            "policy_intelligence", {}
+                        ).get("current", False)
                     )
                 ),
                 key=f"build_newswire_{product_key or _quick_slug}",

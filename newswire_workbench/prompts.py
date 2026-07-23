@@ -186,6 +186,15 @@ The objective is compliant publication, not refusal. Identify exact edits that
 preserve the strongest supportable commercial and SEO value. Missing evidence
 means omit or qualify the claim; it does not justify inventing facts.
 
+Decision authority is strict:
+regulator/law > publisher policy > sealed source contract > house policy >
+approved structural exemplars > reviewer preference > current SERP convention.
+Only factual/source violations, legal/regulatory violations, material publisher
+contract violations, or materially misleading reader harm belong in
+`mandatory_edits`. Grammar polish, title alternatives, stylistic preferences,
+optional SEO enhancements, and non-material formatting preferences belong in
+`recommended_edits` and must not prevent approval.
+
 Review all applicable categories:
 1. Factual traceability and consistency against the source record.
 2. Platform disclosures, affiliate wording, CTA accuracy, and advertorial label.

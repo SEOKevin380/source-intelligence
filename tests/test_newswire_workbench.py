@@ -112,7 +112,7 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert project["stage"] == "source_ready"
     assert (
         "AUTOMATION CONTEXT VERSION: "
-        "serp-differentiation-depth-v11-bounded-fast-path"
+        "serp-differentiation-depth-v12-governed-intelligence"
         in project["source_text"]
     )
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
@@ -120,7 +120,30 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert "SEO strategy is complete" in project["source_text"]
     assert "Recommended headline:" in project["source_text"]
     assert "polished American English" in project["source_text"]
-    assert any(e["event_type"] == "sealed_source_pack_imported" for e in engine.events(first))
+    assert any(
+        e["event_type"] == "sealed_source_pack_imported"
+        for e in engine.events(first)
+    )
+
+
+def test_reviewer_style_preference_cannot_block_approval(tmp_path):
+    engine = WorkbenchEngine(tmp_path / "workbench")
+    report = {
+        "verdict": "not_approved",
+        "mandatory_edits": [{
+            "id": "M1",
+            "category": "Headline style",
+            "issue": "The title could have more natural cadence.",
+            "exact_text": "Current title",
+            "replacement": "Optional stronger title",
+        }],
+        "recommended_edits": [],
+        "notes": [],
+    }
+    adjudicated = engine._remove_house_rule_conflicts(report)
+    assert adjudicated["verdict"] == "approved"
+    assert not adjudicated["mandatory_edits"]
+    assert adjudicated["recommended_edits"][0]["issue"].startswith("The title")
 
 
 def test_explicit_rebuild_creates_new_project_and_preserves_source(tmp_path):

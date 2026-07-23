@@ -34,7 +34,7 @@ from .audit import audit_article
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v11-bounded-fast-path"
+    "serp-differentiation-depth-v12-governed-intelligence"
 )
 
 STAGES = (
@@ -220,11 +220,15 @@ class WorkbenchEngine:
     ):
         """Create or reuse a workbench job from a sealed Source Intelligence pack."""
         from exemplar_corpus import (
+            build_approval_playbook,
             build_generation_blueprint,
+            format_approval_playbook,
             format_exemplar_guidance,
+            infer_niche,
             retrieve_exemplars,
         )
         from source_pack_contract import validate_source_pack
+        from policy_intelligence import format_policy_context
         validate_source_pack(pack, allow_limited=True)
         product = pack.get("product") or {}
         manifest = pack.get("intake_manifest") or {}
@@ -243,6 +247,15 @@ class WorkbenchEngine:
             ),
         )
         exemplar_guidance = format_exemplar_guidance(exemplars)
+        approval_playbook = build_approval_playbook(
+            exemplars,
+            platform,
+            infer_niche(
+                title,
+                str(product.get("category") or ""),
+                str(product.get("product_type") or ""),
+            ),
+        )
         generation_blueprint = build_generation_blueprint(pack, exemplars)
         source_text = "\n\n".join(part for part in (
             f"AUTOMATION CONTEXT VERSION: {WORKBENCH_SOURCE_CONTEXT_VERSION}",
@@ -251,6 +264,8 @@ class WorkbenchEngine:
                 if force_new else ""
             ),
             exemplar_guidance,
+            format_approval_playbook(approval_playbook),
+            format_policy_context(resolved_vertical),
             generation_blueprint,
             "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══",
             pack_text,
@@ -374,6 +389,37 @@ class WorkbenchEngine:
         }
         result["ready_for_packaging"] = bool(
             result["passed"] and exact_semantic_approval
+        )
+        from article_provenance import (
+            build_article_claim_ledger,
+            extract_sealed_pack,
+        )
+        result["claim_provenance"] = build_article_claim_ledger(
+            extract_sealed_pack(p["source_text"]),
+            p.get("article_text") or "",
+        )
+        from policy_intelligence import policy_status
+        result["policy_intelligence"] = policy_status(p["vertical"])
+        result["pre_run_authorized"] = bool(
+            result["policy_intelligence"]["current"]
+            and not result["blockers"]
+        )
+        wordpress = self.wordpress_draft(project_id)
+        result["wordpress_delivery"] = {
+            "present": bool(wordpress),
+            "site_url": (wordpress or {}).get("site_url", ""),
+            "post_id": (wordpress or {}).get("post_id"),
+            "edit_url": (wordpress or {}).get("edit_url", ""),
+            "article_hash": (wordpress or {}).get("article_hash", ""),
+            "exact_hash_match": bool(
+                wordpress
+                and wordpress.get("article_hash") == p["article_hash"]
+            ),
+        }
+        result["publication_ready"] = bool(
+            result["ready_for_packaging"]
+            and p["stage"] == "package_ready"
+            and result["wordpress_delivery"]["exact_hash_match"]
         )
         return result
 
@@ -1143,6 +1189,7 @@ class WorkbenchEngine:
             exact = str(item.get("exact_text", "") or "")
             replacement = str(item.get("replacement", "") or "")
             issue = str(item.get("issue", "") or "")
+            category = str(item.get("category", "") or "")
             if str(item.get("id", "")).startswith("D"):
                 rejected.append({"id": item.get("id"), "reason": "deterministic_gate_requires_mechanical_or_model_repair"})
                 continue
@@ -1172,6 +1219,29 @@ class WorkbenchEngine:
                 item["replacement"] = (
                     "Keep one descriptive contextual link without naming its "
                     "publisher or calling it a previous release."
+                )
+            elif (
+                re.search(
+                    r"\b(?:grammar|style|cadence|tone|wording|title|headline|"
+                    r"seo|scannability|readability|flow|optional)\b",
+                    category + " " + issue,
+                    re.I,
+                )
+                and not re.search(
+                    r"\b(?:unsupported|false|misleading|fabricat|source|legal|"
+                    r"regulat|disclos|affiliate|platform|required|prohibited)\b",
+                    category + " " + issue,
+                    re.I,
+                )
+            ):
+                report.setdefault("recommended_edits", []).append({
+                    "id": str(item.get("id") or "R-SCOPE"),
+                    "category": category or "Editorial recommendation",
+                    "issue": issue,
+                    "replacement": replacement,
+                })
+                reason = (
+                    "non_material_editorial_preference_demoted_to_recommendation"
                 )
             if reason:
                 rejected.append({"id": item.get("id"), "reason": reason})
@@ -1264,19 +1334,43 @@ class WorkbenchEngine:
                 "Package creation requires independent approval of the exact "
                 "final article hash."
             )
+        from article_provenance import (
+            build_article_claim_ledger,
+            extract_sealed_pack,
+        )
+        claim_ledger = build_article_claim_ledger(
+            extract_sealed_pack(p["source_text"]), p["article_text"]
+        )
+        from policy_intelligence import policy_status
+        policy = policy_status(p["vertical"])
+        if not policy["current"]:
+            raise RuntimeError(
+                "Package creation is blocked because an applicable authoritative "
+                "policy source is missing or changed and awaiting review."
+            )
         manifest = {
             "project_id": p["id"], "title": p["title"],
             "release_title": p.get("release_title", p["title"]), "platform": p["platform"],
             "vertical": p["vertical"], "source_hash": p["source_hash"],
             "article_hash": p["article_hash"], "approved_at": _now(),
             "approval_report": p["last_report"],
+            "claim_provenance_file": "claim-provenance.json",
+            "policy_snapshot_hash": policy["snapshot_hash"],
+            "policy_status": policy,
         }
         self._write(p["id"], "submission-manifest.json", json.dumps(manifest, indent=2))
         self._write(p["id"], "FINAL-ARTICLE.html", p["article_text"])
+        self._write(
+            p["id"], "claim-provenance.json",
+            json.dumps(claim_ledger, indent=2, ensure_ascii=False),
+        )
         export_path = self.exports_dir / f"{p['id']}-submission-package.zip"
         project_dir = self.projects_dir / p["id"]
         with zipfile.ZipFile(export_path, "w", zipfile.ZIP_DEFLATED) as archive:
-            for name in ("00-source-record.txt", "FINAL-ARTICLE.html", "submission-manifest.json"):
+            for name in (
+                "00-source-record.txt", "FINAL-ARTICLE.html",
+                "claim-provenance.json", "submission-manifest.json",
+            ):
                 path = project_dir / name
                 if path.exists():
                     archive.write(path, arcname=name)

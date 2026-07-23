@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "jurisdiction": "US",
+  "sources": [
+    {
+      "id": "google_sqrg",
+      "authority": "quality_guidance",
+      "verticals": ["all"],
+      "url": "https://guidelines.raterhub.com/searchqualityevaluatorguidelines.pdf",
+      "title": "Google Search Quality Evaluator Guidelines"
+    },
+    {
+      "id": "google_ranking_history",
+      "authority": "search_status",
+      "verticals": ["all"],
+      "url": "https://status.search.google.com/products/rGHU1u87FJnkP6W2GwMi/history",
+      "title": "Google Search Ranking Status History"
+    },
+    {
+      "id": "google_spam_policies",
+      "authority": "search_policy",
+      "verticals": ["all"],
+      "url": "https://developers.google.com/search/docs/essentials/spam-policies",
+      "title": "Google Web Search Spam Policies"
+    },
+    {
+      "id": "ftc_ad_substantiation",
+      "authority": "regulator",
+      "verticals": ["all"],
+      "url": "https://www.ftc.gov/legal-library/browse/ftc-policy-statement-regarding-advertising-substantiation",
+      "title": "FTC Policy Statement Regarding Advertising Substantiation"
+    },
+    {
+      "id": "ftc_endorsements",
+      "authority": "regulator",
+      "verticals": ["all"],
+      "url": "https://www.ftc.gov/business-guidance/advertising-marketing/endorsements-influencers-reviews",
+      "title": "FTC Endorsements, Influencers, and Reviews"
+    },
+    {
+      "id": "ftc_native_advertising",
+      "authority": "regulator",
+      "verticals": ["all"],
+      "url": "https://www.ftc.gov/business-guidance/resources/native-advertising-guide-businesses",
+      "title": "FTC Native Advertising Guide for Businesses"
+    },
+    {
+      "id": "ftc_consumer_reviews_rule",
+      "authority": "regulator",
+      "verticals": ["all"],
+      "url": "https://www.ftc.gov/business-guidance/resources/consumer-reviews-testimonials-rule-questions-answers",
+      "title": "FTC Consumer Reviews and Testimonials Rule"
+    },
+    {
+      "id": "fda_structure_function",
+      "authority": "regulator",
+      "verticals": ["health", "supplement"],
+      "url": "https://www.fda.gov/food/food-labeling-nutrition/structurefunction-claims",
+      "title": "FDA Structure/Function Claims"
+    },
+    {
+      "id": "fda_dshea_disclaimer_letter",
+      "authority": "regulator",
+      "verticals": ["health", "supplement"],
+      "url": "https://www.fda.gov/food/information-industry-dietary-supplements/letter-dietary-supplement-industry-dshea-disclaimer",
+      "title": "FDA Letter on the DSHEA Disclaimer"
+    },
+    {
+      "id": "sec_investment_adviser_marketing",
+      "authority": "regulator",
+      "verticals": ["financial"],
+      "url": "https://www.ecfr.gov/current/title-17/chapter-II/part-275/section-275.206(4)-1",
+      "title": "17 CFR 275.206(4)-1 Investment Adviser Marketing"
+    }
+  ]
+}

@@ -286,6 +286,62 @@ def format_exemplar_guidance(exemplars: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def build_approval_playbook(exemplars: list[dict], platform: str,
+                            niche: str) -> dict:
+    """Summarize repeatable approval signals without importing product facts."""
+    patterns = Counter(
+        item.get("title_pattern", "") for item in exemplars
+        if item.get("title_pattern")
+    )
+    intents = Counter(
+        intent for item in exemplars
+        for intent in item.get("intents", ["overview"])
+    )
+    dates = sorted(
+        item.get("published_date", "") for item in exemplars
+        if item.get("published_date")
+    )
+    return {
+        "schema_version": 1,
+        "platform": normalize_platform(platform),
+        "niche": niche,
+        "approved_sample_size": len(exemplars),
+        "title_patterns": [name for name, _ in patterns.most_common(5)],
+        "accepted_intents": [name for name, _ in intents.most_common()],
+        "oldest_approval": dates[0] if dates else "",
+        "latest_approval": dates[-1] if dates else "",
+        "fact_boundary": (
+            "Structure, voice, and SEO approach only. Current sealed sources "
+            "remain the exclusive authority for product facts."
+        ),
+        "source_urls": [item.get("live_url", "") for item in exemplars],
+    }
+
+
+def format_approval_playbook(playbook: dict) -> str:
+    if not playbook or not playbook.get("approved_sample_size"):
+        return ""
+    return "\n".join((
+        "═══ PUBLISHER × NICHE APPROVAL PLAYBOOK ═══",
+        f"Publisher: {playbook.get('platform', '')}",
+        f"Niche: {playbook.get('niche', '')}",
+        f"Approved sample: {playbook.get('approved_sample_size', 0)}",
+        f"Observed approval window: {playbook.get('oldest_approval') or 'unknown'} "
+        f"to {playbook.get('latest_approval') or 'unknown'}",
+        "Accepted search intents: "
+        + ", ".join(playbook.get("accepted_intents") or ["overview"]),
+        "Observed title structures:",
+        *[
+            f"  • {pattern}"
+            for pattern in playbook.get("title_patterns") or ["No stable pattern"]
+        ],
+        "Use this envelope aggressively for editorial structure and SEO only.",
+        playbook["fact_boundary"],
+        "═══════════════════════════════════════════════",
+        "",
+    ))
+
+
 def build_generation_blueprint(pack: dict, exemplars: list[dict]) -> str:
     """Convert banked precedents and captured context into one locked SEO plan."""
     product = pack.get("product") or {}
@@ -295,6 +351,8 @@ def build_generation_blueprint(pack: dict, exemplars: list[dict]) -> str:
         str(product.get("category") or ""),
         str(product.get("product_type") or ""),
     )
+    channel = pack.get("intake_manifest", {}).get("publishing_channel", "")
+    playbook = build_approval_playbook(exemplars, channel, niche)
     profiles = pack.get("contextual_source_profiles") or []
     prior_profiles = [
         item for item in profiles
@@ -386,7 +444,10 @@ def build_generation_blueprint(pack: dict, exemplars: list[dict]) -> str:
         "═══ LOCKED GENERATION BLUEPRINT — DO NOT REDESIGN ═══",
         f"Product: {product_name}",
         f"Publisher niche: {niche}",
-        f"Platform: {pack.get('intake_manifest', {}).get('publishing_channel', '')}",
+        f"Platform: {channel}",
+        f"Approved niche sample: {playbook['approved_sample_size']}",
+        "Accepted precedent intents: "
+        + ", ".join(playbook.get("accepted_intents") or ["overview"]),
         f"Primary SEO intent: {selected_intent}",
         f"Title promise: {promises[selected_intent]}",
         f"Recommended headline: {headline_patterns[selected_intent]}",

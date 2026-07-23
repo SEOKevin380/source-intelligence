@@ -1,4 +1,5 @@
 from exemplar_corpus import (
+    build_approval_playbook,
     format_exemplar_guidance,
     infer_intents,
     infer_niche,
@@ -6,6 +7,21 @@ from exemplar_corpus import (
     normalize_platform,
     retrieve_exemplars,
 )
+
+
+def test_approval_playbook_is_scoped_and_fact_safe():
+    examples = [{
+        "title_pattern": "[PRODUCT] Review [YEAR]: Buyer Guide",
+        "intents": ["review", "trust"],
+        "published_date": "2026-07-01",
+        "live_url": "https://www.barchart.com/story/example",
+    }]
+    playbook = build_approval_playbook(
+        examples, "Barchart Advertorial", "energy_devices"
+    )
+    assert playbook["platform"] == "barchart"
+    assert playbook["niche"] == "energy_devices"
+    assert "sealed sources" in playbook["fact_boundary"]
 
 
 def test_platform_normalization_prefers_live_host():

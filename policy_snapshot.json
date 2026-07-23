@@ -1,0 +1,170 @@
+{
+  "adoptions": {},
+  "generated_at": "2026-07-23T19:29:26+00:00",
+  "schema_version": 1,
+  "snapshot_hash": "39cd90757126c8e5f65d1cb0b3f8b1955d858fe36641d61b5ba64084abffd431",
+  "sources": {
+    "fda_dshea_disclaimer_letter": {
+      "authority": "regulator",
+      "authority_rank": 600,
+      "checked_at": "2026-07-23T19:29:25+00:00",
+      "content_type": "text/html; charset=UTF-8",
+      "etag": "\"1784824032\"",
+      "last_modified": "Thu, 23 Jul 2026 16:27:12 GMT",
+      "observed_hash": "c01b6f2599bb2bded030ae28f84f40a909ff80d8fdd00d704f2053523fb99719",
+      "requires_review": false,
+      "status": "unchanged",
+      "title": "FDA Letter on the DSHEA Disclaimer",
+      "url": "https://www.fda.gov/food/information-industry-dietary-supplements/letter-dietary-supplement-industry-dshea-disclaimer",
+      "verticals": [
+        "health",
+        "supplement"
+      ]
+    },
+    "fda_structure_function": {
+      "authority": "regulator",
+      "authority_rank": 600,
+      "checked_at": "2026-07-23T19:29:25+00:00",
+      "content_type": "text/html; charset=UTF-8",
+      "etag": "\"1784813559\"",
+      "last_modified": "Thu, 23 Jul 2026 13:32:39 GMT",
+      "observed_hash": "71705266488991aef38a425d07f690e4c56cae1f31bc5e6c5a39dd073f58eea1",
+      "requires_review": false,
+      "status": "changed",
+      "title": "FDA Structure/Function Claims",
+      "url": "https://www.fda.gov/food/food-labeling-nutrition/structurefunction-claims",
+      "verticals": [
+        "health",
+        "supplement"
+      ]
+    },
+    "ftc_ad_substantiation": {
+      "authority": "regulator",
+      "authority_rank": 600,
+      "checked_at": "2026-07-23T19:29:23+00:00",
+      "content_type": "text/html; charset=UTF-8",
+      "etag": "\"1784834947\"",
+      "last_modified": "Thu, 23 Jul 2026 19:29:07 GMT",
+      "observed_hash": "74bdb39b6c9b5dbc4777e6bf072a8f8443ef46465d5598a83bbe6a9c1bac1d7f",
+      "requires_review": false,
+      "status": "unchanged",
+      "title": "FTC Policy Statement Regarding Advertising Substantiation",
+      "url": "https://www.ftc.gov/legal-library/browse/ftc-policy-statement-regarding-advertising-substantiation",
+      "verticals": [
+        "all"
+      ]
+    },
+    "ftc_consumer_reviews_rule": {
+      "authority": "regulator",
+      "authority_rank": 600,
+      "checked_at": "2026-07-23T19:29:24+00:00",
+      "content_type": "text/html; charset=UTF-8",
+      "etag": "\"1784834780\"",
+      "last_modified": "Thu, 23 Jul 2026 19:26:20 GMT",
+      "observed_hash": "ee4bc5bd465911f5b5e69302eca75b595d3016cf9a94de3bfcaf8d5947457fe1",
+      "requires_review": false,
+      "status": "unchanged",
+      "title": "FTC Consumer Reviews and Testimonials Rule",
+      "url": "https://www.ftc.gov/business-guidance/resources/consumer-reviews-testimonials-rule-questions-answers",
+      "verticals": [
+        "all"
+      ]
+    },
+    "ftc_endorsements": {
+      "authority": "regulator",
+      "authority_rank": 600,
+      "checked_at": "2026-07-23T19:29:23+00:00",
+      "content_type": "text/html; charset=UTF-8",
+      "etag": "\"1784834841\"",
+      "last_modified": "Thu, 23 Jul 2026 19:27:21 GMT",
+      "observed_hash": "d386b092348da60d681c9d13c1a6f7bea3e6471cf78c4c125b183672db9b93d9",
+      "requires_review": false,
+      "status": "unchanged",
+      "title": "FTC Endorsements, Influencers, and Reviews",
+      "url": "https://www.ftc.gov/business-guidance/advertising-marketing/endorsements-influencers-reviews",
+      "verticals": [
+        "all"
+      ]
+    },
+    "ftc_native_advertising": {
+      "authority": "regulator",
+      "authority_rank": 600,
+      "checked_at": "2026-07-23T19:29:24+00:00",
+      "content_type": "text/html; charset=UTF-8",
+      "etag": "\"1784834769\"",
+      "last_modified": "Thu, 23 Jul 2026 19:26:09 GMT",
+      "observed_hash": "ecebe527259d5d0cb1aba8746b4896466162cb42f0db24f3c1fb5ee21bc7f319",
+      "requires_review": false,
+      "status": "unchanged",
+      "title": "FTC Native Advertising Guide for Businesses",
+      "url": "https://www.ftc.gov/business-guidance/resources/native-advertising-guide-businesses",
+      "verticals": [
+        "all"
+      ]
+    },
+    "google_ranking_history": {
+      "authority": "search_status",
+      "authority_rank": 200,
+      "checked_at": "2026-07-23T19:29:22+00:00",
+      "content_type": "text/html",
+      "etag": "",
+      "last_modified": "",
+      "observed_hash": "a64ac33133019510accb250169a527b4d50b70c51adc1668c69fe685bfc8c112",
+      "requires_review": false,
+      "status": "unchanged",
+      "title": "Google Search Ranking Status History",
+      "url": "https://status.search.google.com/products/rGHU1u87FJnkP6W2GwMi/history",
+      "verticals": [
+        "all"
+      ]
+    },
+    "google_spam_policies": {
+      "authority": "search_policy",
+      "authority_rank": 400,
+      "checked_at": "2026-07-23T19:29:22+00:00",
+      "content_type": "text/html; charset=utf-8",
+      "etag": "",
+      "last_modified": "Fri, 15 May 2026 09:22:35 GMT",
+      "observed_hash": "d3ae5d99261ee2513a32cb27620587f67f17ac1937abf78f49becbaab6bbe760",
+      "requires_review": false,
+      "status": "unchanged",
+      "title": "Google Web Search Spam Policies",
+      "url": "https://developers.google.com/search/docs/essentials/spam-policies",
+      "verticals": [
+        "all"
+      ]
+    },
+    "google_sqrg": {
+      "authority": "quality_guidance",
+      "authority_rank": 300,
+      "checked_at": "2026-07-23T19:29:21+00:00",
+      "content_type": "application/pdf",
+      "etag": "",
+      "last_modified": "Thu, 11 Sep 2025 17:38:00 GMT",
+      "observed_hash": "46aa9ea1fd004a09d68ececd7acdb18ec505061f52598fa69a856dfea94a6a06",
+      "requires_review": false,
+      "status": "unchanged",
+      "title": "Google Search Quality Evaluator Guidelines",
+      "url": "https://guidelines.raterhub.com/searchqualityevaluatorguidelines.pdf",
+      "verticals": [
+        "all"
+      ]
+    },
+    "sec_investment_adviser_marketing": {
+      "authority": "regulator",
+      "authority_rank": 600,
+      "checked_at": "2026-07-23T19:29:26+00:00",
+      "content_type": "text/html; charset=utf-8",
+      "etag": "",
+      "last_modified": "",
+      "observed_hash": "fc128f65ca713c60b0362b2c1b2deb9e6e84343ad4b67088eb779e92b53381fc",
+      "requires_review": false,
+      "status": "new",
+      "title": "17 CFR 275.206(4)-1 Investment Adviser Marketing",
+      "url": "https://www.ecfr.gov/current/title-17/chapter-II/part-275/section-275.206(4)-1",
+      "verticals": [
+        "financial"
+      ]
+    }
+  }
+}
