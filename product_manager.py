@@ -88,6 +88,38 @@ PRIMARY_SITES = [
     "londonbridgeurology", "topshelfmushrooms", "vitaminsformen",
 ]
 
+# Explicit network destinations for non-health verticals.  Archetypes alone are
+# not sufficient here: most primary sites are medical, while TotalHealthRD has
+# dedicated Financial/Investing, Home/Kitchen and Tech/Gadgets categories and
+# HollyHerman covers general consumer products.  Keeping this list conservative
+# prevents irrelevant medical-site recommendations from leaking into the UI.
+NON_HEALTH_PRIMARY_SITES = {
+    "financial": {"totalhealthrd"},
+    "consumer_electronics": {"totalhealthrd", "hollyherman"},
+    "device": {"totalhealthrd", "hollyherman"},
+    "home": {"totalhealthrd", "hollyherman"},
+    "collectible": {"totalhealthrd", "hollyherman"},
+    "software": {"totalhealthrd", "hollyherman"},
+    "info_product": {"totalhealthrd", "hollyherman"},
+    "professional_service": {"totalhealthrd"},
+    "general": {"totalhealthrd", "hollyherman"},
+}
+
+
+def get_relevant_primary_sites(product_type: str, category: str = ""):
+    """Return an explicit site allowlist for non-health products, or None.
+
+    ``None`` means the established health category/archetype routing should be
+    used.  A set means only those primary sites may be recommended.
+    """
+    normalized_type = str(product_type or "").strip().lower().replace(" ", "_")
+    normalized_category = str(category or "").strip().lower().replace(" ", "_")
+    if normalized_type in NON_HEALTH_PRIMARY_SITES:
+        return NON_HEALTH_PRIMARY_SITES[normalized_type]
+    if "financial" in normalized_category or "invest" in normalized_category:
+        return NON_HEALTH_PRIMARY_SITES["financial"]
+    return None
+
 # Site key → archetype loaded from wp-sites.json (source of truth)
 # Keys in wp-sites.json may differ slightly from PRIMARY_SITES keys
 _WP_SITES_KEY_MAP = {
@@ -157,6 +189,7 @@ def get_coverage_report(product_key: str, db: ProductDatabase = None) -> dict:
 
     # Determine which archetypes are relevant for this category
     relevant_archetypes = CATEGORY_SITE_RELEVANCE.get(category, [])
+    explicit_relevant_sites = get_relevant_primary_sites(product_type, category)
     # Default: most archetypes except highly specialized ones
     if not relevant_archetypes:
         relevant_archetypes = [
@@ -171,6 +204,11 @@ def get_coverage_report(product_key: str, db: ProductDatabase = None) -> dict:
     archetypes = _get_cached_archetypes()
     for site_key in PRIMARY_SITES:
         archetype = archetypes.get(site_key, "unknown")
+        site_is_relevant = (
+            site_key in explicit_relevant_sites
+            if explicit_relevant_sites is not None
+            else archetype in relevant_archetypes
+        )
 
         if site_key in coverage:
             pub = coverage[site_key]
@@ -182,7 +220,7 @@ def get_coverage_report(product_key: str, db: ProductDatabase = None) -> dict:
                 "date": pub.get("date", ""),
                 "content_type": pub.get("content_type", ""),
             })
-        elif archetype in relevant_archetypes:
+        elif site_is_relevant:
             recommended.append({
                 "site_key": site_key,
                 "site_name": site_key,

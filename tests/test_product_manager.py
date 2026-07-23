@@ -1,4 +1,20 @@
-from product_manager import get_prompt_completeness
+from product_manager import get_prompt_completeness, get_relevant_primary_sites
+
+
+def test_financial_routing_never_recommends_medical_primary_sites():
+    sites = get_relevant_primary_sites("financial", "Financial Products")
+    assert sites == {"totalhealthrd"}
+    assert "pvmedcenter" not in sites
+    assert "tutelamedical" not in sites
+
+
+def test_general_consumer_routing_uses_consumer_sites():
+    sites = get_relevant_primary_sites("consumer_electronics", "Tech & Gadgets")
+    assert sites == {"totalhealthrd", "hollyherman"}
+
+
+def test_health_routing_remains_archetype_driven():
+    assert get_relevant_primary_sites("supplement", "heart_health") is None
 
 
 class FakeDatabase:
@@ -44,4 +60,3 @@ def test_supplement_completeness_keeps_health_scorecard():
     result = get_prompt_completeness("supplement", FakeDatabase(data))
     assert "C1" in result["sections"]
     assert "C4" in result["sections"]
-

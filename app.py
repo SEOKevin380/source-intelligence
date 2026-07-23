@@ -1708,8 +1708,28 @@ else:
     is_barchart_platform = "barchart" in rd_platform.lower()
 
     stat_cols = st.columns(4)
-    stat_cols[0].metric("Ingredients", ing_count)
-    stat_cols[1].metric("PubMed Studies", study_count)
+    _metric_product_type = str(product.get("product_type", "")).strip().lower()
+    _health_metric_types = {"supplement", "topical", "cannabis", "food", "telehealth"}
+    if _metric_product_type in _health_metric_types:
+        stat_cols[0].metric("Ingredients", ing_count)
+        stat_cols[1].metric("PubMed Studies", study_count)
+    else:
+        _artifacts = data.get("all_artifacts") or []
+        _manifest = data.get("source_manifest") or []
+        _source_count = len(_artifacts) or sum(
+            1 for item in _manifest
+            if isinstance(item, dict) and str(item.get("status", "")).lower()
+            in {"captured", "success", "fetched", "available", "reused"}
+        )
+        _claims = product.get("claims", []) or data.get("publication_claims", {})
+        if isinstance(_claims, list):
+            _claim_count = len(_claims)
+        elif isinstance(_claims, dict):
+            _claim_count = sum(len(items or []) for items in _claims.values())
+        else:
+            _claim_count = 0
+        stat_cols[0].metric("Source Records", _source_count)
+        stat_cols[1].metric("Publishable Claims", _claim_count)
     stat_cols[2].metric("Risk Level", risk)
 
     # Quality score from CRM
