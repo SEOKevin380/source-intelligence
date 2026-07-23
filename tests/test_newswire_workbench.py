@@ -7,7 +7,11 @@ from newswire_workbench.engine import WorkbenchEngine
 from newswire_workbench.prompts import detect_vertical
 from newswire_workbench.learning import deterministic_findings
 from newswire_workbench.wordpress import WordPressDraftPublisher
-from newswire_workbench.formatting import ensure_affiliate_links, normalize_master_html
+from newswire_workbench.formatting import (
+    ensure_affiliate_links,
+    normalize_master_html,
+    repair_publication_gates,
+)
 from newswire_workbench.routing import risk_tier, route_for
 from source_pack_contract import seal_source_pack
 
@@ -319,6 +323,52 @@ def test_adjudicated_article_advances_without_third_paid_signoff(tmp_path):
     updated = engine.get(pid)
     assert updated["stage"] == "signed_off"
     assert updated["last_report"]["verdict"] == "approved"
+
+
+def test_deterministic_publication_defects_self_repair_without_admin(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    source = (
+        "AFFILIATE LINK: https://partner.example/offer\n"
+        "Official URL: https://publisher.example/newsletter"
+    )
+    pid = engine.create_project(
+        "Newsletter", "AccessNewsWire", source, "financial"
+    )
+    article = (
+        "<h1>Newsletter Review</h1><h2>What Readers Receive</h2>"
+        "<p>Source Intelligence summary for this guaranteed trial.</p>"
+        + ("<p>Useful sourced newsletter discussion for readers.</p>" * 320)
+    )
+    engine.import_manual_article(pid, article)
+    assert engine._complete_adjudicated_signoff(
+        pid, "signed_off", "adjudicated-signoff.json"
+    ) is True
+    updated = engine.get(pid)
+    assert updated["stage"] == "signed_off"
+    assert deterministic_findings(
+        updated["article_text"], "AccessNewsWire", "financial"
+    ) == []
+
+
+def test_publication_gate_repair_hides_raw_url_and_adds_required_structure():
+    article = (
+        "<h1>Title</h1><h2>Details</h2>"
+        "<p>Source Intelligence says this is a guaranteed trial.</p>"
+        '<p><a href="https://partner.example/offer">'
+        "https://partner.example/offer</a></p>"
+        + ("<p>Useful sourced discussion for readers.</p>" * 320)
+    )
+    repaired = repair_publication_gates(
+        article,
+        "AccessNewsWire",
+        "financial",
+        "https://partner.example/offer",
+    )
+    assert deterministic_findings(
+        repaired, "AccessNewsWire", "financial"
+    ) == []
+    assert "https://partner.example/offer</a>" not in repaired
+    assert repaired.count('href="https://partner.example/offer"') == 5
 
 
 def test_reviewer_house_rule_conflicts_cannot_block(tmp_path):

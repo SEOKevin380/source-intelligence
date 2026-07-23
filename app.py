@@ -1734,22 +1734,27 @@ else:
             if isinstance(item, dict) and str(item.get("status", "")).lower()
             in {"captured", "success", "fetched", "available", "reused"}
         )
-        _claims = product.get("claims", []) or data.get("publication_claims", {})
-        if isinstance(_claims, list):
-            _claim_count = len(_claims)
-        elif isinstance(_claims, dict):
-            _claim_count = sum(len(items or []) for items in _claims.values())
-        else:
-            _claim_count = 0
+        _coverage = (
+            get_prompt_completeness(product_key, db)
+            if CRM_AVAILABLE and db and product_key else {}
+        )
         stat_cols[0].metric("Source Records", _source_count)
-        stat_cols[1].metric("Publishable Claims", _claim_count)
+        stat_cols[1].metric(
+            "Reader Questions Answered",
+            f"{_coverage.get('questions_answered', 0)}/"
+            f"{_coverage.get('questions_total', 8)}",
+        )
     stat_cols[2].metric("Risk Level", risk)
 
     # Quality score from CRM
     if CRM_AVAILABLE and db and product_key:
         product_rec = db.get_product(product_key)
         quality_score = product_rec.get("quality_score", 0) if product_rec else 0
-        stat_cols[3].metric("Quality", f"{quality_score}/100")
+        if _metric_product_type in _health_metric_types:
+            stat_cols[3].metric("Research Coverage", f"{quality_score}/100")
+        else:
+            _coverage_score = _coverage.get("score", quality_score)
+            stat_cols[3].metric("Evidence Coverage", f"{_coverage_score}/100")
 
     st.divider()
 
@@ -1978,11 +1983,11 @@ else:
                 score = completeness.get("score", 0)
 
                 if score >= 80:
-                    st.success(f"Prompt Completeness: {score}% — Ready for production")
+                    st.success(f"Evidence Coverage: {score}% — Ready for production")
                 elif score >= 60:
-                    st.warning(f"Prompt Completeness: {score}% — Minor gaps")
+                    st.warning(f"Evidence Coverage: {score}% — Minor gaps")
                 elif score > 0:
-                    st.error(f"Prompt Completeness: {score}% — Significant gaps")
+                    st.error(f"Evidence Coverage: {score}% — Significant gaps")
                 else:
                     st.info("No completeness data available")
 

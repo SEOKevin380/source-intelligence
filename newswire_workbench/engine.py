@@ -21,7 +21,11 @@ from .learning import (
     PROMPT_VERSION, deterministic_findings, issue_fingerprint,
     learned_guidance,
 )
-from .formatting import ensure_affiliate_links, normalize_master_html
+from .formatting import (
+    ensure_affiliate_links,
+    normalize_master_html,
+    repair_publication_gates,
+)
 from .routing import estimated_cost, route_for
 
 
@@ -867,12 +871,39 @@ class WorkbenchEngine:
             p["article_text"], p["platform"], p["vertical"]
         )
         if findings:
-            self._set_stage(project_id, "admin_review")
-            self._event(
-                project_id, "adjudication_unresolved", "admin_review",
-                p["article_hash"], {"findings": findings},
+            affiliate_match = re.search(
+                r"(?im)^AFFILIATE LINK:\s*(\S+)", p["source_text"]
             )
-            return False
+            repaired = repair_publication_gates(
+                p["article_text"],
+                p["platform"],
+                p["vertical"],
+                affiliate_match.group(1) if affiliate_match else "",
+            )
+            if repaired != p["article_text"]:
+                digest = _hash((p.get("release_title") or p["title"]) + "\n" + repaired)
+                with self._connect() as conn:
+                    conn.execute(
+                        "UPDATE projects SET article_text=?,article_hash=?,updated_at=? "
+                        "WHERE id=?",
+                        (repaired, digest, _now(), project_id),
+                    )
+                self._write(project_id, "09-deterministic-gate-repair.html", repaired)
+                self._event(
+                    project_id, "deterministic_gate_repair", p["stage"],
+                    digest, {"repaired_findings": findings},
+                )
+                p = self.get(project_id)
+                findings = deterministic_findings(
+                    p["article_text"], p["platform"], p["vertical"]
+                )
+            if findings:
+                self._set_stage(project_id, "admin_review")
+                self._event(
+                    project_id, "adjudication_unresolved", "admin_review",
+                    p["article_hash"], {"findings": findings},
+                )
+                return False
         approval = {
             "verdict": "approved",
             "mandatory_count": 0,

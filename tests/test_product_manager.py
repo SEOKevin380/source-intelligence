@@ -44,7 +44,12 @@ def test_financial_completeness_never_uses_health_fields():
     assert "ingredient" not in labels
     assert "pubmed" not in labels
     assert "clinical" not in labels
-    assert {"Identity", "Sources", "Claims", "Compliance"}.issubset(result["sections"])
+    assert {
+        "Who", "What", "Where", "When", "Why", "How", "How Much",
+        "Trust / Scam Questions",
+    }.issubset(result["sections"])
+    assert result["questions_total"] == 8
+    assert 0 < result["questions_answered"] <= 8
 
 
 def test_supplement_completeness_keeps_health_scorecard():

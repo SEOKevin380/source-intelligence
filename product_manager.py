@@ -434,17 +434,40 @@ def get_prompt_completeness(product_key: str, db: ProductDatabase = None) -> dic
     if product_type not in health_types:
         sections = {}
         missing_critical = []
-        total = 109
+        total = 100
         earned = 0
 
-        identity_ok = bool(product.get("product_name") and product.get("official_url"))
-        sections["Identity"] = {
-            "status": "complete" if identity_ok else "missing",
-            "detail": "Product and official URL captured" if identity_ok else "Product identity or official URL missing",
+        identity_ok = bool(product.get("product_name"))
+        who_ok = bool(product.get("brand_name") or product.get("company") or product.get("contact_info"))
+        sections["Who"] = {
+            "status": "complete" if identity_ok and who_ok else "partial" if identity_ok else "missing",
+            "detail": (
+                "Offering and responsible brand/contact identified"
+                if identity_ok and who_ok else
+                "Offering identified; publisher/company details remain limited"
+                if identity_ok else "Offering identity missing"
+            ),
         }
-        earned += 15 if identity_ok else 0
+        earned += 12 if identity_ok and who_ok else 7 if identity_ok else 0
         if not identity_ok:
-            missing_critical.append("Product identity or official URL missing")
+            missing_critical.append("Who: offering identity missing")
+
+        what_signals = [
+            product.get("product_type"), product.get("category"),
+            product.get("description"), product.get("features"),
+            product.get("topics_covered"), product.get("service_type"),
+        ]
+        what_count = sum(bool(value) for value in what_signals)
+        sections["What"] = {
+            "status": "complete" if what_count >= 3 else "partial" if what_count else "missing",
+            "detail": (
+                "Offering type, scope, and included features captured"
+                if what_count >= 3 else
+                "Basic offering type captured; scope or inclusions need stronger extraction"
+                if what_count else "What the offering is has not been established"
+            ),
+        }
+        earned += 14 if what_count >= 3 else 7 if what_count else 0
 
         artifacts = data.get("all_artifacts") or []
         manifest = data.get("source_manifest") or []
@@ -452,11 +475,16 @@ def get_prompt_completeness(product_key: str, db: ProductDatabase = None) -> dic
             1 for item in manifest if isinstance(item, dict)
             and str(item.get("status", "")).lower() in {"captured", "success", "fetched", "available", "reused"}
         )
-        sections["Sources"] = {
+        sections["Where"] = {
             "status": "complete" if source_count >= 2 else "partial" if source_count else "missing",
-            "detail": f"{source_count} source records captured" if source_count else "No source records captured",
+            "detail": (
+                f"Official destination and {source_count} source records captured"
+                if product.get("official_url") and source_count else
+                f"{source_count} source records captured; destination needs confirmation"
+                if source_count else "No source destination or records captured"
+            ),
         }
-        earned += 20 if source_count >= 2 else 10 if source_count else 0
+        earned += 14 if product.get("official_url") and source_count >= 2 else 8 if source_count else 0
         if not source_count:
             missing_critical.append("No captured source material")
 
@@ -464,62 +492,87 @@ def get_prompt_completeness(product_key: str, db: ProductDatabase = None) -> dic
         claim_count = len(claims) if isinstance(claims, list) else sum(
             len(items or []) for items in claims.values()
         ) if isinstance(claims, dict) else 0
-        sections["Claims"] = {
+        sections["Why"] = {
             "status": "complete" if claim_count >= 3 else "partial" if claim_count else "missing",
-            "detail": f"{claim_count} source-backed claims" if claim_count else "No publishable claims extracted",
+            "detail": (
+                f"{claim_count} source-attributed reasons or positioning statements captured"
+                if claim_count else
+                "Reader reasons, differentiators, and seller positioning need stronger extraction"
+            ),
         }
-        earned += 15 if claim_count >= 3 else 7 if claim_count else 0
+        earned += 12 if claim_count >= 3 else 6 if claim_count else 0
 
         pricing = product.get("pricing", [])
-        sections["Pricing"] = {
+        sections["How Much"] = {
             "status": "complete" if pricing else "missing",
-            "detail": "Pricing captured" if pricing else "Pricing unavailable — omit from copy",
+            "detail": "Price and offer terms captured" if pricing else "Price unavailable — omit rather than guess",
         }
-        earned += 10 if pricing else 0
+        earned += 12 if pricing else 0
 
         refund = product.get("refund_policy")
-        sections["Terms"] = {
-            "status": "complete" if refund else "partial",
-            "detail": "Refund/offer terms captured" if refund else "Refund terms unavailable — omit from copy",
+        access = product.get("delivery") or product.get("access_terms") or product.get("shipping_policy")
+        sections["How"] = {
+            "status": "complete" if access and refund else "partial" if access or refund else "missing",
+            "detail": (
+                "Access/delivery and refund terms captured"
+                if access and refund else
+                "Some access or refund terms captured; remaining terms will be omitted"
+                if access or refund else "Access, delivery, and refund mechanics unavailable"
+            ),
         }
-        earned += 8 if refund else 3
+        earned += 13 if access and refund else 7 if access or refund else 0
 
-        company = product.get("company", {}) or {}
-        contact_ok = bool(company.get("name") or product.get("brand_name") or product.get("contact_info"))
-        sections["Company & Contact"] = {
-            "status": "complete" if contact_ok else "partial",
-            "detail": "Company/contact information captured" if contact_ok else "Limited company/contact information",
+        research_date = (
+            data.get("research_date") or data.get("generated_at")
+            or data.get("source_pack_contract", {}).get("generated_at")
+        )
+        sections["When"] = {
+            "status": "complete" if research_date else "partial",
+            "detail": (
+                "Source verification date recorded"
+                if research_date else "Current source date not explicitly recorded"
+            ),
         }
-        earned += 8 if contact_ok else 3
+        earned += 8 if research_date else 4
 
-        sections["Compliance"] = {
-            "status": "complete" if compliance else "missing",
-            "detail": f"Category-specific risk: {compliance.get('risk_level', 'unknown')}" if compliance else "No category-specific compliance result",
+        reputation_signal = bool(reputation) or bool(product.get("company")) or source_count >= 2
+        sections["Trust / Scam Questions"] = {
+            "status": "complete" if compliance and reputation_signal else "partial" if compliance or reputation_signal else "missing",
+            "detail": (
+                "Source attribution, limitations, and category-specific risk checks available"
+                if compliance and reputation_signal else
+                "Some trust evidence exists; unresolved points must be stated plainly"
+                if compliance or reputation_signal else
+                "No trust, reputation, or compliance evidence captured"
+            ),
         }
-        earned += 15 if compliance else 0
+        earned += 15 if compliance and reputation_signal else 8 if compliance or reputation_signal else 0
         if not compliance:
             missing_critical.append("No category-specific compliance result")
 
         strategy_points = (5 if keywords else 0) + (4 if competitive else 0)
-        sections["Search Strategy"] = {
+        sections["Reader Intent"] = {
             "status": "complete" if strategy_points >= 7 else "partial" if strategy_points else "missing",
-            "detail": "Keyword and competitive inputs available" if strategy_points >= 7 else "Search inputs are limited",
+            "detail": (
+                "Search questions and competing coverage mapped"
+                if strategy_points >= 7 else
+                "Search-intent inputs are limited; use the universal reader-question framework"
+            ),
         }
-        earned += strategy_points
-
-        access = product.get("delivery") or product.get("access_terms") or product.get("shipping_policy")
-        sections["Delivery / Access"] = {
-            "status": "complete" if access else "partial",
-            "detail": "Delivery or access details captured" if access else "Delivery/access details unavailable — omit from copy",
-        }
-        earned += 9 if access else 4
+        earned += min(8, strategy_points)
 
         score = min(100, round(earned / total * 100))
+        answered = sum(
+            1 for key, item in sections.items()
+            if key != "Reader Intent" and item["status"] in {"complete", "partial"}
+        )
         return {
             "score": score,
             "sections": sections,
             "ready_for_editorial_review": not missing_critical and score >= 55,
             "missing_critical": missing_critical,
+            "questions_answered": answered,
+            "questions_total": 8,
         }
 
     sections = {}
