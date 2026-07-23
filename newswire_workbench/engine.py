@@ -39,7 +39,7 @@ from .execution_budget import (
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v19-cross-version-run-history"
+    "serp-differentiation-depth-v20-ordered-review-contract"
 )
 
 STAGES = (
@@ -139,6 +139,17 @@ class WorkbenchEngine:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=30000")
         return conn
+
+    @staticmethod
+    def _uses_locked_call_path(project):
+        return (
+            "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══"
+            in project["source_text"]
+            and (
+                "AUTOMATION CONTEXT VERSION: "
+                + WORKBENCH_SOURCE_CONTEXT_VERSION
+            ) in project["source_text"]
+        )
 
     def _init_db(self):
         with self._connect() as conn:
@@ -933,8 +944,13 @@ class WorkbenchEngine:
                     p, report, "drafted", "02-openai-review.json"
                 )
                 reviewed = self.get(project_id)
+                adjudication_target = (
+                    "compliance_reviewed"
+                    if self._uses_locked_call_path(reviewed)
+                    else "revised"
+                )
                 if not self._adjudicate_current(
-                    reviewed, report, target_stage="revised"
+                    reviewed, report, target_stage=adjudication_target
                 ):
                     self._set_stage(project_id, "compliance_reviewed")
         elif stage == "compliance_reviewed":
@@ -977,6 +993,24 @@ class WorkbenchEngine:
                 return self.get(project_id)
             report = self._openai_review(p, final=True, purpose="final_signoff")
             if report.get("verdict") != "approved":
+                if self._uses_locked_call_path(p):
+                    self._set_report(
+                        p, report, "admin_review",
+                        "04-openai-signoff.json",
+                    )
+                    self._event(
+                        p["id"],
+                        "exact_hash_final_rejected",
+                        "admin_review",
+                        p["article_hash"],
+                        {
+                            "mandatory_count": len(
+                                report.get("mandatory_edits") or []
+                            ),
+                            "operator_decision_required": False,
+                        },
+                    )
+                    return self.get(project_id)
                 repair_route = route_for("compliance_repair", p["vertical"])
                 if (
                     self._billable_call_count(p["id"], "compliance_repair")
@@ -1343,14 +1377,7 @@ class WorkbenchEngine:
                 "call was made"
             )
         project = self.get(project_id)
-        is_current_bounded_run = (
-            "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══"
-            in project["source_text"]
-            and (
-                "AUTOMATION CONTEXT VERSION: "
-                + WORKBENCH_SOURCE_CONTEXT_VERSION
-            ) in project["source_text"]
-        )
+        is_current_bounded_run = self._uses_locked_call_path(project)
         if is_current_bounded_run:
             if stage not in REQUIRED_CALL_PATH:
                 raise RuntimeError(

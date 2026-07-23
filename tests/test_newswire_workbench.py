@@ -130,7 +130,7 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert project["stage"] == "source_ready"
     assert (
         "AUTOMATION CONTEXT VERSION: "
-        "serp-differentiation-depth-v19-cross-version-run-history"
+        "serp-differentiation-depth-v20-ordered-review-contract"
         in project["source_text"]
     )
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
@@ -184,7 +184,7 @@ def test_explicit_rebuild_creates_new_project_and_preserves_source(tmp_path):
     assert engine.latest_project_from_pack(
         pack,
         "AccessNewsWire",
-        "serp-differentiation-depth-v19-cross-version-run-history",
+        "serp-differentiation-depth-v20-ordered-review-contract",
     ) == rebuilt
     assert engine.latest_project_from_pack(
         pack, "AccessNewsWire", "nonexistent-future-workflow"
@@ -534,6 +534,78 @@ def test_current_workflow_reserves_one_call_per_required_purpose(tmp_path):
             pid, "quality_rescue", route_for("quality_rescue", "device")
         )
     assert engine.usage_details(pid)[0]["stage"] == "draft"
+
+
+def test_current_workflow_executes_repair_before_final_signoff(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    article = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        + "<p>Seller materials describe the product.</p>" * 250
+    )
+    rejection = {
+        "verdict": "not_approved",
+        "mandatory_count": 1,
+        "source_accuracy": {"verified": 1, "checked": 1},
+        "mandatory_edits": [{
+            "id": "M1",
+            "category": "Source fidelity",
+            "issue": "Clarify attribution.",
+            "exact_text": "not present",
+            "replacement": "Seller materials state this.",
+        }],
+        "recommended_edits": [],
+        "approved_elements": [],
+        "notes": [],
+        "reviewed_article_hash": "",
+    }
+
+    def writer(_prompt, project_id, purpose, vertical):
+        route = route_for(purpose, vertical)
+        engine._record_llm_call(project_id, purpose, route, 100, 100)
+        return article
+
+    review_count = {"value": 0}
+
+    def reviewer(project, final, purpose=None):
+        resolved = purpose or ("final_signoff" if final else "compliance")
+        route = route_for(resolved, project["vertical"])
+        engine._record_llm_call(project["id"], resolved, route, 100, 100)
+        review_count["value"] += 1
+        if review_count["value"] == 1:
+            report = dict(rejection)
+            report["reviewed_article_hash"] = project["article_hash"]
+            return report
+        return _independent_approval(engine, project["id"])
+
+    def package(project):
+        engine._set_stage(project["id"], "package_ready")
+
+    with patch.object(engine, "_claude", side_effect=writer), patch.object(
+        engine, "_openai_review", side_effect=reviewer
+    ), patch.object(
+        engine, "_adjudicate_current", return_value=False
+    ), patch.object(engine, "_build_package", side_effect=package):
+        result = engine.run_to_completion(pid, "")
+
+    assert result["stage"] == "package_ready"
+    assert [
+        call["stage"] for call in engine.usage_details(pid)
+    ] == [
+        "draft", "compliance", "compliance_repair", "final_signoff"
+    ]
 
 
 def test_house_optimization_gates_never_become_publication_blockers():
