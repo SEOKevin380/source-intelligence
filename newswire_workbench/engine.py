@@ -39,7 +39,7 @@ from .execution_budget import (
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v20-ordered-review-contract"
+    "serp-differentiation-depth-v21-exemplar-assembly-contract"
 )
 
 STAGES = (
@@ -967,6 +967,26 @@ class WorkbenchEngine:
                 p["platform"], p["vertical"], memory,
                 release_title=p.get("release_title", p["title"]),
             ), p["id"], repair_purpose, p["vertical"])
+            candidate_words = self._article_word_count(article)
+            current_words = self._article_word_count(p["article_text"])
+            minimum_preserved = min(
+                current_words,
+                max(900, int(current_words * 0.80)),
+            )
+            if current_words >= 900 and candidate_words < minimum_preserved:
+                self._event(
+                    p["id"],
+                    "destructive_revision_rejected",
+                    "compliance_reviewed",
+                    p["article_hash"],
+                    {
+                        "current_words": current_words,
+                        "candidate_words": candidate_words,
+                        "minimum_preserved": minimum_preserved,
+                        "action": "retained_adjudicated_full_length_article",
+                    },
+                )
+                article = p["article_text"]
             self._set_article(
                 p, article, "revised",
                 (
@@ -977,6 +997,26 @@ class WorkbenchEngine:
                 bump=True,
             )
         elif stage == "revised":
+            preflight = audit_article(
+                p["article_text"],
+                p["platform"],
+                p["vertical"],
+                _source_affiliate_link(p["source_text"]),
+            )
+            if preflight["blockers"]:
+                self._set_stage(project_id, "admin_review")
+                self._event(
+                    p["id"],
+                    "pre_signoff_blocked",
+                    "admin_review",
+                    p["article_hash"],
+                    {
+                        "blockers": preflight["blockers"],
+                        "final_signoff_call_preserved": True,
+                        "operator_decision_required": False,
+                    },
+                )
+                return self.get(project_id)
             # Recover projects created before adjudicated sign-off advanced the
             # state. If the paid review ceiling is already exhausted, validate
             # the mechanically corrected article instead of calling the model
@@ -1303,7 +1343,7 @@ class WorkbenchEngine:
                 "reviewed_article_hash": p["article_hash"],
             },
         )
-        report = self._remove_house_rule_conflicts(report)
+        report = self._remove_house_rule_conflicts(report, p["article_text"])
         deterministic = deterministic_findings(
             p["article_text"], p["platform"], p["vertical"]
         )
@@ -1430,7 +1470,12 @@ class WorkbenchEngine:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def _remove_house_rule_conflicts(self, report):
+    @staticmethod
+    def _article_word_count(article):
+        plain = re.sub(r"<[^>]+>", " ", str(article or ""))
+        return len(re.findall(r"\b[\w’'-]+\b", plain))
+
+    def _remove_house_rule_conflicts(self, report, article=""):
         """Prevent a reviewer from turning its own house-rule conflicts into blockers."""
         kept, rejected = [], []
         for item in report.get("mandatory_edits", []) or []:
@@ -1453,6 +1498,24 @@ class WorkbenchEngine:
                 re.I,
             ):
                 reason = "house_rule_forbids_reader_facing_affiliate_routing_explanation"
+            elif (
+                re.search(
+                    r"\b(?:affiliate|partner|non-public)\s+(?:url|domain)|"
+                    r"\baffiliate\s+(?:destination|routing)|"
+                    r"\braw affiliate url\b",
+                    issue,
+                    re.I,
+                )
+                and not re.search(
+                    r"<a\b[^>]*>\s*(?:https?://|www\.)[^<]+</a>",
+                    article,
+                    re.I,
+                )
+            ):
+                reason = (
+                    "house_rule_forbids_affiliate_destination_disclosure_when_"
+                    "reader_facing_anchor_is_already_clean"
+                )
             elif (
                 re.search(r"prior[- ]release", issue, re.I)
                 and re.search(r"(?:forbids?|remove).{0,80}(?:link|backlink)", issue, re.I)

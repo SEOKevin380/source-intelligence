@@ -100,6 +100,14 @@ Operating rules:
   paragraph openings, and idiomatic phrasing. Remove robotic transitions,
   repeated conclusions, throat-clearing, generic AI filler, and sentences that
   merely restate a heading.
+- Assemble the article from the closest banked same-platform, same-niche body
+  profile and the locked SEO blueprint. Borrow its proven reader-question
+  coverage, pacing, and section roles—not its product facts or wording.
+- Treat the job as constrained editorial assembly. Every product-specific
+  factual sentence must be traceable to a permitted publication claim or an
+  explicitly recorded missing fact. Do not invent explanatory bridge claims
+  about electrical risk, household systems, support availability, value
+  comparisons, or likely outcomes merely to connect sections.
 - Treat the locked generation blueprint as the completed SEO plan. Use its
   primary intent, recommended headline, title promise, and H2 spine. Improve
   wording only when the result remains on the same intent and is more specific,
@@ -297,6 +305,9 @@ def revision_prompt(source_text: str, article: str, report: dict,
 compliance report below.
 
 - Apply every mandatory edit while preserving commercial strength.
+- Edit the existing article in place. Preserve every unaffected paragraph,
+  section, CTA, source-grounded explanation, and reader answer. Do not replace
+  the full article with a shorter summary.
 - Apply recommended edits that improve clarity, SEO, or conversion without
   adding unsupported facts.
 - Do not refuse, debate the assignment, ask questions, or print process notes.
@@ -345,6 +356,15 @@ compliance report below.
   source-grounded words and fully answer mechanism, evidence, price, setup,
   fit/not-fit, limitations, trust, and current terms. Keep alternatives to one
   compact neutral comparison section and never advocate competing products.
+- The revised Barchart device article must retain at least 80% of the current
+  article's word count and must not fall below 900 words. If a sentence cannot
+  be repaired without adding a fact, delete only that sentence and strengthen
+  neighboring sections using permitted claims, recorded prices, recorded
+  contact facts, buyer questions, and clearly labeled verification gaps.
+- Do not invent connective factual claims. In particular, do not infer risks
+  to appliances, compatibility with existing electrical systems, available
+  customer support, return rights, or comparative value unless those exact
+  facts are permitted in the sealed publication ledger.
 - If D19 is present, reconstruct instead of merely paraphrasing. Put at least
   two product-value sections before limitations. Explain sourced features,
   operation, setup, price, and best-fit readers affirmatively. Use exactly one

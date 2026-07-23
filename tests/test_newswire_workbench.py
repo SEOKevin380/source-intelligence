@@ -130,7 +130,7 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert project["stage"] == "source_ready"
     assert (
         "AUTOMATION CONTEXT VERSION: "
-        "serp-differentiation-depth-v20-ordered-review-contract"
+        "serp-differentiation-depth-v21-exemplar-assembly-contract"
         in project["source_text"]
     )
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
@@ -184,7 +184,7 @@ def test_explicit_rebuild_creates_new_project_and_preserves_source(tmp_path):
     assert engine.latest_project_from_pack(
         pack,
         "AccessNewsWire",
-        "serp-differentiation-depth-v20-ordered-review-contract",
+        "serp-differentiation-depth-v21-exemplar-assembly-contract",
     ) == rebuilt
     assert engine.latest_project_from_pack(
         pack, "AccessNewsWire", "nonexistent-future-workflow"
@@ -606,6 +606,151 @@ def test_current_workflow_executes_repair_before_final_signoff(tmp_path):
     ] == [
         "draft", "compliance", "compliance_repair", "final_signoff"
     ]
+
+
+def test_current_workflow_rejects_destructive_short_repair(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    full_article = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        + "<p>Seller materials describe the product for interested buyers.</p>"
+        * 260
+    )
+    short_repair = "<h1>Test Device Review</h1><p>Short replacement.</p>"
+    rejection = {
+        "verdict": "not_approved",
+        "mandatory_count": 1,
+        "source_accuracy": {"verified": 1, "checked": 1},
+        "mandatory_edits": [{
+            "id": "M1",
+            "category": "Source fidelity",
+            "issue": "Clarify one sentence.",
+            "exact_text": "not present",
+            "replacement": "Seller materials state this.",
+        }],
+        "recommended_edits": [],
+        "approved_elements": [],
+        "notes": [],
+        "reviewed_article_hash": "",
+    }
+
+    def writer(_prompt, project_id, purpose, vertical):
+        route = route_for(purpose, vertical)
+        engine._record_llm_call(project_id, purpose, route, 100, 100)
+        return short_repair if purpose == "compliance_repair" else full_article
+
+    reviews = {"count": 0}
+
+    def reviewer(project, final, purpose=None):
+        resolved = purpose or ("final_signoff" if final else "compliance")
+        engine._record_llm_call(
+            project["id"], resolved, route_for(resolved, project["vertical"]),
+            100, 100,
+        )
+        reviews["count"] += 1
+        if reviews["count"] == 1:
+            report = dict(rejection)
+            report["reviewed_article_hash"] = project["article_hash"]
+            return report
+        return _independent_approval(engine, project["id"])
+
+    def package(project):
+        engine._set_stage(project["id"], "package_ready")
+
+    with patch.object(engine, "_claude", side_effect=writer), patch.object(
+        engine, "_openai_review", side_effect=reviewer
+    ), patch.object(
+        engine, "_adjudicate_current", return_value=False
+    ), patch.object(engine, "_build_package", side_effect=package):
+        result = engine.run_to_completion(pid, "")
+
+    assert result["stage"] == "package_ready"
+    assert "Short replacement" not in result["article_text"]
+    events = engine.events(pid)
+    assert any(
+        item["event_type"] == "destructive_revision_rejected"
+        for item in events
+    )
+
+
+def test_reviewer_cannot_demand_affiliate_destination_explanation(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    article = (
+        '<p><strong>Paid Advertorial:</strong> Compensation may be received '
+        'if a purchase is made through links in this advertorial.</p>'
+        '<p><a href="https://partner.example/offer">'
+        '<strong>Review the current offer details</strong></a></p>'
+    )
+    report = {
+        "verdict": "not_approved",
+        "mandatory_count": 1,
+        "mandatory_edits": [{
+            "id": "M1",
+            "category": "Affiliate disclosure",
+            "issue": (
+                "Raw affiliate URL is used as an affiliate destination on a "
+                "non-public affiliate domain and must be explained."
+            ),
+            "exact_text": "Review the current offer details",
+            "replacement": "Explain the third-party affiliate destination.",
+        }],
+        "recommended_edits": [],
+        "notes": [],
+    }
+    cleaned = engine._remove_house_rule_conflicts(report, article)
+    assert cleaned["verdict"] == "approved"
+    assert cleaned["mandatory_edits"] == []
+
+
+def test_pre_signoff_does_not_spend_review_call_on_known_blocker(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    engine._set_article(
+        engine.get(pid),
+        "<h1>Test Device</h1><p>Thin copy.</p>",
+        "revised",
+        "thin.html",
+    )
+    blocked_preflight = {
+        "article": engine.get(pid)["article_text"],
+        "blockers": [{"id": "D20", "issue": "Unsupported claim."}],
+    }
+    with patch(
+        "newswire_workbench.engine.audit_article",
+        return_value=blocked_preflight,
+    ), patch.object(engine, "_openai_review") as reviewer:
+        result = engine.run_next(pid, "")
+    assert result["stage"] == "admin_review"
+    reviewer.assert_not_called()
+    assert engine.usage_summary(pid)["calls"] == 0
+    assert any(
+        item["event_type"] == "pre_signoff_blocked"
+        for item in engine.events(pid)
+    )
 
 
 def test_house_optimization_gates_never_become_publication_blockers():
