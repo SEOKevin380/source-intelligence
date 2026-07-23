@@ -10,6 +10,53 @@ CONTRACT_NAME = "mbk.source-intelligence.publication-pack"
 CONTRACT_VERSION = 1
 
 
+PLATFORM_LABELS = {
+    "accessnewswire": "Accesswire",
+    "accesswire": "Accesswire",
+    "access newswire": "Accesswire",
+    "barchart": "Barchart Advertorial",
+    "barchart advertorial": "Barchart Advertorial",
+    "newswire": "Newswire.com",
+    "newswire.com": "Newswire.com",
+    "globe": "Globe Newswire",
+    "globe newswire": "Globe Newswire",
+    "domain": "Domain Site",
+    "domain site": "Domain Site",
+}
+
+
+def normalize_platform_label(value: str, default: str = "Accesswire") -> str:
+    """Return the canonical UI label without silently changing platforms."""
+    text = str(value or "").strip()
+    return PLATFORM_LABELS.get(text.casefold(), text or default)
+
+
+def form_values_from_pack(pack: dict) -> dict:
+    """Restore every intake control from a saved publication pack.
+
+    The intake manifest is the source of truth. Product fields are used only
+    for legacy packs created before the manifest was introduced.
+    """
+    product = (pack or {}).get("product", {}) or {}
+    manifest = (pack or {}).get("intake_manifest", {}) or {}
+    return {
+        "product_url": manifest.get("product_url") or product.get("official_url", ""),
+        "product_name": manifest.get("product_name") or product.get("product_name", "Unknown"),
+        "vsl_url": manifest.get("vsl_url", ""),
+        "label_url": manifest.get("label_source_url", ""),
+        "rd_affiliate": manifest.get("affiliate_link", ""),
+        "rd_platform": normalize_platform_label(
+            manifest.get("publishing_channel")
+            or product.get("publishing_platform")
+            or product.get("publishing_channel")
+        ),
+        "rd_previous": manifest.get("previous_releases") or "FIRST RELEASE",
+        "rd_competitor": manifest.get("competitor_releases", ""),
+        "rd_client_title": manifest.get("client_locked_title", ""),
+        "rd_notes": manifest.get("operator_notes", ""),
+    }
+
+
 def _canonical_payload(pack: dict) -> bytes:
     payload = copy.deepcopy(pack)
     contract = payload.get("source_pack_contract", {})

@@ -175,17 +175,8 @@ if not st.session_state.authenticated:
 
 def _build_form_values_from_result(data):
     """Build form_values dict from a loaded result's data for the results phase."""
-    product = data.get("product", {})
-    return {
-        "product_url": product.get("official_url", ""),
-        "product_name": product.get("product_name", "Unknown"),
-        "rd_affiliate": "",
-        "rd_platform": "Barchart Advertorial",
-        "rd_previous": "FIRST RELEASE",
-        "rd_competitor": "",
-        "rd_client_title": "",
-        "rd_notes": "",
-    }
+    from source_pack_contract import form_values_from_pack
+    return form_values_from_pack(data)
 
 
 # ============================================================================
@@ -432,6 +423,7 @@ if CRM_AVAILABLE and db:
                         st.session_state.form_values = _build_form_values_from_result(
                             product_rec["research_data"]
                         )
+                        st.session_state.form_key += 1
                         st.session_state.selected_product_key = pkey
                         st.session_state.show_form = False
                         st.rerun()
@@ -465,6 +457,7 @@ else:
                         st.session_state.result_report = f.read()
                 st.session_state.result_json_path = json_path
                 st.session_state.form_values = _build_form_values_from_result(loaded_data)
+                st.session_state.form_key += 1
                 st.session_state.show_form = False
                 st.rerun()
     else:
@@ -1037,6 +1030,7 @@ elif show_form:
         st.caption("Enter product details below to generate a research-backed prompt.")
 
     fk = st.session_state.form_key
+    saved_form = st.session_state.get("form_values", {}) if is_update else {}
     update_url = ""
     update_label_url = ""
     update_notes = ""
@@ -1050,6 +1044,7 @@ elif show_form:
         with req_col1:
             product_url = st.text_input(
                 "Product URL",
+                value=saved_form.get("product_url", ""),
                 placeholder="https://product-website.com/",
                 help="The main product sales page URL",
                 key=f"product_url_{fk}",
@@ -1057,6 +1052,7 @@ elif show_form:
         with req_col2:
             product_name = st.text_input(
                 "Product Name",
+                value=saved_form.get("product_name", ""),
                 placeholder="Memovance PRO",
                 help="Exact product name as displayed on the site",
                 key=f"product_name_{fk}",
@@ -1066,15 +1062,26 @@ elif show_form:
         with req_col3:
             rd_affiliate = st.text_input(
                 "Affiliate Link",
+                value=saved_form.get("rd_affiliate", ""),
                 placeholder="https://doctortrusted.org/product",
                 help="Your tracking/affiliate URL for this product",
                 key=f"rd_affiliate_{fk}",
             )
         with req_col4:
-            rd_platform = st.selectbox(
+            _platform_options = [
+                "Accesswire", "Barchart Advertorial", "Newswire.com",
+                "Globe Newswire", "Domain Site",
+            ]
+            _saved_platform = saved_form.get("rd_platform", "Accesswire")
+            _platform_index = (
+                _platform_options.index(_saved_platform)
+                if _saved_platform in _platform_options else 0
+            )
+            rd_platform = st.radio(
                 "Publishing Platform",
-                ["Barchart Advertorial", "Accesswire", "Newswire.com",
-                 "Globe Newswire", "Domain Site"],
+                _platform_options,
+                index=_platform_index,
+                horizontal=True,
                 key=f"rd_platform_{fk}",
             )
 
@@ -1084,37 +1091,42 @@ elif show_form:
             with opt_col1:
                 vsl_url = st.text_input(
                     "VSL URL",
+                    value=saved_form.get("vsl_url", ""),
                     placeholder="https://product.com/vsl-page",
                     help="Video sales letter page if separate from main product page",
                     key=f"vsl_url_{fk}",
                 )
                 label_url = st.text_input(
                     "Label Image URL",
+                    value=saved_form.get("label_url", ""),
                     placeholder="https://example.com/supplement-facts-label.png",
                     help="Direct URL to a supplement facts label image for OCR extraction",
                     key=f"label_url_{fk}",
                 )
                 rd_previous = st.text_input(
                     "Previous Release(s)",
-                    value="FIRST RELEASE",
+                    value=saved_form.get("rd_previous", "FIRST RELEASE"),
                     help="URLs of your previous articles about this product (comma-separated)",
                     key=f"rd_previous_{fk}",
                 )
             with opt_col2:
                 rd_competitor = st.text_input(
                     "Competitor Release(s)",
+                    value=saved_form.get("rd_competitor", ""),
                     placeholder="https://competitor.com/their-review",
                     help="URLs of competitor articles about this product",
                     key=f"rd_competitor_{fk}",
                 )
                 rd_client_title = st.text_input(
                     "Client Locked Title",
+                    value=saved_form.get("rd_client_title", ""),
                     placeholder="Leave blank unless client requires a specific title",
                     help="If the client mandates a specific headline",
                     key=f"rd_client_title_{fk}",
                 )
                 rd_notes = st.text_area(
                     "Notes",
+                    value=saved_form.get("rd_notes", ""),
                     placeholder="Verified contact info, special instructions, extra context...",
                     height=100,
                     help="Any additional context for the research engine",
@@ -1214,7 +1226,7 @@ elif show_form:
         submitted_label_url = (
             update_label_url.strip()
             if is_update and update_label_url and update_label_url.strip()
-            else (label_url.strip() if label_url else "")
+            else ("" if is_update else (label_url.strip() if label_url else ""))
         )
 
         # Handle label image — from URL
@@ -1663,6 +1675,7 @@ else:
         if st.button("Update Report", use_container_width=True):
             st.session_state.update_mode = True
             st.session_state.show_form = True
+            st.session_state.form_key += 1
             st.rerun()
 
     # Quick stats bar
