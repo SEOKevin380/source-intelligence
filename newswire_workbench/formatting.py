@@ -1,5 +1,6 @@
 """Mechanical MBK HTML normalization without rewriting editorial text."""
 
+import html as html_lib
 import re
 
 from bs4 import BeautifulSoup, NavigableString
@@ -13,8 +14,72 @@ def _even_indices(total, wanted):
     return {round(i * (total - 1) / (wanted - 1)) for i in range(wanted)}
 
 
+def ensure_article_html(value):
+    """Remove model fences and convert plain-text drafts to article-body HTML."""
+    value = (value or "").strip()
+    value = re.sub(r"^\s*```(?:html|markdown|md)?\s*", "", value, flags=re.I)
+    value = re.sub(r"\s*```\s*$", "", value).strip()
+    if not value:
+        return value
+
+    # Already-structured output only needs the fence removed.
+    if re.search(r"<(?:p|h[1-6]|ul|ol|li|div|blockquote)\b", value, re.I):
+        return value
+
+    blocks = [
+        re.sub(r"\s*\n\s*", " ", block).strip()
+        for block in re.split(r"\n\s*\n+", value)
+        if block.strip()
+    ]
+    rendered = []
+    heading_markers = (
+        "what ", "why ", "how ", "who ", "where ", "when ", "key ",
+        "service ", "investment ", "the marketing", "getting more",
+        "pricing", "risk", "material limitations", "frequently asked",
+        "contact", "bottom line",
+    )
+    for block in blocks:
+        markdown_heading = re.match(r"^#{1,6}\s+(.+)$", block)
+        if markdown_heading:
+            block = markdown_heading.group(1).strip()
+        is_heading = bool(
+            len(block) <= 120
+            and not re.search(r"[.!?]$", block)
+            and (
+                markdown_heading
+                or block.casefold().startswith(heading_markers)
+                or block.istitle()
+            )
+        )
+        if is_heading:
+            rendered.append(
+                f"<h2><strong>{html_lib.escape(block)}</strong></h2>"
+            )
+            continue
+
+        lines = [
+            line.strip() for line in re.split(r"\n+", block) if line.strip()
+        ]
+        if len(lines) >= 2 and all(
+            re.match(r"^(?:[-*•]|\d+[.)])\s+", line) for line in lines
+        ):
+            items = [
+                re.sub(r"^(?:[-*•]|\d+[.)])\s+", "", line)
+                for line in lines
+            ]
+            rendered.append(
+                "<ul>" + "".join(
+                    f"<li>{html_lib.escape(item)}</li>" for item in items
+                ) + "</ul>"
+            )
+        else:
+            rendered.append(f"<p>{html_lib.escape(block)}</p>")
+    return "\n".join(rendered)
+
+
 def normalize_master_html(html, word_count):
     """Normalize heading/CTA bolding and cap persuasive emphasis naturally."""
+    html = ensure_article_html(html)
     soup = BeautifulSoup(html, "html.parser")
     target = 10 if word_count < 1600 else 11 if word_count < 2200 else 12
 
@@ -152,6 +217,7 @@ def ensure_affiliate_links(html, href, target=5):
 
 def repair_publication_gates(html, platform, vertical, affiliate_href=""):
     """Apply deterministic publication fixes without changing factual meaning."""
+    html = ensure_article_html(html)
     soup = BeautifulSoup(html, "html.parser")
 
     # WordPress stores the release title separately.

@@ -26,6 +26,17 @@ def detect_vertical(source_text: str) -> str:
 
 def generation_prompt(source_text: str, platform: str, vertical: str,
                       master_instructions: str) -> str:
+    depth_contract = (
+        "For an AccessNewsWire financial newsletter/research review, target "
+        "2,200–3,000 useful words when the supplied source record supports it. "
+        "Cover who, what, why, how, how much, access, fit, limitations, trust "
+        "questions, and the advertiser's specific thesis. Do not pad with "
+        "generic investing advice."
+        if platform == "AccessNewsWire" and vertical == "financial"
+        else
+        "Use the length needed to answer the reader's material questions fully; "
+        "never add filler merely to reach a word count."
+    )
     return f"""You are the first-draft writer in a multi-stage editorial system.
 
 Create a complete, publishable {platform} advertorial draft from the supplied
@@ -46,6 +57,7 @@ Operating rules:
   pause, ask questions, or request operator approval.
 - Write in plain English, use scannable formatting, and maximize defensible
   SEO and conversion value.
+- Editorial depth contract: {depth_contract}
 - Keep the opening disclosure concise: “Paid Advertorial: A commission may be
   earned when a purchase is made through links in this article.” Do not explain
   link routing, intermediary domains, or tracking mechanics to the reader.
@@ -145,6 +157,11 @@ Review all applicable categories:
     CTA anchor text is explicitly STRONG, 10–14 non-heading
     STRONG.key-takeaway phrases,
     and 5–6 strategic links in AccessNewsWire long-form copy.
+13. Editorial depth: an AccessNewsWire financial newsletter/research review
+    should ordinarily provide 2,200–3,000 useful words when the source record
+    supports that depth. Flag generic padding, but also flag a thin draft that
+    fails to answer who, what, why, how, how much, access, fit, limitations,
+    trust questions, and the advertiser's specific thesis.
 
 Return JSON only matching this shape:
 {{
@@ -206,6 +223,9 @@ compliance report below.
 - Preserve the exact MBK HTML contract: no body H1; every H2/H3 and CTA anchor
   contains STRONG; 10–14 additional STRONG.key-takeaway phrases; 5–6 strategic links for
   AccessNewsWire long form; and a scannable contact block.
+- If this is an AccessNewsWire financial newsletter/research review, build
+  toward 2,200–3,000 useful, source-grounded words. Expand missing reader
+  questions and product-specific analysis, never generic investment filler.
 
 LEARNED ISSUE MEMORY:
 {memory}

@@ -6,6 +6,21 @@ import re
 
 PROMPT_VERSION = "newswire-v1.1"
 
+PUBLICATION_BLOCKER_IDS = frozenset({
+    "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "D17",
+})
+
+
+def partition_findings(findings):
+    """Return material blockers separately from repairable quality findings."""
+    blockers, recommendations = [], []
+    for item in findings or []:
+        (
+            blockers if item.get("id") in PUBLICATION_BLOCKER_IDS
+            else recommendations
+        ).append(item)
+    return blockers, recommendations
+
 
 def issue_fingerprint(category, issue):
     normalized = re.sub(r"[^a-z0-9]+", " ", f"{category} {issue}".casefold()).strip()
@@ -32,6 +47,15 @@ def deterministic_findings(article, platform, vertical):
     """Return non-negotiable mechanical issues before model judgment."""
     findings = []
     lowered = article.casefold()
+    if re.search(r"^\s*```|```\s*$", article, re.I) or not re.search(
+        r"<(?:p|h[1-6]|ul|ol|li|div|blockquote)\b", article, re.I
+    ):
+        findings.append({
+            "id": "D17", "category": "Submission HTML gate",
+            "issue": "The deliverable is fenced Markdown or unstructured plain text.",
+            "exact_text": "```html" if "```" in article else "",
+            "replacement": "Remove code fences and convert the complete draft to article-body HTML.",
+        })
     if "advertorial" not in lowered[:1200]:
         findings.append({
             "id": "D1", "category": "Deterministic disclosure gate",
@@ -94,6 +118,20 @@ def deterministic_findings(article, platform, vertical):
         })
     links = list(re.finditer(r"<a\b[^>]*href=[\"'][^\"']+[\"'][^>]*>", article, re.I))
     word_count = len(re.findall(r"\b[\w’'-]+\b", re.sub(r"<[^>]+>", " ", article)))
+    if platform == "AccessNewsWire" and vertical == "financial" and word_count < 2200:
+        findings.append({
+            "id": "D18", "category": "Editorial depth gate",
+            "issue": (
+                f"Financial AccessNewsWire draft is only {word_count} words; "
+                "it needs deeper product-specific reader-question coverage."
+            ),
+            "exact_text": "",
+            "replacement": (
+                "Expand toward 2,200–3,000 useful source-grounded words covering "
+                "who, what, why, how, cost, access, fit, limitations, trust, and "
+                "the advertiser's specific thesis without generic filler."
+            ),
+        })
     if links and links[0].start() > max(1200, len(article) // 4):
         findings.append({
             "id": "D10", "category": "CTA distribution gate",

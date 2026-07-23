@@ -5,9 +5,10 @@ import pytest
 
 from newswire_workbench.engine import WorkbenchEngine
 from newswire_workbench.prompts import detect_vertical
-from newswire_workbench.learning import deterministic_findings
+from newswire_workbench.learning import deterministic_findings, partition_findings
 from newswire_workbench.wordpress import WordPressDraftPublisher
 from newswire_workbench.formatting import (
+    ensure_article_html,
     ensure_affiliate_links,
     normalize_master_html,
     repair_publication_gates,
@@ -20,6 +21,28 @@ def test_vertical_detection_is_category_aware():
     assert detect_vertical("investment stock newsletter") == "financial"
     assert detect_vertical("commemorative gold-plated coin") == "collectible"
     assert detect_vertical("supplement facts serving size") == "health"
+
+
+def test_fenced_plain_text_is_converted_to_submission_html():
+    raw = """```html
+This is a paid advertorial.
+
+Key Takeaway Summary
+
+Readers should verify current terms.
+
+What the Service Offers
+
+The service publishes general market research.
+```"""
+    converted = ensure_article_html(raw)
+    assert "```" not in converted
+    assert "<p>This is a paid advertorial.</p>" in converted
+    assert "<h2><strong>Key Takeaway Summary</strong></h2>" in converted
+    assert "<h2><strong>What the Service Offers</strong></h2>" in converted
+    assert deterministic_findings(
+        converted, "Barchart Advertorial", "general_consumer"
+    )[0]["id"] != "D17"
 
 
 def test_zero_cost_auth_failure_does_not_consume_call_ceiling(tmp_path):
@@ -59,7 +82,7 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert first == second
     project = engine.get(first)
     assert project["stage"] == "source_ready"
-    assert "AUTOMATION CONTEXT VERSION: approved-exemplars-v1" in project["source_text"]
+    assert "AUTOMATION CONTEXT VERSION: approved-exemplars-depth-v2" in project["source_text"]
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
     assert any(e["event_type"] == "sealed_source_pack_imported" for e in engine.events(first))
 
@@ -576,9 +599,10 @@ def test_deterministic_publication_defects_self_repair_without_admin(tmp_path):
     ) is True
     updated = engine.get(pid)
     assert updated["stage"] == "signed_off"
-    assert deterministic_findings(
+    findings = deterministic_findings(
         updated["article_text"], "AccessNewsWire", "financial"
-    ) == []
+    )
+    assert partition_findings(findings)[0] == []
 
 
 def test_publication_gate_repair_hides_raw_url_and_adds_required_structure():
@@ -595,9 +619,10 @@ def test_publication_gate_repair_hides_raw_url_and_adds_required_structure():
         "financial",
         "https://partner.example/offer",
     )
-    assert deterministic_findings(
+    findings = deterministic_findings(
         repaired, "AccessNewsWire", "financial"
-    ) == []
+    )
+    assert partition_findings(findings)[0] == []
     assert "https://partner.example/offer</a>" not in repaired
     assert repaired.count('href="https://partner.example/offer"') == 5
 
@@ -627,9 +652,10 @@ def test_legacy_mechanical_admin_project_recovers_and_resumes(tmp_path):
     assert engine._recover_mechanical_admin_review(pid) is True
     recovered = engine.get(pid)
     assert recovered["stage"] == "signed_off"
-    assert deterministic_findings(
+    findings = deterministic_findings(
         recovered["article_text"], recovered["platform"], recovered["vertical"]
-    ) == []
+    )
+    assert partition_findings(findings)[0] == []
 
 
 def test_reviewer_house_rule_conflicts_cannot_block(tmp_path):

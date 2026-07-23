@@ -19,9 +19,10 @@ from .prompts import (
 )
 from .learning import (
     PROMPT_VERSION, deterministic_findings, issue_fingerprint,
-    learned_guidance,
+    learned_guidance, partition_findings,
 )
 from .formatting import (
+    ensure_article_html,
     ensure_affiliate_links,
     normalize_master_html,
     repair_publication_gates,
@@ -29,23 +30,7 @@ from .formatting import (
 from .routing import estimated_cost, route_for
 
 
-WORKBENCH_SOURCE_CONTEXT_VERSION = "approved-exemplars-v1"
-
-# Only defects that can materially mislead a reader or expose internal
-# production data may stop packaging.  House formatting and conversion targets
-# remain visible quality findings, but a non-exact count must never strand a VA.
-PUBLICATION_BLOCKER_IDS = {
-    "D1",  # paid advertorial label
-    "D2",  # internal production language
-    "D3",  # misleading official-destination CTA
-    "D4",  # first-person affiliate disclosure
-    "D5",  # missing passive affiliate disclosure
-    "D6",  # financial outcome-guarantee wording
-    "D7",  # missing investment-loss warning
-    "D8",  # exposed raw affiliate URL
-    "D9",  # exposed intermediary-routing mechanics
-}
-
+WORKBENCH_SOURCE_CONTEXT_VERSION = "approved-exemplars-depth-v2"
 
 STAGES = (
     "source_ready",
@@ -292,11 +277,40 @@ class WorkbenchEngine:
         p = self.get(project_id)
         if p["stage"] != "package_ready" or p["last_report"].get("verdict") != "approved":
             raise RuntimeError("Only a currently approved submission package can be sent to WordPress")
+        repaired = repair_publication_gates(
+            p["article_text"],
+            p["platform"],
+            p["vertical"],
+            (
+                re.search(r"(?im)^AFFILIATE LINK:\s*(\S+)", p["source_text"])
+                or [None, ""]
+            )[1],
+        )
+        if repaired != p["article_text"]:
+            digest = _hash(
+                (p.get("release_title") or p["title"]) + "\n" + repaired
+            )
+            report = dict(p["last_report"])
+            report["reviewed_article_hash"] = digest
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE projects SET article_text=?,article_hash=?,"
+                    "last_report=?,updated_at=? WHERE id=?",
+                    (
+                        repaired, digest, json.dumps(report),
+                        _now(), project_id,
+                    ),
+                )
+            self._write(
+                project_id, "11-wordpress-handoff-normalized.html", repaired
+            )
+            self._event(
+                project_id, "wordpress_handoff_normalized", "package_ready",
+                digest, {"reason": "submission_html_and_house_format"},
+            )
+            p = self.get(project_id)
         findings = deterministic_findings(p["article_text"], p["platform"], p["vertical"])
-        blockers = [
-            item for item in findings
-            if item.get("id") in PUBLICATION_BLOCKER_IDS
-        ]
+        blockers, _ = partition_findings(findings)
         if blockers:
             raise RuntimeError(
                 "The approved article has a current publication blocker and must "
@@ -736,12 +750,10 @@ class WorkbenchEngine:
             existing = report.setdefault("mandatory_edits", [])
             existing_ids = {item.get("id") for item in existing}
             for item in deterministic:
-                if (
-                    item["id"] in PUBLICATION_BLOCKER_IDS
-                    and item["id"] not in existing_ids
-                ):
+                blockers, _ = partition_findings([item])
+                if blockers and item["id"] not in existing_ids:
                     existing.append(item)
-                elif item["id"] not in PUBLICATION_BLOCKER_IDS:
+                elif not blockers:
                     report.setdefault("recommended_edits", []).append(item)
             report["mandatory_count"] = len(existing)
             report["verdict"] = "not_approved" if existing else "approved"
@@ -825,7 +837,7 @@ class WorkbenchEngine:
         return report
 
     def _set_article(self, p, article, stage, filename, bump=False):
-        article = article.strip()
+        article = ensure_article_html(article)
         if not article:
             raise ValueError("Model returned an empty article")
         title = p.get("release_title") or p["title"]
@@ -1065,14 +1077,7 @@ class WorkbenchEngine:
         findings = deterministic_findings(
             p["article_text"], p["platform"], p["vertical"]
         )
-        blockers = [
-            item for item in findings
-            if item.get("id") in PUBLICATION_BLOCKER_IDS
-        ]
-        quality_warnings = [
-            item for item in findings
-            if item.get("id") not in PUBLICATION_BLOCKER_IDS
-        ]
+        blockers, quality_warnings = partition_findings(findings)
         if blockers:
             self._set_stage(project_id, "admin_review")
             self._event(
