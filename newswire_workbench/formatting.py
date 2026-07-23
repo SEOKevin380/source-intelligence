@@ -130,6 +130,23 @@ def ensure_affiliate_links(html, href, target=5):
         position = round((len(matching) + 1) * (len(headings) - 1) / (target + 1))
         headings[min(position, len(headings) - 1)].insert_after(cta(len(matching)))
         matching.append(True)
+    # Thin or mechanically normalized drafts may not retain enough headings.
+    # Distribute remaining CTAs across substantive paragraphs instead of
+    # treating missing headings as an admin-level problem.
+    paragraphs = [
+        p for p in soup.find_all("p")
+        if not p.find("a") and len(p.get_text(" ", strip=True)) >= 25
+    ]
+    used_positions = set()
+    while len(matching) < target and paragraphs:
+        position = round(
+            len(matching) * (len(paragraphs) - 1) / max(target - 1, 1)
+        )
+        while position in used_positions and position + 1 < len(paragraphs):
+            position += 1
+        used_positions.add(position)
+        paragraphs[position].insert_after(cta(len(matching)))
+        matching.append(True)
     return str(soup)
 
 

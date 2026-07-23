@@ -310,24 +310,10 @@ class WorkbenchEngine:
         raise RuntimeError("Workflow exceeded its safety step limit")
 
     def _recover_mechanical_admin_review(self, project_id):
-        """Resume legacy admin jobs that contain only deterministic defects."""
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT event_type,payload FROM events WHERE project_id=? "
-                "ORDER BY id DESC LIMIT 1",
-                (project_id,),
-            ).fetchone()
-        if not row or row["event_type"] != "adjudication_unresolved":
-            return False
-        try:
-            payload = json.loads(row["payload"] or "{}")
-        except (TypeError, json.JSONDecodeError):
-            return False
-        findings = payload.get("findings") or []
-        if not findings or any(
-            not str(item.get("id", "")).startswith("D")
-            for item in findings if isinstance(item, dict)
-        ):
+        """Resume legacy admin jobs unless a typed source conflict is present."""
+        p = self.get(project_id)
+        report = p.get("last_report") or {}
+        if self._report_has_true_source_conflict(report):
             return False
 
         target = (
@@ -335,8 +321,14 @@ class WorkbenchEngine:
             if self._billable_call_count(project_id, "post_seo_signoff") > 0
             else "signed_off"
         )
-        # _complete_adjudicated_signoff now repairs all bounded deterministic
-        # gates before deciding whether a genuine human judgment is needed.
+        if report.get("mandatory_edits"):
+            self._adjudicate_current(
+                p, report,
+                target_stage=(
+                    "seo_repaired" if target == "post_seo_signed_off"
+                    else "revised"
+                ),
+            )
         recovered = self._complete_adjudicated_signoff(
             project_id, target, "admin-mechanical-recovery.json"
         )
@@ -344,7 +336,9 @@ class WorkbenchEngine:
             p = self.get(project_id)
             self._event(
                 project_id, "mechanical_admin_recovered", p["stage"],
-                p["article_hash"], {"previous_findings": findings},
+                p["article_hash"], {
+                    "reason": "legacy admin state contained no typed source conflict"
+                },
             )
         return recovered
 
@@ -436,20 +430,33 @@ class WorkbenchEngine:
                 return self.get(project_id)
             report = self._openai_review(p, final=True, purpose="final_signoff")
             if report.get("verdict") != "approved":
-                if p["revision_round"] >= 2:
-                    if self._adjudication_count(p["id"]) < 2:
-                        self._set_report(p, report, "revised", "04-openai-signoff.json")
-                        if self._adjudicate_current(self.get(p["id"]), report):
-                            self._complete_adjudicated_signoff(
-                                p["id"], "signed_off",
-                                "04-adjudicated-signoff.json",
-                            )
-                        else:
-                            self._set_stage(p["id"], "admin_review")
-                    else:
-                        self._set_report(p, report, "admin_review", "04-openai-signoff.json")
+                repair_route = route_for("compliance_repair", p["vertical"])
+                if (
+                    self._billable_call_count(p["id"], "compliance_repair")
+                    < repair_route.max_calls
+                ):
+                    self._set_report(
+                        p, report, "compliance_reviewed",
+                        "04-openai-signoff.json",
+                    )
+                elif self._report_has_true_source_conflict(report):
+                    self._set_report(
+                        p, report, "admin_review",
+                        "04-source-conflict.json",
+                    )
+                    self._event(
+                        p["id"], "source_conflict_escalated", "admin_review",
+                        p["article_hash"], {"report": report},
+                    )
                 else:
-                    self._set_report(p, report, "compliance_reviewed", "04-openai-signoff.json")
+                    self._set_report(
+                        p, report, "revised", "04-openai-signoff.json"
+                    )
+                    self._adjudicate_current(self.get(p["id"]), report)
+                    self._complete_adjudicated_signoff(
+                        p["id"], "signed_off",
+                        "04-adjudicated-signoff.json",
+                    )
             else:
                 self._set_report(p, report, "signed_off", "04-openai-signoff.json")
         elif stage == "signed_off":
@@ -488,21 +495,34 @@ class WorkbenchEngine:
             report = self._openai_review(p, final=True, purpose="post_seo_signoff")
             if report.get("verdict") == "approved":
                 self._set_report(p, report, "post_seo_signed_off", "08-openai-post-seo-signoff.json")
-            elif p["revision_round"] < 2:
-                self._set_report(p, report, "seo_repair_needed", "08-openai-post-seo-signoff.json")
-            elif self._adjudication_count(p["id"]) < 4:
-                self._set_report(p, report, "seo_repaired", "08-openai-post-seo-signoff.json")
-                if self._adjudicate_current(
-                    self.get(p["id"]), report, target_stage="seo_repaired"
-                ):
-                    self._complete_adjudicated_signoff(
-                        p["id"], "post_seo_signed_off",
-                        "08-adjudicated-post-seo-signoff.json",
-                    )
-                else:
-                    self._set_stage(p["id"], "admin_review")
+            elif (
+                self._billable_call_count(p["id"], "seo_repair")
+                < route_for("seo_repair", p["vertical"]).max_calls
+            ):
+                self._set_report(
+                    p, report, "seo_repair_needed",
+                    "08-openai-post-seo-signoff.json",
+                )
+            elif self._report_has_true_source_conflict(report):
+                self._set_report(
+                    p, report, "admin_review", "08-source-conflict.json"
+                )
+                self._event(
+                    p["id"], "source_conflict_escalated", "admin_review",
+                    p["article_hash"], {"report": report},
+                )
             else:
-                self._set_report(p, report, "admin_review", "08-openai-post-seo-signoff.json")
+                self._set_report(
+                    p, report, "seo_repaired",
+                    "08-openai-post-seo-signoff.json",
+                )
+                self._adjudicate_current(
+                    self.get(p["id"]), report, target_stage="seo_repaired"
+                )
+                self._complete_adjudicated_signoff(
+                    p["id"], "post_seo_signed_off",
+                    "08-adjudicated-post-seo-signoff.json",
+                )
         elif stage == "post_seo_signed_off":
             self._build_package(p)
         return self.get(project_id)
@@ -851,10 +871,31 @@ class WorkbenchEngine:
             "promotional offer", "paid placement",
         ))
 
+    @staticmethod
+    def _report_has_true_source_conflict(report):
+        """Only contradictory source records—not editorial friction—need admin."""
+        for item in report.get("mandatory_edits", []) or []:
+            combined = " ".join(str(item.get(key, "")) for key in (
+                "category", "issue", "exact_text", "replacement"
+            )).casefold()
+            contradiction = any(term in combined for term in (
+                "source contradiction", "conflicting source",
+                "sources conflict", "contradictory source",
+            ))
+            cannot_resolve = any(term in combined for term in (
+                "cannot determine which", "requires source owner",
+                "requires client clarification",
+            ))
+            if contradiction and cannot_resolve:
+                return True
+        return False
+
     def _adjudicate_current(self, p, report, target_stage="revised"):
         """Apply safe exact reviewer edits while rejecting stale/contradictory ones."""
         article = p["article_text"]
         original = article
+        release_title = p.get("release_title") or p["title"]
+        original_title = release_title
         applied, skipped = [], []
         for item in report.get("mandatory_edits", []) or []:
             exact = str(item.get("exact_text", "") or "")
@@ -863,7 +904,13 @@ class WorkbenchEngine:
                 "This advertorial may receive compensation if readers click the partner link and subscribe.",
                 "Compensation may be received if a subscription is purchased through the partner link in this advertorial.",
             )
-            if not exact or exact not in article:
+            title_match = bool(
+                exact and (
+                    exact.strip() == release_title.strip()
+                    or re.sub(r"<[^>]+>", "", exact).strip() == release_title.strip()
+                )
+            )
+            if not exact or (exact not in article and not title_match):
                 skipped.append({"id": item.get("id"), "reason": "exact_text_not_current"})
                 continue
             if re.fullmatch(r"Priority code\s+[A-Z0-9-]+\s+may apply\.", exact, re.I):
@@ -874,7 +921,17 @@ class WorkbenchEngine:
             if self._unsafe_reviewer_replacement(replacement):
                 skipped.append({"id": item.get("id"), "reason": "replacement_conflicts_with_house_rules"})
                 continue
-            article = article.replace(exact, replacement, 1)
+            if title_match:
+                cleaned_title = re.sub(r"<[^>]+>", "", replacement).strip()
+                if not cleaned_title:
+                    skipped.append({
+                        "id": item.get("id"),
+                        "reason": "title_cannot_be_empty",
+                    })
+                    continue
+                release_title = cleaned_title
+            else:
+                article = article.replace(exact, replacement, 1)
             applied.append(item.get("id"))
 
         # Remove source-advertiser urgency wording even when a reviewer points
@@ -889,19 +946,24 @@ class WorkbenchEngine:
                 applied.append("house_urgency_rewrite")
 
         source_hash = p["article_hash"]
-        result_hash = _hash(article) if article != original else ""
+        changed = article != original or release_title != original_title
+        result_hash = _hash(release_title + "\n" + article) if changed else ""
         payload = {"applied": applied, "skipped": skipped, "prompt_version": PROMPT_VERSION}
         with self._connect() as conn:
             conn.execute(
                 "INSERT INTO adjudications(project_id,source_article_hash,result_article_hash,applied_count,skipped_count,payload,created_at) VALUES(?,?,?,?,?,?,?)",
                 (p["id"], source_hash, result_hash, len(applied), len(skipped), json.dumps(payload), _now()),
             )
-        if article == original:
+        if not changed:
             return False
         with self._connect() as conn:
             conn.execute(
-                "UPDATE projects SET article_text=?,article_hash=?,stage=?,updated_at=? WHERE id=?",
-                (article, result_hash, target_stage, _now(), p["id"]),
+                "UPDATE projects SET release_title=?,article_text=?,article_hash=?,"
+                "stage=?,updated_at=? WHERE id=?",
+                (
+                    release_title, article, result_hash, target_stage,
+                    _now(), p["id"],
+                ),
             )
         self._write(p["id"], "07-adjudicated-revision.html", article)
         self._event(p["id"], "adjudicated_revision", target_stage, result_hash, payload)

@@ -320,6 +320,70 @@ def test_adjudicator_applies_exact_fixes_and_rejects_bad_platform_attribution(tm
     assert "AccessNewsWire may receive" not in updated
 
 
+def test_adjudicator_can_repair_separately_stored_release_title(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "America's #1 Stock", "AccessNewsWire",
+        "financial newsletter source", "financial",
+    )
+    engine.import_manual_article(
+        pid,
+        "<p><strong>Paid Advertorial</strong></p>"
+        "<p>Investing involves risk, including loss of principal.</p>",
+    )
+    p = engine.get(pid)
+    old_hash = p["article_hash"]
+    report = {"mandatory_edits": [{
+        "id": "TITLE1",
+        "category": "Title accuracy",
+        "issue": "Avoid an unsupported superlative in the editorial title.",
+        "exact_text": "America's #1 Stock",
+        "replacement": "Jim Woods Forecasts & Strategies Review",
+    }]}
+    assert engine._adjudicate_current(p, report) is True
+    updated = engine.get(pid)
+    assert updated["release_title"] == "Jim Woods Forecasts & Strategies Review"
+    assert updated["article_hash"] != old_hash
+    assert updated["article_hash"] == __import__("hashlib").sha256(
+        (
+            updated["release_title"] + "\n" + updated["article_text"]
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def test_legacy_reviewer_admin_state_recovers_without_global_counters(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "America's #1 Stock", "AccessNewsWire",
+        "AFFILIATE LINK: https://partner.example/offer",
+        "financial",
+    )
+    engine.import_manual_article(
+        pid,
+        "<p><strong>Paid Advertorial</strong></p>"
+        "<p>Investing involves risk, including loss of principal.</p>"
+        + ("<p>Useful sourced newsletter information for readers.</p>" * 320),
+    )
+    p = engine.get(pid)
+    report = {
+        "verdict": "not_approved",
+        "mandatory_count": 1,
+        "mandatory_edits": [{
+            "id": "TITLE1", "category": "Title accuracy",
+            "issue": "Editorial title needs qualification.",
+            "exact_text": "America's #1 Stock",
+            "replacement": "Jim Woods Forecasts & Strategies Review",
+        }],
+        "recommended_edits": [], "approved_elements": [],
+        "notes": [], "reviewed_article_hash": p["article_hash"],
+    }
+    engine._set_report(p, report, "admin_review", "legacy-admin.json")
+    assert engine._recover_mechanical_admin_review(pid) is True
+    recovered = engine.get(pid)
+    assert recovered["stage"] == "signed_off"
+    assert recovered["release_title"] == "Jim Woods Forecasts & Strategies Review"
+
+
 def test_adjudicated_article_advances_without_third_paid_signoff(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     pid = engine.create_project("Test", "Barchart Advertorial", "financial source", "financial")
