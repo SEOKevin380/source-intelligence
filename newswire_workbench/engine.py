@@ -39,7 +39,7 @@ from .execution_budget import (
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v22-authoritative-project-binding"
+    "serp-differentiation-depth-v23-continuous-run-authority"
 )
 
 STAGES = (
@@ -142,13 +142,12 @@ class WorkbenchEngine:
 
     @staticmethod
     def _uses_locked_call_path(project):
+        # Safety policy is immutable across deployments. A version bump may
+        # select a newer project, but it must never reclassify an older sealed
+        # project as legacy and reopen rescue/war-room paid routes.
         return (
             "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══"
             in project["source_text"]
-            and (
-                "AUTOMATION CONTEXT VERSION: "
-                + WORKBENCH_SOURCE_CONTEXT_VERSION
-            ) in project["source_text"]
         )
 
     def _init_db(self):
@@ -389,9 +388,59 @@ class WorkbenchEngine:
                     pack, platform, vertical=resolved_vertical, force_new=True
                 )
             return existing["id"]
-        pid = self.create_project(
-            title, platform, source_text, resolved_vertical
-        )
+        # Claim the one active project for this exact pack/platform/workflow
+        # inside a write transaction. Multiple Streamlit tabs must converge on
+        # the same run instead of creating competing "authoritative" projects.
+        fact_source_hash = str(
+            (pack.get("source_pack_contract") or {}).get("sha256") or ""
+        ).strip()
+        pid = ""
+        created = False
+        now = _now()
+        with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            active = conn.execute(
+                """SELECT id FROM projects
+                WHERE fact_source_hash=? AND platform=?
+                AND source_text LIKE ?
+                AND stage IN (
+                    'source_ready','drafted','compliance_reviewed','revised',
+                    'signed_off','seo_optimized','seo_repair_needed',
+                    'seo_repaired','post_seo_signed_off'
+                )
+                ORDER BY created_at DESC, updated_at DESC, rowid DESC
+                LIMIT 1""",
+                (
+                    fact_source_hash,
+                    platform,
+                    "%AUTOMATION CONTEXT VERSION: "
+                    + WORKBENCH_SOURCE_CONTEXT_VERSION + "%",
+                ),
+            ).fetchone()
+            if active:
+                pid = active["id"]
+            else:
+                pid = uuid.uuid4().hex[:12]
+                conn.execute(
+                    """INSERT INTO projects
+                    (id,title,release_title,platform,vertical,stage,source_text,
+                     source_hash,fact_source_hash,article_text,article_hash,
+                     last_report,revision_round,run_token,run_started_at,
+                     created_at,updated_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        pid, title, title, platform, resolved_vertical,
+                        "source_ready", source_text, source_hash,
+                        fact_source_hash, "", "", "{}", 0, "", "", now, now,
+                    ),
+                )
+                created = True
+        if not created:
+            return pid
+        self._event(pid, "project_created", "source_ready", "", {
+            "source_hash": source_hash, "vertical": resolved_vertical,
+        })
+        self._write(pid, "00-source-record.txt", source_text)
         self._event(pid, "sealed_source_pack_imported", "source_ready", "", {
             "contract": pack["source_pack_contract"],
             "automation_context_version": WORKBENCH_SOURCE_CONTEXT_VERSION,
@@ -630,6 +679,26 @@ class WorkbenchEngine:
             pack, platform, workflow_version
         )
 
+    def _is_authoritative_project_context(self, project):
+        """Recheck durable authority during a run, not only at button click."""
+        if not self._uses_locked_call_path(project):
+            return True
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT id FROM projects
+                WHERE fact_source_hash=? AND platform=?
+                AND source_text LIKE ?
+                ORDER BY created_at DESC, updated_at DESC, rowid DESC
+                LIMIT 1""",
+                (
+                    project["fact_source_hash"],
+                    project["platform"],
+                    "%AUTOMATION CONTEXT VERSION: "
+                    + WORKBENCH_SOURCE_CONTEXT_VERSION + "%",
+                ),
+            ).fetchone()
+        return bool(row and row["id"] == project["id"])
+
     def events(self, project_id):
         with self._connect() as conn:
             rows = conn.execute(
@@ -761,6 +830,18 @@ class WorkbenchEngine:
         no_progress = 0
         for _ in range(max_steps):
             project = self.get(project_id)
+            if not self._is_authoritative_project_context(project):
+                self._event(
+                    project_id,
+                    "run_superseded_by_newer_project",
+                    project["stage"],
+                    project["article_hash"],
+                    {
+                        "paid_calls": self.usage_summary(project_id)["calls"],
+                        "operator_decision_required": False,
+                    },
+                )
+                return project
             usage = self.usage_summary(project_id)
             run_calls = usage["calls"]
             limit_reason = ""
@@ -785,6 +866,8 @@ class WorkbenchEngine:
                 self._set_stage(project_id, "admin_review")
                 return self.get(project_id)
             if project["stage"] == "admin_review":
+                if self._uses_locked_call_path(project):
+                    return project
                 if self._recover_mechanical_admin_review(project_id):
                     continue
                 return self.get(project_id)
@@ -831,6 +914,15 @@ class WorkbenchEngine:
     def _recover_mechanical_admin_review(self, project_id):
         """Resume legacy admin jobs, including source conflicts the engine can resolve."""
         p = self.get(project_id)
+        if self._uses_locked_call_path(p):
+            self._event(
+                project_id,
+                "locked_path_admin_recovery_forbidden",
+                "admin_review",
+                p["article_hash"],
+                {"operator_decision_required": False},
+            )
+            return False
         report = p.get("last_report") or {}
         if self._report_has_true_source_conflict(report):
             self._record_source_conflict_resolution(p, report)
@@ -931,6 +1023,23 @@ class WorkbenchEngine:
     def _run_next_unlocked(self, project_id, master_instructions):
         p = self.get(project_id)
         stage = p["stage"]
+        locked_stages = {
+            "source_ready", "drafted", "compliance_reviewed", "revised",
+            "signed_off", "package_ready", "admin_review",
+        }
+        if self._uses_locked_call_path(p) and stage not in locked_stages:
+            self._set_stage(project_id, "admin_review")
+            self._event(
+                project_id,
+                "locked_path_legacy_stage_forbidden",
+                "admin_review",
+                p["article_hash"],
+                {
+                    "blocked_stage": stage,
+                    "operator_decision_required": False,
+                },
+            )
+            return self.get(project_id)
         if stage == "source_ready":
             memory = "\n".join(filter(None, (
                 self._learned_guidance(p["platform"], p["vertical"]),
@@ -1879,6 +1988,20 @@ class WorkbenchEngine:
         )
         blockers, quality_warnings = partition_findings(findings)
         if blockers:
+            if self._uses_locked_call_path(p):
+                self._set_stage(project_id, "admin_review")
+                self._event(
+                    project_id,
+                    "locked_path_preflight_blocked",
+                    "admin_review",
+                    p["article_hash"],
+                    {
+                        "blockers": blockers,
+                        "legacy_rescue_forbidden": True,
+                        "operator_decision_required": False,
+                    },
+                )
+                return False
             if self.usage_summary(project_id)["calls"] >= execution_budget()["calls"]:
                 self._set_stage(project_id, "admin_review")
                 self._event(
@@ -2007,6 +2130,19 @@ class WorkbenchEngine:
         # Passing regex/mechanical gates is necessary, never sufficient.
         # A semantic rescue or adjudicated rewrite must be approved by the
         # independent reviewer on the exact final article hash.
+        if self._uses_locked_call_path(p):
+            self._set_stage(project_id, "admin_review")
+            self._event(
+                project_id,
+                "locked_path_semantic_review_required",
+                "admin_review",
+                p["article_hash"],
+                {
+                    "legacy_rescue_forbidden": True,
+                    "operator_decision_required": False,
+                },
+            )
+            return False
         if self.usage_summary(project_id)["calls"] >= execution_budget()["calls"]:
             self._set_stage(project_id, "admin_review")
             self._event(

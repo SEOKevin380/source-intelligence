@@ -1,5 +1,6 @@
 import json
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import pytest
@@ -130,7 +131,7 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert project["stage"] == "source_ready"
     assert (
         "AUTOMATION CONTEXT VERSION: "
-        "serp-differentiation-depth-v22-authoritative-project-binding"
+        "serp-differentiation-depth-v23-continuous-run-authority"
         in project["source_text"]
     )
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
@@ -164,7 +165,7 @@ def test_reviewer_style_preference_cannot_block_approval(tmp_path):
     assert adjudicated["recommended_edits"][0]["issue"].startswith("The title")
 
 
-def test_explicit_rebuild_creates_new_project_and_preserves_source(tmp_path):
+def test_explicit_rebuild_reuses_active_project_then_rebuilds_terminal(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     pack = seal_source_pack({
         "product": {
@@ -176,6 +177,11 @@ def test_explicit_rebuild_creates_new_project_and_preserves_source(tmp_path):
         "required_facts": {"missing": []},
     })
     first = engine.create_project_from_pack(pack, "AccessNewsWire")
+    concurrent = engine.create_project_from_pack(
+        pack, "AccessNewsWire", force_new=True
+    )
+    assert concurrent == first
+    engine._set_stage(first, "admin_review")
     rebuilt = engine.create_project_from_pack(
         pack, "AccessNewsWire", force_new=True
     )
@@ -184,7 +190,7 @@ def test_explicit_rebuild_creates_new_project_and_preserves_source(tmp_path):
     assert engine.latest_project_from_pack(
         pack,
         "AccessNewsWire",
-        "serp-differentiation-depth-v22-authoritative-project-binding",
+        "serp-differentiation-depth-v23-continuous-run-authority",
     ) == rebuilt
     assert engine.latest_project_from_pack(
         pack, "AccessNewsWire", "nonexistent-future-workflow"
@@ -209,15 +215,77 @@ def test_only_latest_durable_project_is_authoritative_run_target(tmp_path):
     older = engine.create_project_from_pack(
         pack, "Barchart Advertorial", force_new=True
     )
+    engine._set_stage(older, "admin_review")
     newer = engine.create_project_from_pack(
         pack, "Barchart Advertorial", force_new=True
     )
-    version = "serp-differentiation-depth-v22-authoritative-project-binding"
+    version = "serp-differentiation-depth-v23-continuous-run-authority"
     assert not engine.is_authoritative_run_target(
         older, pack, "Barchart Advertorial", version
     )
     assert engine.is_authoritative_run_target(
         newer, pack, "Barchart Advertorial", version
+    )
+
+
+def test_two_tabs_converge_on_one_active_pack_project(tmp_path):
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+
+    def create():
+        return WorkbenchEngine(tmp_path).create_project_from_pack(
+            pack, "Barchart Advertorial", force_new=True
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        project_ids = list(pool.map(lambda _: create(), range(2)))
+    assert len(set(project_ids)) == 1
+    engine = WorkbenchEngine(tmp_path)
+    matching = [
+        item for item in engine.list_projects()
+        if item["fact_source_hash"]
+        == pack["source_pack_contract"]["sha256"]
+        and item["platform"] == "Barchart Advertorial"
+    ]
+    assert len(matching) == 1
+
+
+def test_superseded_project_cannot_execute_next_stage(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    older = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    engine._set_stage(older, "admin_review")
+    engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    engine._set_stage(older, "source_ready")
+    with patch.object(engine, "run_next") as run_next:
+        result = engine.run_to_completion(older, "")
+    assert result["stage"] == "source_ready"
+    run_next.assert_not_called()
+    assert engine.usage_summary(older)["calls"] == 0
+    assert any(
+        item["event_type"] == "run_superseded_by_newer_project"
+        for item in engine.events(older)
     )
 
 
@@ -561,6 +629,24 @@ def test_current_workflow_reserves_one_call_per_required_purpose(tmp_path):
             pid, "quality_rescue", route_for("quality_rescue", "device")
         )
     assert engine.usage_details(pid)[0]["stage"] == "draft"
+
+
+def test_prior_version_sealed_project_remains_locked(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    source = (
+        "AUTOMATION CONTEXT VERSION: "
+        "serp-differentiation-depth-v21-exemplar-assembly-contract\n\n"
+        "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══\n{}"
+    )
+    pid = engine.create_project(
+        "Old Sealed Device", "Barchart Advertorial", source, "device"
+    )
+    project = engine.get(pid)
+    assert engine._uses_locked_call_path(project)
+    with pytest.raises(RuntimeError, match="outside the locked four-stage"):
+        engine._assert_call_budget(
+            pid, "quality_rescue", route_for("quality_rescue", "device")
+        )
 
 
 def test_current_workflow_executes_repair_before_final_signoff(tmp_path):
@@ -1718,6 +1804,7 @@ def test_forced_rebuild_keeps_stable_fact_source_identity(tmp_path):
     first = engine.create_project_from_pack(
         pack, "Barchart Advertorial", force_new=True
     )
+    engine._set_stage(first, "admin_review")
     second = engine.create_project_from_pack(
         pack, "Barchart Advertorial", force_new=True
     )
