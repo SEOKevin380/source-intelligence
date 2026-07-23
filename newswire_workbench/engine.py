@@ -230,9 +230,13 @@ class WorkbenchEngine:
 
     def capabilities(self):
         from .wordpress import WordPressDraftPublisher
+        anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
         return {
-            "anthropic": bool(os.environ.get("ANTHROPIC_API_KEY")),
-            "openai": bool(os.environ.get("OPENAI_API_KEY")),
+            "anthropic": bool(anthropic_key),
+            "openai": bool(openai_key),
+            "anthropic_format_valid": not anthropic_key or anthropic_key.startswith("sk-ant-"),
+            "openai_format_valid": not openai_key or openai_key.startswith("sk-"),
             "wordpress": WordPressDraftPublisher().configured,
         }
 
@@ -468,6 +472,12 @@ class WorkbenchEngine:
             )
         except Exception as exc:
             self._record_llm_call(project_id, purpose, route, status="failed", error=str(exc))
+            error_text = str(exc).lower()
+            if "authentication" in error_text or "api key is invalid" in error_text or "401" in error_text:
+                raise RuntimeError(
+                    "Anthropic authentication failed. Replace ANTHROPIC_API_KEY in "
+                    "Streamlit Secrets with an active Claude API key from console.anthropic.com."
+                ) from exc
             raise
         text = "".join(block.text for block in msg.content if getattr(block, "type", "") == "text").strip()
         usage = getattr(msg, "usage", None)
@@ -545,6 +555,12 @@ class WorkbenchEngine:
             )
         except Exception as exc:
             self._record_llm_call(p["id"], purpose, route, status="failed", error=str(exc))
+            error_text = str(exc).lower()
+            if "authentication" in error_text or "api key" in error_text or "401" in error_text:
+                raise RuntimeError(
+                    "OpenAI authentication failed. Replace OPENAI_API_KEY in Streamlit "
+                    "Secrets with an active key from platform.openai.com/api-keys."
+                ) from exc
             raise
         usage = getattr(response, "usage", None)
         self._record_llm_call(
@@ -587,7 +603,9 @@ class WorkbenchEngine:
     def _assert_call_budget(self, project_id, stage, route):
         with self._connect() as conn:
             stage_calls = conn.execute(
-                "SELECT COUNT(*) FROM llm_calls WHERE project_id=? AND stage=?",
+                """SELECT COUNT(*) FROM llm_calls
+                WHERE project_id=? AND stage=?
+                AND (status='success' OR estimated_cost>0)""",
                 (project_id, stage),
             ).fetchone()[0]
             spent = conn.execute(

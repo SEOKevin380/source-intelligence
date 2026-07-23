@@ -1849,7 +1849,12 @@ else:
             from newswire_workbench import WorkbenchEngine
             _workbench = WorkbenchEngine()
             _workbench_caps = _workbench.capabilities()
-            _ready_to_run = _workbench_caps["anthropic"] and _workbench_caps["openai"]
+            _ready_to_run = (
+                _workbench_caps["anthropic"]
+                and _workbench_caps["openai"]
+                and _workbench_caps.get("anthropic_format_valid", True)
+                and _workbench_caps.get("openai_format_valid", True)
+            )
             if st.button(
                 "Build Draft Automatically",
                 type="primary",
@@ -1907,10 +1912,15 @@ else:
                         + _active_project["stage"].replace("_", " ").title()
                     )
             if not _ready_to_run:
-                st.info(
-                    "Newswire automation is installed but its dedicated Anthropic/OpenAI "
-                    "keys are not configured in this environment."
-                )
+                if _workbench_caps["anthropic"] and not _workbench_caps.get("anthropic_format_valid", True):
+                    st.error("ANTHROPIC_API_KEY has the wrong format. A Claude key normally begins with sk-ant-.")
+                elif _workbench_caps["openai"] and not _workbench_caps.get("openai_format_valid", True):
+                    st.error("OPENAI_API_KEY has the wrong format. An OpenAI API key normally begins with sk-.")
+                else:
+                    st.info(
+                        "Newswire automation is installed but its dedicated Anthropic/OpenAI "
+                        "keys are not configured in this environment."
+                    )
         except Exception as _workbench_error:
             st.error(f"Newswire workflow could not start: {_workbench_error}")
 

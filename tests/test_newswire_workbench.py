@@ -18,6 +18,17 @@ def test_vertical_detection_is_category_aware():
     assert detect_vertical("supplement facts serving size") == "health"
 
 
+def test_zero_cost_auth_failure_does_not_consume_call_ceiling(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Retryable", "AccessNewsWire", "Official URL: https://example.com\nProduct: Device"
+    )
+    route = route_for("draft", "general")
+    engine._record_llm_call(pid, "draft", route, status="failed", error="401 invalid key")
+    # A rejected credential never reached paid generation and must remain retryable.
+    engine._assert_call_budget(pid, "draft", route)
+
+
 def test_project_and_immutable_audit(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     pid = engine.create_project("Test", "AccessNewsWire", "Official URL: https://example.com\nProduct: Device")
