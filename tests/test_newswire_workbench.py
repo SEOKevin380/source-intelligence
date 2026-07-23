@@ -371,6 +371,36 @@ def test_publication_gate_repair_hides_raw_url_and_adds_required_structure():
     assert repaired.count('href="https://partner.example/offer"') == 5
 
 
+def test_legacy_mechanical_admin_project_recovers_and_resumes(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Newsletter",
+        "AccessNewsWire",
+        "AFFILIATE LINK: https://partner.example/offer",
+        "financial",
+    )
+    engine.import_manual_article(
+        pid,
+        "<h2>Newsletter Details</h2>"
+        + ("<p>Useful sourced newsletter discussion for readers.</p>" * 320),
+    )
+    p = engine.get(pid)
+    findings = deterministic_findings(
+        p["article_text"], p["platform"], p["vertical"]
+    )
+    engine._set_stage(pid, "admin_review")
+    engine._event(
+        pid, "adjudication_unresolved", "admin_review",
+        p["article_hash"], {"findings": findings},
+    )
+    assert engine._recover_mechanical_admin_review(pid) is True
+    recovered = engine.get(pid)
+    assert recovered["stage"] == "signed_off"
+    assert deterministic_findings(
+        recovered["article_text"], recovered["platform"], recovered["vertical"]
+    ) == []
+
+
 def test_reviewer_house_rule_conflicts_cannot_block(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     report = {"verdict": "not_approved", "mandatory_count": 2,

@@ -300,10 +300,53 @@ class WorkbenchEngine:
         """Run unattended until complete, a credential is missing, or admin review."""
         for _ in range(max_steps):
             project = self.get(project_id)
-            if project["stage"] in {"package_ready", "admin_review"}:
+            if project["stage"] == "admin_review":
+                if self._recover_mechanical_admin_review(project_id):
+                    continue
+                return self.get(project_id)
+            if project["stage"] == "package_ready":
                 return project
             self.run_next(project_id, master_instructions)
         raise RuntimeError("Workflow exceeded its safety step limit")
+
+    def _recover_mechanical_admin_review(self, project_id):
+        """Resume legacy admin jobs that contain only deterministic defects."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT event_type,payload FROM events WHERE project_id=? "
+                "ORDER BY id DESC LIMIT 1",
+                (project_id,),
+            ).fetchone()
+        if not row or row["event_type"] != "adjudication_unresolved":
+            return False
+        try:
+            payload = json.loads(row["payload"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            return False
+        findings = payload.get("findings") or []
+        if not findings or any(
+            not str(item.get("id", "")).startswith("D")
+            for item in findings if isinstance(item, dict)
+        ):
+            return False
+
+        target = (
+            "post_seo_signed_off"
+            if self._billable_call_count(project_id, "post_seo_signoff") > 0
+            else "signed_off"
+        )
+        # _complete_adjudicated_signoff now repairs all bounded deterministic
+        # gates before deciding whether a genuine human judgment is needed.
+        recovered = self._complete_adjudicated_signoff(
+            project_id, target, "admin-mechanical-recovery.json"
+        )
+        if recovered:
+            p = self.get(project_id)
+            self._event(
+                project_id, "mechanical_admin_recovered", p["stage"],
+                p["article_hash"], {"previous_findings": findings},
+            )
+        return recovered
 
     def run_next(self, project_id, master_instructions):
         self._release_stale_run(project_id)
