@@ -30,7 +30,7 @@ from .formatting import (
 from .routing import estimated_cost, route_for
 
 
-WORKBENCH_SOURCE_CONTEXT_VERSION = "approved-exemplars-html-depth-v3"
+WORKBENCH_SOURCE_CONTEXT_VERSION = "approved-exemplars-html-depth-scoped-v4"
 
 STAGES = (
     "source_ready",
@@ -271,6 +271,17 @@ class WorkbenchEngine:
 
     def inherit_wordpress_draft(self, new_project_id, old_project_id):
         """Let an explicit rebuild update the same WordPress draft."""
+        new_project = self.get(new_project_id)
+        old_project = self.get(old_project_id)
+        if (
+            new_project["title"].casefold().strip()
+            != old_project["title"].casefold().strip()
+            or new_project["platform"] != old_project["platform"]
+        ):
+            raise ValueError(
+                "A WordPress draft can only be inherited by a rebuild of the "
+                "same product and platform"
+            )
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM wordpress_drafts WHERE project_id=?",
@@ -288,6 +299,17 @@ class WorkbenchEngine:
                         row["edit_url"], _now(),
                     ),
                 )
+
+    def wordpress_draft(self, project_id):
+        """Return the WordPress draft bound to this exact project, if any."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT site_url,post_id,article_hash,edit_url,updated_at
+                FROM wordpress_drafts WHERE project_id=?
+                ORDER BY updated_at DESC LIMIT 1""",
+                (project_id,),
+            ).fetchone()
+        return dict(row) if row else None
 
     def list_projects(self):
         with self._connect() as conn:

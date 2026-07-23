@@ -82,7 +82,7 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert first == second
     project = engine.get(first)
     assert project["stage"] == "source_ready"
-    assert "AUTOMATION CONTEXT VERSION: approved-exemplars-html-depth-v3" in project["source_text"]
+    assert "AUTOMATION CONTEXT VERSION: approved-exemplars-html-depth-scoped-v4" in project["source_text"]
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
     assert any(e["event_type"] == "sealed_source_pack_imported" for e in engine.events(first))
 
@@ -104,6 +104,18 @@ def test_explicit_rebuild_creates_new_project_and_preserves_source(tmp_path):
     )
     assert rebuilt != first
     assert "EXPLICIT REBUILD RUN:" in engine.get(rebuilt)["source_text"]
+
+
+def test_wordpress_draft_inheritance_rejects_cross_product_state(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    old = engine.create_project(
+        "Forecasts & Strategies", "AccessNewsWire", "financial source"
+    )
+    new = engine.create_project(
+        "EcoWatt Power Saver", "Barchart Advertorial", "device source"
+    )
+    with pytest.raises(ValueError, match="same product and platform"):
+        engine.inherit_wordpress_draft(new, old)
 
 
 def test_article_diagnostics_proves_html_contract(tmp_path):

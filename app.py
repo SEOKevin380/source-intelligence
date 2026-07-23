@@ -1876,9 +1876,13 @@ else:
                 and _workbench_caps.get("anthropic_format_valid", True)
                 and _workbench_caps.get("openai_format_valid", True)
             )
-            _prior_project_id = st.session_state.get(
-                "source_newswire_project_id"
+            _workflow_key = (
+                f"{product_key or _quick_slug}:{_newswire_platform}"
             )
+            _project_map = st.session_state.setdefault(
+                "source_newswire_project_ids", {}
+            )
+            _prior_project_id = _project_map.get(_workflow_key)
             _prior_project = None
             if _prior_project_id:
                 try:
@@ -1907,7 +1911,8 @@ else:
                     _workbench.inherit_wordpress_draft(
                         _project_id, _prior_project_id
                     )
-                st.session_state["source_newswire_project_id"] = _project_id
+                _project_map[_workflow_key] = _project_id
+                st.session_state["source_newswire_project_ids"] = _project_map
                 _master_path = os.path.join(
                     os.path.dirname(__file__), "MBK_Project_Instructions_All_Platforms.txt"
                 )
@@ -1918,11 +1923,10 @@ else:
                 ):
                     _result = _workbench.run_to_completion(_project_id, _master_rules)
                     if _result["stage"] == "package_ready" and _workbench_caps.get("wordpress"):
-                        _wp_result = _workbench.send_to_wordpress_draft(_project_id)
-                        st.session_state["source_newswire_wordpress"] = _wp_result
+                        _workbench.send_to_wordpress_draft(_project_id)
                 st.rerun()
 
-            _active_project_id = st.session_state.get("source_newswire_project_id")
+            _active_project_id = _project_map.get(_workflow_key)
             if _active_project_id:
                 _active_project = _workbench.get(_active_project_id)
                 _usage = _workbench.usage_summary(_active_project_id)
@@ -1953,7 +1957,9 @@ else:
                             "Submission HTML validated; no code fences or "
                             "material publication blockers detected."
                         )
-                    _wp_saved = st.session_state.get("source_newswire_wordpress")
+                    _wp_saved = _workbench.wordpress_draft(
+                        _active_project_id
+                    )
                     if _wp_saved:
                         st.link_button("Open WordPress Draft", _wp_saved["edit_url"])
                     _export = _workbench.export_path(_active_project_id)
@@ -2490,7 +2496,22 @@ else:
         with detail_tabs[3]:
             safety_data = data.get("safety", {})
             if safety_data:
-                for ing_name, sdata in safety_data.items():
+                if isinstance(safety_data, dict):
+                    _safety_rows = safety_data.items()
+                elif isinstance(safety_data, list):
+                    _safety_rows = (
+                        (
+                            str(item.get("ingredient") or f"Safety note {index}"),
+                            item,
+                        )
+                        for index, item in enumerate(safety_data, 1)
+                        if isinstance(item, dict)
+                    )
+                else:
+                    _safety_rows = ()
+                for ing_name, sdata in _safety_rows:
+                    if not isinstance(sdata, dict):
+                        continue
                     has_data = sdata.get("side_effects") or sdata.get("drug_interactions") or sdata.get("contraindications")
                     if has_data:
                         with st.expander(f"{ing_name}", expanded=True):
