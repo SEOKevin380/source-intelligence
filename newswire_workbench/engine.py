@@ -39,7 +39,7 @@ from .execution_budget import (
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v25-autonomous-depth-recovery"
+    "serp-differentiation-depth-v26-governed-run-transaction"
 )
 
 STAGES = (
@@ -276,6 +276,18 @@ class WorkbenchEngine:
                     conn.execute(
                         f"ALTER TABLE wordpress_drafts "
                         f"ADD COLUMN {name} TEXT DEFAULT ''"
+                    )
+            llm_columns = {
+                r[1] for r in conn.execute("PRAGMA table_info(llm_calls)")
+            }
+            for name, declaration in (
+                ("lifecycle", "TEXT DEFAULT 'applied'"),
+                ("raw_output", "TEXT DEFAULT ''"),
+                ("output_hash", "TEXT DEFAULT ''"),
+            ):
+                if name not in llm_columns:
+                    conn.execute(
+                        f"ALTER TABLE llm_calls ADD COLUMN {name} {declaration}"
                     )
         self._backfill_issue_memory()
 
@@ -778,6 +790,13 @@ class WorkbenchEngine:
                 "WordPress handoff requires approval bound to the exact final "
                 "article hash."
             )
+        if p["last_report"].get("approval_purpose") not in {
+            "compliance", "final_signoff"
+        }:
+            raise RuntimeError(
+                "WordPress handoff requires a purpose-bound independent "
+                "editorial approval."
+            )
         findings = deterministic_findings(p["article_text"], p["platform"], p["vertical"])
         blockers, _ = partition_findings(findings)
         if blockers:
@@ -787,15 +806,36 @@ class WorkbenchEngine:
                 ", ".join(item["id"] for item in blockers)
             )
         publisher = WordPressDraftPublisher()
+        manifest_path = self.projects_dir / project_id / "submission-manifest.json"
+        manifest = (
+            json.loads(manifest_path.read_text())
+            if manifest_path.exists() else {}
+        )
+        bound_site = str(manifest.get("wordpress_site_url") or "").rstrip("/")
+        if bound_site and publisher.site_url.rstrip("/") != bound_site:
+            raise RuntimeError(
+                "WordPress destination differs from the site bound into the "
+                "approved submission package."
+            )
         publisher.test_connection()
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT post_id FROM wordpress_drafts WHERE project_id=? AND site_url=?",
                 (project_id, publisher.site_url),
             ).fetchone()
+        delivery_slug = (
+            f"si-{project_id}-{p['article_hash'][:12]}".casefold()
+        )
+        existing_post_id = row["post_id"] if row else None
+        if not existing_post_id:
+            # Reconcile a remote POST that may have succeeded before a local
+            # timeout/read-back failure. The deterministic identity prevents a
+            # retry from creating a second draft.
+            existing_post_id = publisher.find_draft_by_slug(delivery_slug)
         result = publisher.save_draft(
             p.get("release_title") or p["title"], p["article_text"],
-            existing_post_id=row["post_id"] if row else None,
+            existing_post_id=existing_post_id,
+            slug=delivery_slug,
         )
         remote = publisher.get_draft(result["post_id"])
         expected_title = p.get("release_title") or p["title"]
@@ -863,7 +903,47 @@ class WorkbenchEngine:
         self, project_id, master_instructions, max_steps=20,
         progress_callback=None,
     ):
-        """Run unattended until complete, a credential is missing, or admin review."""
+        """Run one project under a single lease until a typed terminal state."""
+        self._release_stale_run(project_id)
+        token = uuid.uuid4().hex
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """UPDATE projects SET run_token=?,run_started_at=?
+                WHERE id=? AND COALESCE(run_token,'')=''""",
+                (token, _now(), project_id),
+            )
+        if cursor.rowcount != 1:
+            raise RuntimeError(
+                "This project is already running in another browser session. "
+                "The active run owns every remaining stage; wait for it to finish."
+            )
+        try:
+            return self._run_to_completion_unlocked(
+                project_id,
+                master_instructions,
+                max_steps=max_steps,
+                progress_callback=progress_callback,
+            )
+        except Exception as exc:
+            p = self.get(project_id)
+            self._event(
+                project_id, "workflow_error", p["stage"], p["article_hash"],
+                {"error_type": type(exc).__name__, "message": str(exc)[:2000]},
+            )
+            raise
+        finally:
+            with self._connect() as conn:
+                conn.execute(
+                    """UPDATE projects SET run_token='',run_started_at=''
+                    WHERE id=? AND run_token=?""",
+                    (project_id, token),
+                )
+
+    def _run_to_completion_unlocked(
+        self, project_id, master_instructions, max_steps=20,
+        progress_callback=None,
+    ):
+        """Internal continuous runner; caller must hold the project lease."""
         budget = execution_budget()
         call_limit = budget["calls"]
         no_progress = 0
@@ -881,6 +961,23 @@ class WorkbenchEngine:
                     },
                 )
                 return project
+            contract_blockers = self._prepaid_contract_blockers(project)
+            if (
+                contract_blockers
+                and project["stage"] in PAID_CALL_STAGES
+            ):
+                self._set_stage(project_id, "admin_review")
+                self._event(
+                    project_id,
+                    "prepaid_contract_blocked",
+                    "admin_review",
+                    project["article_hash"],
+                    {
+                        "blockers": contract_blockers,
+                        "operator_decision_required": False,
+                    },
+                )
+                return self.get(project_id)
             usage = self.usage_summary(project_id)
             run_calls = usage["calls"]
             limit_reason = ""
@@ -922,7 +1019,7 @@ class WorkbenchEngine:
             )
             if progress_callback:
                 progress_callback(self.next_action(project))
-            self.run_next(project_id, master_instructions)
+            self._run_next_unlocked(project_id, master_instructions)
             updated = self.get(project_id)
             after = (
                 updated["stage"],
@@ -951,6 +1048,42 @@ class WorkbenchEngine:
         )
         self._set_stage(project_id, "admin_review")
         return self.get(project_id)
+
+    def _prepaid_contract_blockers(self, project):
+        """Validate immutable source and policy prerequisites before paid work."""
+        if not self._uses_locked_call_path(project):
+            return []
+        blockers = []
+        from article_provenance import extract_sealed_pack
+        pack = extract_sealed_pack(project["source_text"])
+        claim_count = sum(
+            len(items or [])
+            for items in (pack.get("publication_claims") or {}).values()
+        )
+        if claim_count < 3:
+            blockers.append({
+                "id": "SOURCE-CLAIMS",
+                "issue": (
+                    f"The sealed pack contains {claim_count} permitted claims; "
+                    "at least 3 are required before paid drafting."
+                ),
+            })
+        from policy_intelligence import policy_status
+        policy = policy_status(project["vertical"])
+        source_policy_hash = _source_policy_hash(project["source_text"])
+        if (
+            not policy["current"]
+            or not source_policy_hash
+            or source_policy_hash != policy["snapshot_hash"]
+        ):
+            blockers.append({
+                "id": "POLICY-SNAPSHOT",
+                "issue": (
+                    "The project is not bound to the current authoritative "
+                    "policy snapshot."
+                ),
+            })
+        return blockers
 
     def _recover_locked_pre_signoff(self, project_id):
         """Apply owned deterministic repairs without opening a paid rescue path."""
@@ -1249,6 +1382,43 @@ class WorkbenchEngine:
             )
             self._persist_preflight_article(p, preflight, "revised")
             p = self.get(project_id)
+            from article_provenance import (
+                build_article_claim_ledger,
+                extract_sealed_pack,
+            )
+            claim_ledger = build_article_claim_ledger(
+                extract_sealed_pack(p["source_text"]),
+                p["article_text"],
+            )
+            provenance_blockers = []
+            for item in claim_ledger.get("coverage_violations") or []:
+                provenance_blockers.append({
+                    "id": item["id"],
+                    "category": "Claim provenance coverage",
+                    "issue": item["issue"],
+                    "exact_text": "",
+                    "replacement": (
+                        "Use additional distinct permitted claims from the "
+                        "sealed ledger with their required attribution."
+                    ),
+                })
+            for index, item in enumerate(
+                claim_ledger.get("attribution_violations") or [], 1
+            ):
+                provenance_blockers.append({
+                    "id": f"P-ATTR-{index}",
+                    "category": "Claim provenance attribution",
+                    "issue": (
+                        "A mapped sealed claim is missing its required "
+                        "seller/source attribution."
+                    ),
+                    "exact_text": item.get("article_sentence", ""),
+                    "replacement": "Add the required attribution.",
+                })
+            if provenance_blockers:
+                preflight["blockers"] = (
+                    list(preflight["blockers"]) + provenance_blockers
+                )
             if preflight["blockers"]:
                 self._set_stage(project_id, "admin_review")
                 self._event(
@@ -1453,13 +1623,16 @@ class WorkbenchEngine:
             raise
         text = "".join(block.text for block in msg.content if getattr(block, "type", "") == "text").strip()
         usage = getattr(msg, "usage", None)
-        self._record_llm_call(
+        call_id = self._record_llm_call(
             project_id, purpose, route,
             input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
             output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+            raw_output=text,
+            lifecycle="provider_succeeded",
         )
         if getattr(msg, "stop_reason", None) == "max_tokens":
             raise RuntimeError("Claude output was truncated at the token limit; no partial article was saved")
+        self._mark_llm_call_applied(call_id)
         return text
 
     def _openai_review(self, p, final, purpose=None):
@@ -1547,12 +1720,14 @@ class WorkbenchEngine:
                 ) from exc
             raise
         usage = getattr(response, "usage", None)
-        self._record_llm_call(
+        text = response.output_text.strip()
+        call_id = self._record_llm_call(
             p["id"], purpose, route,
             input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
             output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+            raw_output=text,
+            lifecycle="provider_succeeded",
         )
-        text = response.output_text.strip()
         if text.startswith("```"):
             text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.S)
         try:
@@ -1576,7 +1751,9 @@ class WorkbenchEngine:
                 "call was consumed and cannot be borrowed by another stage"
             ) from exc
         report["reviewed_article_hash"] = p["article_hash"]
+        report["approval_purpose"] = purpose
         report["prompt_version"] = PROMPT_VERSION
+        self._mark_llm_call_applied(call_id)
         self._event(
             p["id"],
             "reviewer_report_received",
@@ -1611,6 +1788,27 @@ class WorkbenchEngine:
         provenance = build_article_claim_ledger(
             extract_sealed_pack(p["source_text"]), p["article_text"]
         )
+        if provenance.get("coverage_violations"):
+            existing = report.setdefault("mandatory_edits", [])
+            existing_ids = {item.get("id") for item in existing}
+            for index, violation in enumerate(
+                provenance["coverage_violations"], 1
+            ):
+                finding_id = f"P-COVERAGE-{index}"
+                if finding_id in existing_ids:
+                    continue
+                existing.append({
+                    "id": finding_id,
+                    "category": "Claim provenance",
+                    "issue": violation["issue"],
+                    "exact_text": "",
+                    "replacement": (
+                        "Use distinct, relevant permitted claims from the sealed "
+                        "record with the required seller/source attribution."
+                    ),
+                })
+            report["mandatory_count"] = len(existing)
+            report["verdict"] = "not_approved"
         if provenance["attribution_violations"]:
             existing = report.setdefault("mandatory_edits", [])
             existing_ids = {item.get("id") for item in existing}
@@ -1642,16 +1840,29 @@ class WorkbenchEngine:
             report["verdict"] = "not_approved"
         return report
 
-    def _record_llm_call(self, project_id, stage, route, input_tokens=0,
-                         output_tokens=0, status="success", error=""):
+    def _record_llm_call(
+        self, project_id, stage, route, input_tokens=0,
+        output_tokens=0, status="success", error="", raw_output="",
+        lifecycle="applied",
+    ):
         cost = estimated_cost(route, input_tokens, output_tokens)
         with self._connect() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 """INSERT INTO llm_calls(project_id,stage,provider,model,input_tokens,
-                output_tokens,estimated_cost,status,error,created_at)
-                VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                output_tokens,estimated_cost,status,error,created_at,lifecycle,
+                raw_output,output_hash)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (project_id, stage, route.provider, route.model, input_tokens,
-                 output_tokens, cost, status, error[:2000], _now()),
+                 output_tokens, cost, status, error[:2000], _now(), lifecycle,
+                 raw_output, _hash(raw_output) if raw_output else ""),
+            )
+            return cursor.lastrowid
+
+    def _mark_llm_call_applied(self, call_id):
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE llm_calls SET lifecycle='applied' WHERE id=?",
+                (call_id,),
             )
 
     def _assert_call_budget(self, project_id, stage, route):
@@ -1863,7 +2074,7 @@ class WorkbenchEngine:
         with self._connect() as conn:
             conn.execute(
                 "UPDATE projects SET article_text=?,article_hash=?,stage=?,"
-                "updated_at=? WHERE id=?",
+                "last_report='{}',updated_at=? WHERE id=?",
                 (repaired, digest, stage, _now(), p["id"]),
             )
         self._write(p["id"], "03b-pre-signoff-mechanical-repair.html", repaired)
@@ -1911,10 +2122,22 @@ class WorkbenchEngine:
         report["mandatory_count"] = len(edits)
 
     def _build_package(self, p):
+        current = self.get(p["id"])
+        if (
+            current["stage"] != "signed_off"
+            or current["article_hash"] != p["article_hash"]
+        ):
+            raise RuntimeError(
+                "Package creation lost its exact signed-off artifact snapshot."
+            )
+        p = current
         report = p.get("last_report") or {}
         if (
             report.get("verdict") != "approved"
             or report.get("reviewed_article_hash") != p["article_hash"]
+            or report.get("approval_purpose") not in {
+                "compliance", "final_signoff"
+            }
         ):
             raise RuntimeError(
                 "Package creation requires independent approval of the exact "
@@ -1929,9 +2152,8 @@ class WorkbenchEngine:
         )
         if not claim_ledger["passed"]:
             raise RuntimeError(
-                "Package creation is blocked because one or more mapped "
-                "publication claims are missing their required seller/source "
-                "attribution."
+                "Package creation is blocked because sealed-claim coverage or "
+                "required seller/source attribution is incomplete."
             )
         from policy_intelligence import policy_status
         policy = policy_status(p["vertical"])
@@ -1955,6 +2177,9 @@ class WorkbenchEngine:
             "claim_provenance_file": "claim-provenance.json",
             "policy_snapshot_hash": policy["snapshot_hash"],
             "policy_status": policy,
+            "wordpress_site_url": str(
+                os.environ.get("NEWSWIRE_WORDPRESS_URL") or ""
+            ).rstrip("/"),
         }
         self._write(p["id"], "submission-manifest.json", json.dumps(manifest, indent=2))
         self._write(p["id"], "FINAL-ARTICLE.html", p["article_text"])
@@ -1975,7 +2200,15 @@ class WorkbenchEngine:
             for path in sorted(project_dir.glob("*-openai-*.json")):
                 archive.write(path, arcname=f"audit/{path.name}")
         with self._connect() as conn:
-            conn.execute("UPDATE projects SET stage='package_ready',updated_at=? WHERE id=?", (_now(), p["id"]))
+            cursor = conn.execute(
+                "UPDATE projects SET stage='package_ready',updated_at=? "
+                "WHERE id=? AND stage='signed_off' AND article_hash=?",
+                (_now(), p["id"], p["article_hash"]),
+            )
+        if cursor.rowcount != 1:
+            raise RuntimeError(
+                "Package compare-and-swap rejected a concurrent artifact mutation."
+            )
         self._event(p["id"], "package_ready", "package_ready", p["article_hash"], manifest)
 
     def export_path(self, project_id):
@@ -2090,7 +2323,7 @@ class WorkbenchEngine:
         with self._connect() as conn:
             conn.execute(
                 "UPDATE projects SET release_title=?,article_text=?,article_hash=?,"
-                "stage=?,updated_at=? WHERE id=?",
+                "stage=?,last_report='{}',updated_at=? WHERE id=?",
                 (
                     release_title, article, result_hash, target_stage,
                     _now(), p["id"],
@@ -2112,7 +2345,8 @@ class WorkbenchEngine:
             digest = _hash((p.get("release_title") or p["title"]) + "\n" + repaired)
             with self._connect() as conn:
                 conn.execute(
-                    "UPDATE projects SET article_text=?,article_hash=?,updated_at=? "
+                    "UPDATE projects SET article_text=?,article_hash=?,"
+                    "last_report='{}',updated_at=? "
                     "WHERE id=?",
                     (repaired, digest, _now(), project_id),
                 )

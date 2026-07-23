@@ -467,17 +467,20 @@ def repair_source_grounding(html, source_text, vertical):
         except (TypeError, ValueError, json.JSONDecodeError):
             excluded = []
 
-    excluded_tokens = []
+    excluded_signatures = []
     for claim in excluded:
-        tokens = {
+        normalized = re.sub(
+            r"[^a-z0-9]+", " ", claim.casefold()
+        ).strip()
+        tokens = [
             token for token in re.findall(r"[a-z0-9]+", claim.casefold())
             if len(token) >= 5 and token not in {
                 "seller", "claim", "claims", "product", "device",
                 "materials", "official", "stated",
             }
-        }
+        ]
         if tokens:
-            excluded_tokens.append(tokens)
+            excluded_signatures.append((normalized, tokens))
 
     unsupported_device_patterns = (
         r"\bindustrial\b.{0,100}\bresidential\b|"
@@ -489,11 +492,25 @@ def repair_source_grounding(html, source_text, vertical):
     )
     for node in list(soup.find_all(["p", "li"])):
         lowered = node.get_text(" ", strip=True).casefold()
-        words = set(re.findall(r"[a-z0-9]+", lowered))
-        excluded_echo = any(
-            len(words & tokens) >= min(2, len(tokens))
-            for tokens in excluded_tokens
-        )
+        normalized_node = re.sub(r"[^a-z0-9]+", " ", lowered).strip()
+        words = set(re.findall(r"[a-z0-9]+", normalized_node))
+        excluded_echo = False
+        for normalized_claim, token_list in excluded_signatures:
+            token_set = set(token_list)
+            if len(token_set) <= 3:
+                matched = (
+                    normalized_claim in normalized_node
+                    or token_set.issubset(words)
+                )
+            else:
+                overlap = len(words & token_set)
+                matched = (
+                    overlap >= 3
+                    and overlap / max(len(token_set), 1) >= 0.75
+                )
+            if matched:
+                excluded_echo = True
+                break
         unsupported_filler = (
             vertical == "device"
             and any(

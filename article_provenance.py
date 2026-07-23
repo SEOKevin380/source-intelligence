@@ -107,6 +107,31 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
     used_ids = {
         claim["claim_id"] for mapping in mappings for claim in mapping["claims"]
     }
+    required_used = min(3, len(claims))
+    required_mapped_sentences = min(3, len(claims))
+    coverage_violations = []
+    if len(used_ids) < required_used:
+        coverage_violations.append({
+            "id": "P-COVERAGE-CLAIMS",
+            "issue": (
+                f"The article uses {len(used_ids)} of {len(claims)} permitted "
+                f"publication claims; at least {required_used} distinct claims "
+                "are required for a source-grounded product article."
+            ),
+            "required": required_used,
+            "actual": len(used_ids),
+        })
+    if len(mappings) < required_mapped_sentences:
+        coverage_violations.append({
+            "id": "P-COVERAGE-SENTENCES",
+            "issue": (
+                f"Only {len(mappings)} article sentences map to the sealed "
+                f"publication ledger; at least {required_mapped_sentences} "
+                "source-grounded sentences are required."
+            ),
+            "required": required_mapped_sentences,
+            "actual": len(mappings),
+        })
     return {
         "schema_version": 1,
         "source_pack_hash": (pack.get("source_pack_contract") or {}).get(
@@ -116,9 +141,12 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
         "publication_claim_count": len(claims),
         "mapped_sentence_count": len(mappings),
         "used_claim_count": len(used_ids),
+        "required_used_claim_count": required_used,
+        "required_mapped_sentence_count": required_mapped_sentences,
         "mappings": mappings,
         "attribution_violations": attribution_violations,
-        "passed": not attribution_violations,
+        "coverage_violations": coverage_violations,
+        "passed": not attribution_violations and not coverage_violations,
         "excluded_claims": pack.get("excluded_publication_claims") or [],
         "scope_note": (
             "This deterministic ledger identifies textual claim support. "

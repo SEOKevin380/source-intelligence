@@ -34,8 +34,20 @@ class WordPressDraftPublisher:
         data = self._request("GET", "users/me", params={"context": "edit"})
         return {"id": data.get("id"), "name": data.get("name", "")}
 
-    def save_draft(self, title, html, existing_post_id=None):
+    def find_draft_by_slug(self, slug):
+        rows = self._request(
+            "GET", "posts",
+            params={
+                "context": "edit", "slug": slug, "status": "draft",
+                "per_page": 1,
+            },
+        )
+        return int(rows[0]["id"]) if rows else None
+
+    def save_draft(self, title, html, existing_post_id=None, slug=None):
         payload = {"title": title, "content": html, "status": "draft"}
+        if slug:
+            payload["slug"] = slug
         path = f"posts/{int(existing_post_id)}" if existing_post_id else "posts"
         data = self._request("POST", path, json=payload)
         return {

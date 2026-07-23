@@ -50,6 +50,7 @@ def _independent_approval(engine, project_id):
         "approved_elements": ["Independent final artifact review passed"],
         "notes": [],
         "reviewed_article_hash": p["article_hash"],
+        "approval_purpose": "final_signoff",
     }
 
 
@@ -66,6 +67,28 @@ def test_generation_prompt_preserves_client_advocacy_without_invention():
     assert "client's strongest compliant advocate" in prompt
     assert "must not replace the article with a prosecution brief" in prompt
     assert "missing evidence" in prompt
+
+
+def test_locked_blueprint_is_trusted_context_not_untrusted_evidence():
+    source = (
+        "═══ LOCKED GENERATION BLUEPRINT — DO NOT REDESIGN ═══\n"
+        "Primary SEO intent: buyer_fit\n"
+        "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══\n"
+        '{"publication_claims": {}}'
+    )
+    prompt = generation_prompt(
+        source, "Barchart Advertorial", "device", ""
+    )
+    editorial = prompt.split(
+        "EDITORIAL_CONTEXT_START", 1
+    )[1].split("EDITORIAL_CONTEXT_END", 1)[0]
+    evidence = prompt.rsplit(
+        "SOURCE_RECORD_START", 1
+    )[1].split("SOURCE_RECORD_END", 1)[0]
+    assert "LOCKED GENERATION BLUEPRINT" in editorial
+    assert "Primary SEO intent: buyer_fit" in editorial
+    assert "LOCKED GENERATION BLUEPRINT" not in evidence
+    assert '"publication_claims"' in evidence
 
 
 def test_barchart_prompts_target_excellence_above_the_rejection_floor():
@@ -149,7 +172,7 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert project["stage"] == "source_ready"
     assert (
         "AUTOMATION CONTEXT VERSION: "
-            "serp-differentiation-depth-v25-autonomous-depth-recovery"
+            "serp-differentiation-depth-v26-governed-run-transaction"
         in project["source_text"]
     )
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
@@ -208,7 +231,7 @@ def test_explicit_rebuild_reuses_active_project_then_rebuilds_terminal(tmp_path)
     assert engine.latest_project_from_pack(
         pack,
         "AccessNewsWire",
-            "serp-differentiation-depth-v25-autonomous-depth-recovery",
+            "serp-differentiation-depth-v26-governed-run-transaction",
     ) == rebuilt
     assert engine.latest_project_from_pack(
         pack, "AccessNewsWire", "nonexistent-future-workflow"
@@ -237,7 +260,7 @@ def test_only_latest_durable_project_is_authoritative_run_target(tmp_path):
     newer = engine.create_project_from_pack(
         pack, "Barchart Advertorial", force_new=True
     )
-    version = "serp-differentiation-depth-v25-autonomous-depth-recovery"
+    version = "serp-differentiation-depth-v26-governed-run-transaction"
     assert not engine.is_authoritative_run_target(
         older, pack, "Barchart Advertorial", version
     )
@@ -437,8 +460,7 @@ def test_repetitive_caveat_stacking_is_client_advocacy_warning():
         article, "Barchart Advertorial", "device"
     )
     blockers, recommendations = partition_findings(findings)
-    assert "D19" not in {item["id"] for item in blockers}
-    assert "D19" in {item["id"] for item in recommendations}
+    assert "D19" in {item["id"] for item in blockers}
 
 
 def test_markdown_bold_residue_is_a_publication_blocker():
@@ -563,7 +585,7 @@ def test_publication_repair_neutralizes_prosecutorial_device_headings():
 def test_offline_system_audit_owns_every_blocker_and_route():
     report = audit_system_contract("device")
     assert report["passed"] is True
-    assert report["blocker_count"] == 9
+    assert report["blocker_count"] == 10
     assert not report["missing_blocker_rationales"]
     assert not report["stale_blocker_rationales"]
     assert report["missing_gate_owners"] == []
@@ -639,7 +661,9 @@ def test_zero_cost_packaging_finishes_after_fourth_paid_call(tmp_path):
     def package(project_id, _instructions):
         engine._set_stage(project_id, "package_ready")
 
-    with patch.object(engine, "run_next", side_effect=package) as run_next:
+    with patch.object(
+        engine, "_run_next_unlocked", side_effect=package
+    ) as run_next:
         result = engine.run_to_completion(pid, "")
     assert result["stage"] == "package_ready"
     run_next.assert_called_once()
@@ -706,6 +730,9 @@ def test_current_workflow_executes_repair_before_final_signoff(tmp_path):
     )
     article = (
         "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<p>Seller materials state Literal product fact 0.</p>"
+        "<p>Seller materials state Literal product fact 1.</p>"
+        "<p>Seller materials state Literal product fact 2.</p>"
         + "<p>Seller materials describe the product.</p>" * 300
     )
     rejection = {
@@ -778,6 +805,9 @@ def test_current_workflow_rejects_destructive_short_repair(tmp_path):
     )
     full_article = (
         "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<p>Seller materials state Literal product fact 0.</p>"
+        "<p>Seller materials state Literal product fact 1.</p>"
+        "<p>Seller materials state Literal product fact 2.</p>"
         + "<p>Seller materials describe the product for interested buyers.</p>"
         * 260
     )
@@ -990,7 +1020,7 @@ def test_locked_admin_pre_signoff_recovers_mechanical_html_without_paid_call(
 def test_house_optimization_gates_never_become_publication_blockers():
     house_quality_ids = {
         "D4", "D8", "D9", "D10", "D11", "D12", "D13", "D14",
-        "D15", "D16", "D19",
+        "D15", "D16",
     }
     findings = [
         {
@@ -1454,12 +1484,29 @@ def test_overwritten_artifact_is_archived(tmp_path):
 
 def test_package_builds_downloadable_zip(tmp_path):
     engine = WorkbenchEngine(tmp_path)
-    pid = engine.create_project("Test", "AccessNewsWire", "device source")
-    engine.import_manual_article(pid, "<p>Final</p>")
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "AccessNewsWire", force_new=True
+    )
+    engine.import_manual_article(
+        pid,
+        "<p>Seller materials state Literal product fact 0.</p>"
+        "<p>Seller materials state Literal product fact 1.</p>"
+        "<p>Seller materials state Literal product fact 2.</p>",
+    )
     p = engine.get(pid)
-    p["last_report"] = {"verdict": "approved", "mandatory_count": 0,
-                        "mandatory_edits": [], "reviewed_article_hash": p["article_hash"]}
-    engine._build_package(p)
+    report = _independent_approval(engine, pid)
+    engine._set_report(p, report, "signed_off", "approval.json")
+    engine._build_package(engine.get(pid))
     assert engine.export_path(pid).exists()
     with zipfile.ZipFile(engine.export_path(pid)) as archive:
         assert {"00-source-record.txt", "FINAL-ARTICLE.html", "submission-manifest.json"}.issubset(archive.namelist())
@@ -1872,7 +1919,7 @@ def test_step_limit_becomes_typed_recovery_state_not_runtime_error(tmp_path):
     pid = engine.create_project(
         "Device", "Barchart Advertorial", "device source", "device"
     )
-    with patch.object(engine, "run_next", return_value=None):
+    with patch.object(engine, "_run_next_unlocked", return_value=None):
         result = engine.run_to_completion(pid, "", max_steps=1)
     assert result["stage"] == "admin_review"
     assert engine.events(pid)[-1]["event_type"] == "workflow_step_limit_reached"
@@ -2031,6 +2078,7 @@ def test_nonblocking_house_format_target_cannot_block_wordpress_handoff(
         "approved_elements": [],
         "notes": [],
         "reviewed_article_hash": p["article_hash"],
+        "approval_purpose": "final_signoff",
     }
     engine._set_report(p, approval, "package_ready", "approved.json")
     style_finding = [{
@@ -2044,6 +2092,7 @@ def test_nonblocking_house_format_target_cannot_block_wordpress_handoff(
     publisher = MagicMock()
     publisher.configured = True
     publisher.site_url = "https://example.com"
+    publisher.find_draft_by_slug.return_value = None
     publisher.save_draft.return_value = {
         "post_id": 123,
         "edit_url": "https://example.com/wp-admin/post.php?post=123&action=edit",

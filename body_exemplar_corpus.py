@@ -365,12 +365,67 @@ def build_cluster_playbooks(profiles: list[dict]) -> dict:
 def format_body_playbook(platform: str, niche: str,
                          path: str = BODY_CORPUS_PATH) -> str:
     corpus = load_body_corpus(path)
-    playbook = (corpus.get("clusters") or {}).get(f"{platform}::{niche}")
+    profiles = [
+        item for item in corpus.get("profiles", [])
+        if item.get("platform") == platform
+    ]
+    if not profiles:
+        legacy = (corpus.get("clusters") or {}).get(f"{platform}::{niche}")
+        if not legacy:
+            return ""
+        lines = [
+            "═══ APPROVED FULL-BODY PUBLISHER × NICHE PROFILE ═══",
+            f"Profile sample: {legacy['sample_size']}",
+            "Profile confidence: legacy aggregate only; selected-body "
+            "structure is not eligible for controlling generation.",
+            f"Observed median length: {legacy['median_word_count']} words "
+            "(calibration only; never pad beyond current-source value)",
+            f"Median structural section count: {legacy['median_heading_count']}",
+            f"Median CTA count: {legacy['median_cta_count']}",
+            "Common approved section roles:",
+        ]
+        lines.extend(
+            f"  • {role.replace('_', ' ')}"
+            for role in legacy.get("common_section_roles", [])[:12]
+        )
+        lines.extend((legacy["fact_boundary"], ""))
+        return "\n".join(lines)
+    qualified = [
+        item for item in profiles
+        if item.get("niche") == niche
+        and 800 <= int(item.get("word_count") or 0) <= 5000
+        and 4 <= int(item.get("heading_count") or 0) <= 20
+    ]
+    confidence = "exact publisher × niche"
+    if not qualified and niche.endswith("devices"):
+        qualified = [
+            item for item in profiles
+            if str(item.get("niche") or "").endswith(("devices", "gadgets"))
+            and 800 <= int(item.get("word_count") or 0) <= 5000
+            and 4 <= int(item.get("heading_count") or 0) <= 20
+        ]
+        confidence = "adjacent publisher device niches"
+    if not qualified:
+        return ""
+    qualified = sorted(
+        qualified,
+        key=lambda item: (
+            abs(int(item.get("word_count") or 0) - 1800),
+            item.get("url") or "",
+        ),
+    )[:3]
+    normalized_profiles = [
+        {**item, "niche": "__qualified__"} for item in qualified
+    ]
+    playbook = build_cluster_playbooks(normalized_profiles).get(
+        f"{platform}::__qualified__"
+    )
     if not playbook:
         return ""
     lines = [
         "═══ APPROVED FULL-BODY PUBLISHER × NICHE PROFILE ═══",
-        f"Profile sample: {playbook['sample_size']}",
+        f"Profile confidence: {confidence}",
+        f"Qualified profile sample: {len(qualified)}",
         f"Observed median length: {playbook['median_word_count']} words "
         "(calibration only; never pad beyond current-source value)",
         f"Median structural section count: {playbook['median_heading_count']}",
@@ -381,6 +436,19 @@ def format_body_playbook(platform: str, niche: str,
         f"  • {role.replace('_', ' ')}"
         for role in playbook.get("common_section_roles", [])[:12]
     )
+    lines.append("Selected fact-free structural role spines:")
+    for item in qualified:
+        roles = [
+            role for role in item.get("heading_role_sequence", [])
+            if role and role != "other"
+        ][:16]
+        identity = hashlib.sha256(
+            str(item.get("url") or "").encode()
+        ).hexdigest()[:12]
+        lines.append(
+            f"  • profile {identity}: "
+            + (" → ".join(roles) if roles else "no reliable role spine")
+        )
     lines.extend((
         "Use this profile for structure, pacing, disclosure, and CTA rhythm only. "
         "The current assignment's bounded depth contract controls length.",
