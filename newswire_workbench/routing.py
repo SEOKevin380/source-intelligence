@@ -67,6 +67,17 @@ def route_for(stage: str, vertical: str = "general_consumer") -> ModelRoute:
             5000, 2, 2.5 if risk_tier(vertical) >= 2 else 0.75,
             15.0 if risk_tier(vertical) >= 2 else 4.5,
         ),
+        # This is a distinct regression checkpoint after Claude's SEO pass.
+        # It must not share the pre-SEO final-signoff call counter.
+        "post_seo_signoff": ModelRoute(
+            "openai-direct",
+            os.environ.get(
+                "NEWSWIRE_FINAL_MODEL",
+                "gpt-5.4" if risk_tier(vertical) >= 2 else "gpt-5.4-mini",
+            ),
+            5000, 2, 2.5 if risk_tier(vertical) >= 2 else 0.75,
+            15.0 if risk_tier(vertical) >= 2 else 4.5,
+        ),
     }
     if stage not in routes:
         raise KeyError(f"No model route for stage: {stage}")
@@ -79,4 +90,3 @@ def estimated_cost(route: ModelRoute, input_tokens: int, output_tokens: int) -> 
         + output_tokens / 1_000_000 * route.output_per_million,
         6,
     )
-

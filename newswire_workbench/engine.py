@@ -373,7 +373,7 @@ class WorkbenchEngine:
             ), p["id"], "repair", p["vertical"])
             self._set_article(p, article, "revised", "03-claude-revision.html", bump=True)
         elif stage == "revised":
-            report = self._openai_review(p, final=True)
+            report = self._openai_review(p, final=True, purpose="final_signoff")
             if report.get("verdict") != "approved":
                 if p["revision_round"] >= 2:
                     if self._adjudication_count(p["id"]) < 2:
@@ -393,7 +393,7 @@ class WorkbenchEngine:
             ), p["id"], "seo", p["vertical"])
             self._set_article(p, article, "seo_optimized", "05-claude-seo.html")
         elif stage == "seo_optimized":
-            report = self._openai_review(p, final=True)
+            report = self._openai_review(p, final=True, purpose="post_seo_signoff")
             if report.get("verdict") == "approved":
                 target = "post_seo_signed_off"
             else:
@@ -408,7 +408,7 @@ class WorkbenchEngine:
             ), p["id"], "repair", p["vertical"])
             self._set_article(p, article, "seo_repaired", "07-claude-seo-repair.html", bump=True)
         elif stage == "seo_repaired":
-            report = self._openai_review(p, final=True)
+            report = self._openai_review(p, final=True, purpose="post_seo_signoff")
             if report.get("verdict") == "approved":
                 self._set_report(p, report, "post_seo_signed_off", "08-openai-post-seo-signoff.json")
             elif p["revision_round"] < 2:
@@ -490,7 +490,7 @@ class WorkbenchEngine:
             raise RuntimeError("Claude output was truncated at the token limit; no partial article was saved")
         return text
 
-    def _openai_review(self, p, final):
+    def _openai_review(self, p, final, purpose=None):
         key = os.environ.get("OPENAI_API_KEY")
         if not key:
             raise RuntimeError("OPENAI_API_KEY is not configured; use manual report import")
@@ -505,7 +505,7 @@ class WorkbenchEngine:
             p["last_report"], final=final,
             release_title=p.get("release_title", p["title"]),
         )
-        purpose = "final_signoff" if final else "compliance"
+        purpose = purpose or ("final_signoff" if final else "compliance")
         route = route_for(purpose, p["vertical"])
         self._assert_call_budget(p["id"], purpose, route)
         try:

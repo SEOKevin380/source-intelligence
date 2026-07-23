@@ -77,6 +77,19 @@ def test_llm_call_budget_blocks_repeat_stage_calls(tmp_path):
     assert summary["estimated_cost"] > 0
 
 
+def test_post_seo_signoff_has_independent_call_budget(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project("Test", "AccessNewsWire", "financial source", "financial")
+    pre_seo = route_for("final_signoff", "financial")
+    for _ in range(pre_seo.max_calls):
+        engine._record_llm_call(pid, "final_signoff", pre_seo, 100, 100)
+    with pytest.raises(RuntimeError, match="call ceiling"):
+        engine._assert_call_budget(pid, "final_signoff", pre_seo)
+
+    post_seo = route_for("post_seo_signoff", "financial")
+    engine._assert_call_budget(pid, "post_seo_signoff", post_seo)
+
+
 def test_manual_path_and_hash_bound_report(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     pid = engine.create_project("Test", "Barchart Advertorial", "financial newsletter source")
