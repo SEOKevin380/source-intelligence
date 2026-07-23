@@ -36,7 +36,8 @@ On Kevin's Mac, two Desktop shortcuts are installed:
 - `ANTHROPIC_API_KEY`: Claude generation, revision, and SEO.
 - `OPENAI_API_KEY`: ChatGPT compliance review and sign-off.
 - `ANTHROPIC_GENERATION_MODEL`: optional override.
-- `OPENAI_COMPLIANCE_MODEL`: optional override; default is `gpt-5`.
+- `OPENAI_COMPLIANCE_MODEL`: optional override; default is `gpt-5.4-mini`,
+  matching MBK Command Center's active cost-efficient compliance model.
 
 If a key is absent, the Manual fallback tab accepts the corresponding Claude
 article or ChatGPT compliance report without losing project history.

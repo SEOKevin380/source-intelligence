@@ -254,7 +254,7 @@ class WorkbenchEngine:
             p["last_report"], final=final,
         )
         response = client.responses.create(
-            model=os.environ.get("OPENAI_COMPLIANCE_MODEL", "gpt-5"),
+            model=os.environ.get("OPENAI_COMPLIANCE_MODEL", "gpt-5.4-mini"),
             input=[{"role": "system", "content": "You are an independent, publication-focused compliance editor. Return valid JSON only."},
                    {"role": "user", "content": prompt}],
         )
