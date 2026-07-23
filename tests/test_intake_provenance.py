@@ -709,6 +709,24 @@ def test_commemorative_coin_identity_guard_routes_to_collectible():
     assert result["category"] == "Collectibles & Memorabilia"
 
 
+def test_power_saver_identity_guard_routes_to_device_when_page_is_thin():
+    from stage_handlers import _apply_offering_type_guard
+    from workflow import Job
+
+    job = Job.create(
+        url="https://buyecowatt.com/flow3/",
+        product_name="EcoWatt Power Saver",
+    )
+    result = _apply_offering_type_guard({
+        "product_name": job.product_name,
+        "product_type": "unknown",
+        "supplement_facts": {"ingredients": []},
+    }, job)
+
+    assert result["product_type"] == "device"
+    assert result["category"] == "Consumer Electronics"
+
+
 def test_new_commercial_vertical_prompts_generate_without_wrong_category_language():
     from prompt_builders import build_l6_press_release_prompt
 

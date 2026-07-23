@@ -157,6 +157,13 @@ def _apply_offering_type_guard(product_data: dict, job: Job) -> dict:
     }
     collectible_signals = [name for name, pattern in collectible_patterns.items()
                            if re.search(pattern, identity_text)]
+    device_patterns = {
+        "power_saver": r"\b(?:power|energy|electric(?:al|ity)?)\s*(?:saver|saving|optimizer)\b",
+        "plug_in_device": r"\bplug[ -]?in\s+(?:device|unit|power)\b",
+        "ecowatt": r"\beco\s*watt\b|buyecowatt\.com",
+    }
+    device_signals = [name for name, pattern in device_patterns.items()
+                      if re.search(pattern, identity_text)]
     if gaming_signals and not physical:
         data["product_type"] = "gaming"
         data["category"] = data.get("category") or "Lottery Tools"
@@ -171,6 +178,14 @@ def _apply_offering_type_guard(product_data: dict, job: Job) -> dict:
         data["_type_classification"] = {
             "method": "deterministic_identity_guard_v2",
             "signals": collectible_signals,
+            "overrode": current,
+        }
+    elif device_signals and not ingredients:
+        data["product_type"] = "device"
+        data["category"] = data.get("category") or "Consumer Electronics"
+        data["_type_classification"] = {
+            "method": "deterministic_identity_guard_v2",
+            "signals": device_signals,
             "overrode": current,
         }
     elif len(signals) >= 2 and not physical:
