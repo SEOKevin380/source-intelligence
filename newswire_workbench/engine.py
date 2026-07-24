@@ -44,7 +44,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v34-closed-loop-action-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "sealed-depth-recovery-20260724-r10"
+WORKBENCH_RUNTIME_REVISION = "sealed-depth-recovery-20260724-r11"
 
 STAGES = (
     "source_ready",
@@ -1829,6 +1829,7 @@ class WorkbenchEngine:
             return ""
 
         parts = [
+            "<!-- sealed-depth-recovery-v2 -->",
             "<h2><strong>How to Use the Available Source Record</strong></h2>",
             (
                 f"<p>The sealed record gives readers a defined but limited "
@@ -2318,6 +2319,18 @@ class WorkbenchEngine:
             if not accepted:
                 return self.get(project_id)
         elif stage == "revised":
+            if (
+                self._uses_locked_call_path(p)
+                and "<!-- sealed-depth-recovery-v2 -->"
+                not in p["article_text"]
+                and any(
+                    event["event_type"]
+                    == "depth_reconciled_from_paid_artifacts"
+                    for event in self.events(p["id"])
+                )
+                and self._recover_depth_from_paid_artifacts(p["id"])
+            ):
+                return self.get(project_id)
             preflight = audit_article(
                 p["article_text"],
                 p["platform"],
