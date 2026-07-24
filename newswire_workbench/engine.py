@@ -1291,6 +1291,14 @@ class WorkbenchEngine:
             extract_sealed_pack,
         )
         sealed_pack = extract_sealed_pack(p["source_text"])
+        missing_fact_tokens = {
+            token
+            for item in (
+                (sealed_pack.get("required_facts") or {}).get("missing") or []
+            )
+            for token in re.findall(r"[a-z0-9]+", str(item).casefold())
+            if len(token) > 3
+        }
 
         report_path = project_dir / "02-openai-review.json"
         try:
@@ -1347,7 +1355,7 @@ class WorkbenchEngine:
                 if not tokens:
                     continue
                 if any(
-                    len(tokens & known) / max(len(tokens | known), 1) >= 0.72
+                    len(tokens & known) / max(len(tokens | known), 1) >= 0.82
                     for known in existing_tokens
                 ):
                     continue
@@ -1358,10 +1366,20 @@ class WorkbenchEngine:
                 block_ledger = build_article_claim_ledger(
                     sealed_pack, str(node)
                 )
-                if (
-                    block_ledger["used_claim_count"] < 1
-                    or block_ledger["attribution_violations"]
-                ):
+                maps_permitted_claim = (
+                    block_ledger["used_claim_count"] >= 1
+                    and not block_ledger["attribution_violations"]
+                )
+                explains_recorded_gap = bool(
+                    missing_fact_tokens & tokens
+                    and re.search(
+                        r"\b(?:not established|not documented|not available|"
+                        r"unavailable|missing|unverified|not verified|verify|"
+                        r"confirm|ask the seller|check the current)\b",
+                        lowered,
+                    )
+                )
+                if not maps_permitted_claim and not explains_recorded_gap:
                     continue
                 block_findings = deterministic_findings(
                     str(node), p["platform"], p["vertical"]
