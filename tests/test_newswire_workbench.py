@@ -3629,6 +3629,8 @@ def test_sealed_depth_block_uses_all_nonpricing_claim_types():
     assert "24/7 operation" in block
     assert "90V–250V" in block
     assert "30kW" in block
+    assert "Frequently Asked Questions" not in block
+    assert "Additional Source-Grounded Buyer Details" not in block
 
 
 def test_depth_recovery_drops_mixed_unattributed_claim_blocks():

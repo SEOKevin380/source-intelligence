@@ -44,7 +44,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v34-closed-loop-action-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "categorical-assertion-recovery-20260724-r17"
+WORKBENCH_RUNTIME_REVISION = "sealed-only-semantic-rebuild-20260724-r18"
 
 STAGES = (
     "source_ready",
@@ -1563,14 +1563,22 @@ class WorkbenchEngine:
         attribution_violations = list(
             initial_ledger.get("attribution_violations") or []
         )
-        if attribution_violations:
-            # Do not prefix a mixed model sentence with "the seller says";
-            # that could launder an unsupported explanatory clause. Drop the
-            # complete offending block and restore the permitted claim later
-            # from the sealed decision block with claim-local attribution.
-            base_html = self._drop_attribution_violating_blocks(
-                base_html, attribution_violations
+        base_has_categorical_assertions = any(
+            item.get("id") == "D20"
+            for item in deterministic_findings(
+                base_html, p["platform"], p["vertical"]
             )
+        )
+        sealed_only_rebuild = bool(
+            attribution_violations or base_has_categorical_assertions
+        )
+        if sealed_only_rebuild:
+            # Do not prefix a mixed model sentence with "the seller says";
+            # that could launder an unsupported explanatory clause. Once the
+            # base also contains categorical external assertions, selective
+            # deletion is brittle and creates duplicated recovery sections.
+            # Rebuild from the sealed deterministic article instead.
+            base_html = ""
         base_soup = BeautifulSoup(base_html, "html.parser")
         for heading in list(base_soup.find_all("h2")):
             if (
@@ -1615,10 +1623,7 @@ class WorkbenchEngine:
         target_words = publication_profile(
             p["platform"], p["vertical"]
         )["recovery_target"]
-        sources = (
-            repair_raw,
-            draft_raw,
-        )
+        sources = () if sealed_only_rebuild else (repair_raw, draft_raw)
         for source_html in sources:
             source = BeautifulSoup(source_html, "html.parser")
             for node in source.find_all(["p", "ul", "ol"]):
@@ -1684,15 +1689,16 @@ class WorkbenchEngine:
 
         if not additions and not decision_block:
             return False
-        heading = base.new_tag("h2")
-        strong = base.new_tag("strong")
-        strong.string = "Additional Source-Grounded Buyer Details"
-        heading.append(strong)
-        base.append(heading)
-        for fragment in additions:
-            parsed = BeautifulSoup(fragment, "html.parser")
-            for node in list(parsed.contents):
-                base.append(node)
+        if additions:
+            heading = base.new_tag("h2")
+            strong = base.new_tag("strong")
+            strong.string = "Additional Source-Grounded Buyer Details"
+            heading.append(strong)
+            base.append(heading)
+            for fragment in additions:
+                parsed = BeautifulSoup(fragment, "html.parser")
+                for node in list(parsed.contents):
+                    base.append(node)
 
         merged = repair_source_grounding(
             str(base), p["source_text"], p["vertical"]
@@ -1739,7 +1745,12 @@ class WorkbenchEngine:
             project_id, "depth_reconciled_from_paid_artifacts", "revised",
             recovered["article_hash"], {
                 "source_artifacts": [
-                    "llm_calls:draft", "llm_calls:compliance_repair"
+                    (
+                        "sealed_pack:deterministic_rebuild"
+                        if sealed_only_rebuild
+                        else "llm_calls:draft"
+                    ),
+                    "llm_calls:compliance_repair",
                 ],
                 "added_blocks": len(additions),
                 "final_words": self._article_word_count(
@@ -1950,6 +1961,37 @@ class WorkbenchEngine:
             "serve different purposes and should not be treated as interchangeable. "
             "If only the seller statement is available, keep the conclusion at "
             "that level instead of converting it into a verified result.</p>"
+            "<h3><strong>What the documented feature set adds up to</strong></h3>"
+            "<p>Read together, the seller-reported features present one clear "
+            "product story. The seller describes a plug-and-play device tied "
+            "to voltage stabilization, power-factor correction, filtering of "
+            "what its materials call dirty electricity, and reduction of power "
+            "surges. Seller materials also state round-the-clock operation, "
+            "zero maintenance, and a green active-operation light. Those points "
+            "make the offer easy to understand without adding an outcome the "
+            "record does not prove. They describe the seller's intended use and "
+            "operating presentation; they do not independently establish a "
+            "particular performance result.</p>"
+            "<h3><strong>How the specifications help narrow the question</strong></h3>"
+            "<p>The seller-stated 90V–250V range and 30kW capacity give readers "
+            "two concrete values to verify against the exact unit offered. The "
+            "useful next step is not to infer what those numbers guarantee. It "
+            "is to confirm that the same values appear for the current model "
+            "and to ask the seller what each value means for operation. Keeping "
+            "the model identifier, specification, and seller explanation "
+            "together prevents a number from being separated from the product "
+            "to which it is supposed to apply.</p>"
+            "<h3><strong>How setup and timing shape the decision</strong></h3>"
+            "<p>Seller materials describe plug-and-play installation and a "
+            "green light associated with active operation. Seller materials "
+            "also claim a "
+            "six-to-eight-week optimization period. Those seller statements "
+            "give a reader specific setup and timing questions: what action "
+            "starts operation, what the light confirms, when the seller-stated "
+            "timing begins, and how the seller defines its timing language. "
+            "The article can report "
+            "those seller statements, but it should not convert the stated "
+            "period into a promised result or a first-hand test.</p>"
             "<h3><strong>Questions that make an answer useful</strong></h3>"
             "<p>A useful answer should name the exact model, state the value or "
             "term being confirmed, identify the document where it appears, and "
