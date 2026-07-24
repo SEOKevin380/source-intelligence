@@ -3629,3 +3629,35 @@ def test_sealed_depth_block_uses_all_nonpricing_claim_types():
     assert "24/7 operation" in block
     assert "90V–250V" in block
     assert "30kW" in block
+
+
+def test_depth_recovery_drops_mixed_unattributed_claim_blocks():
+    article = (
+        "<h2><strong>Operation</strong></h2>"
+        "<p>The device claims 24/7 operation and conditions household "
+        "circuits in ways the sealed record does not establish.</p>"
+        "<p>Seller materials state zero maintenance.</p>"
+        "<ul><li>The claimed six-to-eight-week period is presented as "
+        "seller-described timing.</li></ul>"
+    )
+    violations = [
+        {
+            "article_sentence": (
+                "The device claims 24/7 operation and conditions household "
+                "circuits in ways the sealed record does not establish."
+            )
+        },
+        {
+            "article_sentence": (
+                "The claimed six-to-eight-week period is presented as "
+                "seller-described timing."
+            )
+        },
+    ]
+    repaired = WorkbenchEngine._drop_attribution_violating_blocks(
+        article, violations
+    )
+    assert "conditions household circuits" not in repaired
+    assert "six-to-eight-week" not in repaired
+    assert "<ul>" not in repaired
+    assert "Seller materials state zero maintenance." in repaired

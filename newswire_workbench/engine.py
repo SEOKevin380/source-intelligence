@@ -44,7 +44,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v34-closed-loop-action-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "sealed-source-handoff-20260724-r14"
+WORKBENCH_RUNTIME_REVISION = "attribution-safe-depth-recovery-20260724-r15"
 
 STAGES = (
     "source_ready",
@@ -1559,6 +1559,18 @@ class WorkbenchEngine:
         base_html = repair_source_grounding(
             normalized_base, p["source_text"], p["vertical"]
         )
+        initial_ledger = build_article_claim_ledger(sealed_pack, base_html)
+        attribution_violations = list(
+            initial_ledger.get("attribution_violations") or []
+        )
+        if attribution_violations:
+            # Do not prefix a mixed model sentence with "the seller says";
+            # that could launder an unsupported explanatory clause. Drop the
+            # complete offending block and restore the permitted claim later
+            # from the sealed decision block with claim-local attribution.
+            base_html = self._drop_attribution_violating_blocks(
+                base_html, attribution_violations
+            )
         base_soup = BeautifulSoup(base_html, "html.parser")
         for heading in list(base_soup.find_all("h2")):
             if (
@@ -3142,6 +3154,33 @@ class WorkbenchEngine:
     def _article_word_count(article):
         plain = re.sub(r"<[^>]+>", " ", str(article or ""))
         return len(re.findall(r"\b[\w’'-]+\b", plain))
+
+    @staticmethod
+    def _drop_attribution_violating_blocks(article, violations):
+        """Remove whole mixed blocks instead of laundering them by prefix."""
+        violating_sentences = [
+            re.sub(
+                r"\s+", " ",
+                str(item.get("article_sentence") or ""),
+            ).strip().casefold()
+            for item in (violations or [])
+            if str(item.get("article_sentence") or "").strip()
+        ]
+        soup = BeautifulSoup(article, "html.parser")
+        for node in list(soup.find_all(["p", "li"])):
+            node_text = re.sub(
+                r"\s+", " ", node.get_text(" ", strip=True)
+            ).strip().casefold()
+            if any(
+                sentence in node_text or node_text in sentence
+                for sentence in violating_sentences
+                if sentence and node_text
+            ):
+                node.decompose()
+        for container in list(soup.find_all(["ul", "ol"])):
+            if not container.get_text(" ", strip=True):
+                container.decompose()
+        return str(soup)
 
     def _remove_house_rule_conflicts(self, report, article=""):
         """Prevent a reviewer from turning its own house-rule conflicts into blockers."""
