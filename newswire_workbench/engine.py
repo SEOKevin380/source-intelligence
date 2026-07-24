@@ -44,7 +44,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v34-closed-loop-action-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "sealed-depth-recovery-20260724-r9"
+WORKBENCH_RUNTIME_REVISION = "sealed-depth-recovery-20260724-r10"
 
 STAGES = (
     "source_ready",
@@ -1559,6 +1559,21 @@ class WorkbenchEngine:
         base_html = repair_source_grounding(
             normalized_base, p["source_text"], p["vertical"]
         )
+        base_soup = BeautifulSoup(base_html, "html.parser")
+        for heading in list(base_soup.find_all("h2")):
+            if (
+                heading.get_text(" ", strip=True).casefold()
+                != "how to use the available source record"
+            ):
+                continue
+            node = heading
+            while node is not None:
+                next_node = node.find_next_sibling()
+                node.decompose()
+                if next_node is not None and next_node.name == "h2":
+                    break
+                node = next_node
+        base_html = str(base_soup)
         current_ledger = build_article_claim_ledger(sealed_pack, base_html)
         if current_ledger.get("attribution_violations"):
             return False
@@ -1583,6 +1598,7 @@ class WorkbenchEngine:
             for value in existing_blocks if value
         ]
         additions = []
+        decision_block = ""
         assembled_words = self._article_word_count(base_html)
         target_words = publication_profile(
             p["platform"], p["vertical"]
@@ -1650,12 +1666,11 @@ class WorkbenchEngine:
                 decision_text = BeautifulSoup(
                     decision_block, "html.parser"
                 ).get_text(" ", strip=True)
-                additions.append(decision_block)
                 assembled_words += len(
                     re.findall(r"\b[\w’'-]+\b", decision_text)
                 )
 
-        if not additions:
+        if not additions and not decision_block:
             return False
         heading = base.new_tag("h2")
         strong = base.new_tag("strong")
@@ -1670,6 +1685,8 @@ class WorkbenchEngine:
         merged = repair_source_grounding(
             str(base), p["source_text"], p["vertical"]
         )
+        if decision_block:
+            merged += decision_block
         preflight = audit_article(
             merged,
             p["platform"],
@@ -1702,6 +1719,7 @@ class WorkbenchEngine:
             "revised",
             "03c-depth-reconciled.html",
             bump=False,
+            prevalidated_source_grounding=True,
         ):
             return False
         recovered = self.get(project_id)
@@ -3206,7 +3224,7 @@ class WorkbenchEngine:
 
     def _set_article(
         self, p, article, stage, filename, bump=False, call_purpose=None,
-        require_publishable=False,
+        require_publishable=False, prevalidated_source_grounding=False,
     ):
         """Finalize a provider candidate before it can replace canonical state.
 
@@ -3220,9 +3238,10 @@ class WorkbenchEngine:
         )
         article, american_english_changes = normalize_american_english(article)
         article = ensure_article_html(article)
-        article = repair_source_grounding(
-            article, p["source_text"], p["vertical"]
-        )
+        if not prevalidated_source_grounding:
+            article = repair_source_grounding(
+                article, p["source_text"], p["vertical"]
+            )
         if not article:
             raise ValueError("Model returned an empty article")
         title = p.get("release_title") or p["title"]

@@ -542,7 +542,7 @@ def repair_source_grounding(html, source_text, vertical):
         r"\b(?:professional|audit|appliance|upgrade|electrician)\b",
         r"\btransient voltage spikes?\b.{0,140}\b(?:damage|safety risks?)\b",
         r"\b(?:use|choose|buy) (?:a |an )?ups instead\b",
-        r"\b(?:ul|etl|csa)(?: certification| certified|,|\s+or\s+)",
+        r"\b(?:ul|etl|csa)(?:[- ]listed| certification| certified|,|\s+or\s+)",
         r"\blegitimate product should\b",
         r"\b(?:deploy|place|install) multiple units?\b.{0,120}"
         r"\b(?:room|circuit|throughout)\b",
@@ -618,6 +618,17 @@ def repair_source_grounding(html, source_text, vertical):
 
     for node in list(soup.find_all(["ul", "ol"])):
         if not node.get_text(" ", strip=True):
+            node.decompose()
+    for heading in list(soup.find_all(["h2", "h3"])):
+        sibling = heading.find_next_sibling()
+        if sibling is None or sibling.name in {"h2", "h3"}:
+            heading.decompose()
+    for node in list(soup.find_all("strong")):
+        if (
+            node.parent is soup
+            and node.get_text(" ", strip=True).casefold().rstrip(":")
+            == "paid advertorial"
+        ):
             node.decompose()
 
     # When the sealed ledger contains pricing, an empty CTA-only pricing
