@@ -44,6 +44,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v31-candidate-acceptance"
 )
+WORKBENCH_RUNTIME_REVISION = "clean-admin-resume-20260723-r1"
 
 STAGES = (
     "source_ready",
