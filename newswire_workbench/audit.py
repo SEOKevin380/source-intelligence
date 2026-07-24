@@ -13,26 +13,18 @@ from .learning import (
 )
 from .routing import route_for
 from .execution_budget import execution_budget
-
-
-MECHANICAL_GATES = frozenset({
-    "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9",
-    "D10", "D11", "D12", "D13", "D14", "D17",
-})
-SEMANTIC_GATES = frozenset({"D20"})
-QUALITY_GATES = frozenset({
-    "D4", "D8", "D9", "D10", "D11", "D12", "D13", "D14",
-    "D15", "D16", "D18", "D19",
-})
+from .gate_registry import (
+    ALL_GATE_IDS,
+    MECHANICAL_GATES,
+    QUALITY_GATES,
+    SEMANTIC_GATES,
+)
 REQUIRED_ROUTES = (
     "draft",
     "compliance",
     "compliance_repair",
     "final_signoff",
 )
-ALL_GATE_IDS = frozenset(f"D{number}" for number in range(1, 21))
-
-
 def audit_system_contract(vertical: str) -> dict:
     """Prove that every known blocker is owned and every route has a budget."""
     owned = MECHANICAL_GATES | SEMANTIC_GATES | QUALITY_GATES

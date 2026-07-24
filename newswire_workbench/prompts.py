@@ -1,6 +1,9 @@
 """Prompt registry for the newsroom generation and compliance workflow."""
 
 import json
+import re
+
+from .publication_profiles import publication_profile
 
 
 PLATFORMS = ("AccessNewsWire", "Barchart Advertorial")
@@ -15,6 +18,27 @@ def split_editorial_context(source_text: str) -> tuple[str, str]:
         return "", str(source_text or "")
     editorial, facts = str(source_text).split(SEALED_FACT_MARKER, 1)
     return editorial.strip(), facts.strip()
+
+
+def select_stage_editorial_context(
+    editorial_context: str, stage: str
+) -> str:
+    """Select complete trusted sections by stage without unsafe truncation."""
+    if stage == "draft":
+        return editorial_context
+    allowed = (
+        "LOCKED GENERATION BLUEPRINT",
+        "GOVERNED POLICY SNAPSHOT",
+        "PUBLISHER × NICHE APPROVAL PLAYBOOK",
+        "NICHE BODY",
+    )
+    chunks = re.split(r"(?=^═══ )", editorial_context, flags=re.M)
+    selected = []
+    for chunk in chunks:
+        lines = chunk.splitlines()
+        if lines and any(marker in lines[0] for marker in allowed):
+            selected.append(chunk.strip())
+    return "\n\n".join(selected)
 
 VERTICAL_TERMS = {
     "health": ("supplement", "telehealth", "vitamin", "ingredient", "serving size"),
@@ -38,15 +62,18 @@ def detect_vertical(source_text: str) -> str:
 def generation_prompt(source_text: str, platform: str, vertical: str,
                       master_instructions: str,
                       learned_guidance: str = "") -> str:
+    profile = publication_profile(platform, vertical)
     depth_contract = (
-        "For an AccessNewsWire financial newsletter/research review, ordinarily "
-        "target 1,800–2,400 useful words when the sealed record supports it. "
+        f"For an AccessNewsWire financial newsletter/research review, ordinarily "
+        f"target {profile['target_min']:,}–{profile['target_max']:,} useful words "
+        "when the sealed record supports it. "
         "Cover who, what, why, how, how much, access, fit, limitations, trust "
         "questions, and the advertiser's specific thesis. Do not pad with "
         "generic investing advice."
         if platform == "AccessNewsWire" and vertical == "financial"
         else
-        "For a Barchart device review, ordinarily target 1,400–2,000 useful "
+        f"For a Barchart device review, ordinarily target "
+        f"{profile['target_min']:,}–{profile['target_max']:,} useful "
         "words when "
         "the supplied official, prior-release, and competitor records support "
         "it. Answer what it is, how the claimed mechanism works, what evidence "
@@ -61,9 +88,9 @@ def generation_prompt(source_text: str, platform: str, vertical: str,
         "never add filler merely to reach a word count."
     )
     barchart_coverage_plan = (
-        """
-- Barchart device execution plan: produce 1,600–1,900 useful words on the
-  first attempt. Treat 1,400 as a hard rejection floor, never as the target.
+        f"""
+- Barchart device execution plan: produce {profile['target_min']:,}–{profile['target_max']:,} useful words on the
+  first attempt. Treat {profile['hard_floor']:,} as a hard rejection floor, never as the target.
   Before writing, allocate coverage across these reader jobs, varying their
   order and headings to match the locked blueprint and banked niche exemplar:
   opening thesis and quick buyer orientation (140–190 words); product identity
@@ -233,6 +260,10 @@ def compliance_prompt(source_text: str, article: str, platform: str,
                       final: bool = False, release_title: str = "") -> str:
     prior = json.dumps(previous_report or {}, ensure_ascii=False)
     editorial_context, sealed_facts = split_editorial_context(source_text)
+    editorial_context = select_stage_editorial_context(
+        editorial_context, "review"
+    )
+    profile = publication_profile(platform, vertical)
     scope = "final regression review" if final else "comprehensive compliance review"
     return f"""Act as the independent compliance editor for a paid {platform}
 advertorial. Perform a {scope} on this {vertical} article.
@@ -281,7 +312,7 @@ Review all applicable categories:
     STRONG.key-takeaway phrases,
     and 5–6 strategic links in AccessNewsWire long-form copy.
 13. Editorial depth: an AccessNewsWire financial newsletter/research review
-    should ordinarily provide 1,800–2,400 useful words when the source record
+    should ordinarily provide {profile['target_min']:,}–{profile['target_max']:,} useful words when the source record
     supports that depth. Flag generic padding, but also flag a thin draft that
     fails to answer who, what, why, how, how much, access, fit, limitations,
     trust questions, and the advertiser's specific thesis.
@@ -351,9 +382,13 @@ def revision_prompt(source_text: str, article: str, report: dict,
                     platform: str, vertical: str, memory: str = "",
                     release_title: str = "") -> str:
     editorial_context, sealed_facts = split_editorial_context(source_text)
+    editorial_context = select_stage_editorial_context(
+        editorial_context, "repair"
+    )
+    profile = publication_profile(platform, vertical)
     barchart_repair_plan = (
-        """
-- Barchart device repair plan: return 1,600–1,900 useful words. Treat 1,400 as
+        f"""
+- Barchart device repair plan: return {profile['target_min']:,}–{profile['target_max']:,} useful words. Treat {profile['hard_floor']:,} as
   a hard rejection floor. Preserve compliant material, then expand missing
   reader jobs with source-grounded analysis: product/value orientation,
   attributed mechanism and specifications, evidence status, recorded pricing,
@@ -416,14 +451,14 @@ compliance report below.
   contains STRONG; 10–14 additional STRONG.key-takeaway phrases; 5–6 strategic links for
   AccessNewsWire long form; and a scannable contact block.
 - If this is an AccessNewsWire financial newsletter/research review, build
-  toward 1,800–2,400 useful, source-grounded words. Expand missing reader
+  toward {profile['target_min']:,}–{profile['target_max']:,} useful, source-grounded words. Expand missing reader
   questions and product-specific analysis, never generic investment filler.
-- If this is a Barchart device review, build toward 1,400–2,000 useful,
+- If this is a Barchart device review, build toward {profile['target_min']:,}–{profile['target_max']:,} useful,
   source-grounded words and fully answer mechanism, evidence, price, setup,
   fit/not-fit, limitations, trust, and current terms. Keep alternatives to one
   compact neutral comparison section and never advocate competing products.
 - The revised Barchart device article must retain at least 80% of the current
-  article's word count and must not fall below 1,400 useful, source-grounded
+  article's word count and must not fall below {profile['hard_floor']:,} useful, source-grounded
   words. If a sentence cannot
   be repaired without adding a fact, delete only that sentence and strengthen
   neighboring sections using permitted claims, recorded prices, recorded

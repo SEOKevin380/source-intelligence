@@ -3,12 +3,11 @@
 import hashlib
 import re
 
+from .publication_profiles import publication_profile
+from .gate_registry import PUBLICATION_BLOCKER_IDS
 
-PROMPT_VERSION = "newswire-v1.9-governed-run-transaction"
 
-PUBLICATION_BLOCKER_IDS = frozenset({
-    "D1", "D2", "D3", "D5", "D6", "D7", "D17", "D18", "D19", "D20",
-})
+PROMPT_VERSION = "newswire-v2.0-durable-recovery-contract"
 
 HARD_BLOCKER_RATIONALE = {
     "D1": ("legal_disclosure", "Paid native advertising must be identifiable."),
@@ -152,12 +151,9 @@ def deterministic_findings(article, platform, vertical):
         })
     links = list(re.finditer(r"<a\b[^>]*href=[\"'][^\"']+[\"'][^>]*>", article, re.I))
     word_count = len(re.findall(r"\b[\w’'-]+\b", re.sub(r"<[^>]+>", " ", article)))
-    depth_floor = 0
-    depth_label = ""
-    if platform == "AccessNewsWire" and vertical == "financial":
-        depth_floor, depth_label = 1800, "financial AccessNewsWire"
-    elif platform == "Barchart Advertorial" and vertical == "device":
-        depth_floor, depth_label = 1400, "device Barchart"
+    profile = publication_profile(platform, vertical)
+    depth_floor = profile["hard_floor"]
+    depth_label = profile["label"]
     if depth_floor and word_count < depth_floor:
         findings.append({
             "id": "D18", "category": "Editorial depth gate",

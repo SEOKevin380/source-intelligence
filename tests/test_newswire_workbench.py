@@ -9,7 +9,12 @@ from bs4 import BeautifulSoup
 
 from newswire_workbench.engine import WorkbenchEngine, _source_affiliate_link
 from newswire_workbench.prompts import detect_vertical
-from newswire_workbench.prompts import generation_prompt, revision_prompt
+from newswire_workbench.prompts import (
+    compliance_prompt,
+    generation_prompt,
+    revision_prompt,
+    select_stage_editorial_context,
+)
 from newswire_workbench.learning import deterministic_findings, partition_findings
 from newswire_workbench.audit import audit_article, audit_system_contract
 from newswire_workbench.wordpress import WordPressDraftPublisher
@@ -21,6 +26,10 @@ from newswire_workbench.formatting import (
     repair_source_grounding,
 )
 from newswire_workbench.routing import risk_tier, route_for
+from newswire_workbench.human_copy import (
+    human_copy_diagnostics,
+    normalize_american_english,
+)
 from source_pack_contract import seal_source_pack
 
 
@@ -102,10 +111,47 @@ def test_barchart_prompts_target_excellence_above_the_rejection_floor():
         "Barchart Advertorial",
         "device",
     )
-    for prompt in (draft_prompt, repair_prompt):
+    review_prompt = compliance_prompt(
+        "sealed source",
+        "<p>draft</p>",
+        "Barchart Advertorial",
+        "device",
+    )
+    for prompt in (draft_prompt, repair_prompt, review_prompt):
         assert "1,600–1,900 useful words" in prompt
+        assert "1,400–2,000" not in prompt
+    for prompt in (draft_prompt, repair_prompt):
         assert "hard rejection floor" in prompt
         assert "banked niche" in prompt
+
+
+def test_review_context_keeps_whole_governed_sections_only():
+    context = (
+        "═══ LOCKED GENERATION BLUEPRINT ═══\nkeep blueprint\n"
+        "═══ UNRELATED BULK ARCHIVE ═══\n" + ("omit me " * 1000) + "\n"
+        "═══ GOVERNED POLICY SNAPSHOT ═══\nkeep policy\n"
+        "═══ NICHE BODY PROFILE ═══\nkeep profile"
+    )
+    selected = select_stage_editorial_context(context, "review")
+    assert "keep blueprint" in selected
+    assert "keep policy" in selected
+    assert "keep profile" in selected
+    assert "omit me" not in selected
+
+
+def test_human_copy_diagnostics_are_advisory_and_use_american_english():
+    article = (
+        "<p>This organisation describes the colour clearly. "
+        "This organisation repeats the same opening. "
+        "This organisation repeats it once more.</p>"
+    )
+    normalized, changes = normalize_american_english(article)
+    diagnostics = human_copy_diagnostics(normalized)
+    assert "organization" in normalized
+    assert "color" in normalized
+    assert len(changes) == 2
+    assert diagnostics["blocking"] is False
+    assert "repeated_sentence_starters" in diagnostics["issues"]
 
 
 def test_fenced_plain_text_is_converted_to_submission_html():
@@ -172,7 +218,7 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert project["stage"] == "source_ready"
     assert (
         "AUTOMATION CONTEXT VERSION: "
-            "serp-differentiation-depth-v26-governed-run-transaction"
+            "serp-differentiation-depth-v27-durable-recovery-contract"
         in project["source_text"]
     )
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
@@ -231,7 +277,7 @@ def test_explicit_rebuild_reuses_active_project_then_rebuilds_terminal(tmp_path)
     assert engine.latest_project_from_pack(
         pack,
         "AccessNewsWire",
-            "serp-differentiation-depth-v26-governed-run-transaction",
+            "serp-differentiation-depth-v27-durable-recovery-contract",
     ) == rebuilt
     assert engine.latest_project_from_pack(
         pack, "AccessNewsWire", "nonexistent-future-workflow"
@@ -260,7 +306,7 @@ def test_only_latest_durable_project_is_authoritative_run_target(tmp_path):
     newer = engine.create_project_from_pack(
         pack, "Barchart Advertorial", force_new=True
     )
-    version = "serp-differentiation-depth-v26-governed-run-transaction"
+    version = "serp-differentiation-depth-v27-durable-recovery-contract"
     assert not engine.is_authoritative_run_target(
         older, pack, "Barchart Advertorial", version
     )
@@ -659,6 +705,7 @@ def test_zero_cost_packaging_finishes_after_fourth_paid_call(tmp_path):
         )
 
     def package(project_id, _instructions):
+        engine.export_path(project_id).write_bytes(b"package")
         engine._set_stage(project_id, "package_ready")
 
     with patch.object(
@@ -1078,7 +1125,7 @@ def test_ecowatt_shaped_preflight_exposes_all_semantic_failures_together():
     assert {"D17", "D1", "D18", "D19", "D20"}.issubset(initial_ids)
     assert not ({item["id"] for item in report["mechanical_remaining"]})
     assert {"D18", "D19", "D20"}.issubset(final_ids)
-    assert {"D18", "D19"}.isdisjoint({
+    assert {"D18", "D19", "D20"}.issubset({
         item["id"] for item in report["semantic_remaining"]
     })
     assert report["passed"] is False
@@ -1512,6 +1559,160 @@ def test_three_call_d18_stop_is_resumable_from_paid_artifacts(tmp_path):
     assert engine.can_recover_locked_pre_signoff(pid) is True
 
 
+def test_depth_only_preflight_recovers_inline_without_operator_resume(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    article = "<p>Seller materials describe Literal product fact 1.</p>"
+    engine._set_article(
+        engine.get(pid), article, "revised", "03-claude-revision.html"
+    )
+    engine._write(pid, "01-claude-draft.html", article)
+    for purpose in ("draft", "compliance", "compliance_repair"):
+        engine._record_llm_call(
+            pid, purpose, route_for(purpose, "device"), 100, 100
+        )
+
+    preflight = {
+        "article": engine.get(pid)["article_text"],
+        "blockers": [{"id": "D18", "issue": "Draft is short."}],
+        "repair_passes": [],
+        "initial_findings": [],
+        "final_findings": [],
+    }
+
+    def recover(_project_id):
+        engine._set_stage(pid, "revised")
+        return True
+
+    with patch(
+        "newswire_workbench.engine.audit_article",
+        return_value=preflight,
+    ), patch(
+        "article_provenance.build_article_claim_ledger",
+        return_value={
+            "coverage_violations": [],
+            "attribution_violations": [],
+        },
+    ), patch.object(
+        engine, "_recover_depth_from_paid_artifacts", side_effect=recover
+    ):
+        result = engine._run_next_unlocked(pid, "")
+
+    assert result["stage"] == "revised"
+    assert any(
+        event["event_type"] == "depth_reconciled_inline"
+        for event in engine.events(pid)
+    )
+
+
+def test_depth_recovery_reads_immutable_paid_output_before_revision_file(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project("Test", "AccessNewsWire", "device source")
+    route = route_for("compliance_repair", "device")
+    engine._record_llm_call(
+        pid,
+        "compliance_repair",
+        route,
+        100,
+        100,
+        raw_output="<p>Actual paid repair output.</p>",
+        lifecycle="provider_succeeded",
+    )
+    assert engine._latest_successful_call_output(
+        pid, "compliance_repair"
+    ) == "<p>Actual paid repair output.</p>"
+
+
+def test_paid_writer_response_replays_without_api_or_second_call(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project("Test", "AccessNewsWire", "device source")
+    route = route_for("draft", "device")
+    call_id = engine._record_llm_call(
+        pid,
+        "draft",
+        route,
+        100,
+        100,
+        raw_output="<p>Recovered paid draft.</p>",
+        lifecycle="provider_succeeded",
+    )
+    assert engine._claude("ignored", pid, "draft", "device") == (
+        "<p>Recovered paid draft.</p>"
+    )
+    assert engine.usage_summary(pid)["calls"] == 1
+    engine._set_article(
+        engine.get(pid),
+        "<p>Recovered paid draft.</p>",
+        "drafted",
+        "01-claude-draft.html",
+        call_purpose="draft",
+    )
+    with engine._connect() as conn:
+        lifecycle = conn.execute(
+            "SELECT lifecycle FROM llm_calls WHERE id=?", (call_id,)
+        ).fetchone()["lifecycle"]
+    assert lifecycle == "applied"
+
+
+def test_paid_review_response_replays_and_applies_without_second_call(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project("Test", "AccessNewsWire", "device source")
+    engine._set_article(
+        engine.get(pid), "<p>Current exact article.</p>", "drafted", "draft.html"
+    )
+    route = route_for("compliance", "device")
+    raw = json.dumps({
+        "verdict": "approved",
+        "mandatory_count": 0,
+        "source_accuracy": {"verified": 1, "checked": 1},
+        "mandatory_edits": [],
+        "recommended_edits": [],
+        "approved_elements": ["source grounding"],
+        "notes": [],
+    })
+    call_id = engine._record_llm_call(
+        pid,
+        "compliance",
+        route,
+        100,
+        100,
+        raw_output=raw,
+        lifecycle="provider_succeeded",
+    )
+    with patch(
+        "newswire_workbench.engine.deterministic_findings",
+        return_value=[],
+    ):
+        report = engine._openai_review(
+            engine.get(pid), final=False, purpose="compliance"
+        )
+    assert engine.usage_summary(pid)["calls"] == 1
+    engine._set_report(
+        engine.get(pid), report, "signed_off", "review.json"
+    )
+    with engine._connect() as conn:
+        lifecycle = conn.execute(
+            "SELECT lifecycle FROM llm_calls WHERE id=?", (call_id,)
+        ).fetchone()["lifecycle"]
+    assert lifecycle == "applied"
+
+
 def test_overwritten_artifact_is_archived(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     pid = engine.create_project("Test", "AccessNewsWire", "device source")
@@ -1550,6 +1751,17 @@ def test_package_builds_downloadable_zip(tmp_path):
     assert engine.export_path(pid).exists()
     with zipfile.ZipFile(engine.export_path(pid)) as archive:
         assert {"00-source-record.txt", "FINAL-ARTICLE.html", "submission-manifest.json"}.issubset(archive.namelist())
+    packaged = engine.get(pid)
+    pending = engine.exports_dir / (
+        f".{pid}-{packaged['article_hash'][:12]}.pending.zip"
+    )
+    engine.export_path(pid).replace(pending)
+    engine._ensure_package_export(packaged)
+    assert engine.export_path(pid).exists()
+    engine.export_path(pid).unlink()
+    engine._ensure_package_export(engine.get(pid))
+    assert engine.export_path(pid).exists()
+    assert engine.get(pid)["stage"] == "package_ready"
 
 
 def test_next_action_includes_admin_queue(tmp_path):
@@ -1996,6 +2208,29 @@ def test_same_source_failure_memory_is_available_to_next_attempt(tmp_path):
         next_project["fact_source_hash"], "Barchart Advertorial", "device"
     )
     assert "unsupported utility billing claims" in guidance
+
+
+def test_same_source_failure_memory_is_injected_into_reserved_repair(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Device", "Barchart Advertorial", "device source", "device"
+    )
+    engine.import_manual_article(
+        pid,
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>",
+    )
+    engine._set_stage(pid, "compliance_reviewed")
+    with patch.object(
+        engine,
+        "_source_failure_guidance",
+        return_value="Prevent the known same-source utility assertion.",
+    ), patch.object(
+        engine,
+        "_claude",
+        return_value=engine.get(pid)["article_text"],
+    ) as writer:
+        engine._run_next_unlocked(pid, "")
+    assert "known same-source utility assertion" in writer.call_args.args[0]
 
 
 def test_forced_rebuild_keeps_stable_fact_source_identity(tmp_path):

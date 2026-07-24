@@ -33,6 +33,7 @@ from .formatting import (
 )
 from .routing import estimated_cost, route_for
 from .audit import MECHANICAL_GATES, audit_article
+from .publication_profiles import publication_profile
 from .execution_budget import (
     PURPOSE_CALL_LIMITS,
     REQUIRED_CALL_PATH,
@@ -41,7 +42,7 @@ from .execution_budget import (
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v26-governed-run-transaction"
+    "serp-differentiation-depth-v27-durable-recovery-contract"
 )
 
 STAGES = (
@@ -1046,7 +1047,8 @@ class WorkbenchEngine:
                     continue
                 return self.get(project_id)
             if project["stage"] == "package_ready":
-                return project
+                self._ensure_package_export(project)
+                return self.get(project_id)
             before = (
                 project["stage"],
                 project["article_hash"],
@@ -1163,13 +1165,18 @@ class WorkbenchEngine:
         return True
 
     def _recover_depth_from_paid_artifacts(self, project_id):
-        """Reconcile safe unique blocks from both paid writer outputs."""
+        """Reconcile source-mapped blocks from immutable paid writer outputs."""
         p = self.get(project_id)
         project_dir = self.projects_dir / project_id
         draft_path = project_dir / "01-claude-draft.html"
         repair_path = project_dir / "03-claude-revision.html"
         if not draft_path.exists() or not repair_path.exists():
             return False
+        from article_provenance import (
+            build_article_claim_ledger,
+            extract_sealed_pack,
+        )
+        sealed_pack = extract_sealed_pack(p["source_text"])
 
         report_path = project_dir / "02-openai-review.json"
         try:
@@ -1193,9 +1200,19 @@ class WorkbenchEngine:
         ]
         additions = []
         assembled_words = self._article_word_count(p["article_text"])
-        target_words = 1800
-        for path in (repair_path, draft_path):
-            source = BeautifulSoup(path.read_text(), "html.parser")
+        target_words = publication_profile(
+            p["platform"], p["vertical"]
+        )["recovery_target"]
+        repair_raw = self._latest_successful_call_output(
+            project_id, "compliance_repair"
+        )
+        sources = (
+            repair_raw or repair_path.read_text(),
+            self._latest_successful_call_output(project_id, "draft")
+            or draft_path.read_text(),
+        )
+        for source_html in sources:
+            source = BeautifulSoup(source_html, "html.parser")
             for node in source.find_all(["p", "ul", "ol"]):
                 if assembled_words >= target_words:
                     break
@@ -1218,6 +1235,26 @@ class WorkbenchEngine:
                 if any(
                     len(tokens & known) / max(len(tokens | known), 1) >= 0.72
                     for known in existing_tokens
+                ):
+                    continue
+                # Paid artifacts are editorial candidates, not factual
+                # authority. Only reuse blocks that textually map to the sealed
+                # publication ledger, satisfy required attribution, and do not
+                # independently trigger client-advocacy/source-grounding gates.
+                block_ledger = build_article_claim_ledger(
+                    sealed_pack, str(node)
+                )
+                if (
+                    block_ledger["used_claim_count"] < 1
+                    or block_ledger["attribution_violations"]
+                ):
+                    continue
+                block_findings = deterministic_findings(
+                    str(node), p["platform"], p["vertical"]
+                )
+                if any(
+                    item.get("id") in {"D19", "D20"}
+                    for item in block_findings
                 ):
                     continue
                 additions.append(str(node))
@@ -1286,6 +1323,17 @@ class WorkbenchEngine:
             },
         )
         return True
+
+    def _latest_successful_call_output(self, project_id, purpose):
+        """Return the immutable paid response, regardless of presentation files."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT raw_output FROM llm_calls "
+                "WHERE project_id=? AND stage=? AND status='success' "
+                "AND raw_output<>'' ORDER BY id DESC LIMIT 1",
+                (project_id, purpose),
+            ).fetchone()
+        return str(row["raw_output"] or "") if row else ""
 
     def _recover_mechanical_admin_review(self, project_id):
         """Resume legacy admin jobs, including source conflicts the engine can resolve."""
@@ -1427,7 +1475,10 @@ class WorkbenchEngine:
                 p["source_text"], p["platform"], p["vertical"],
                 master_instructions, learned_guidance=memory,
             ), p["id"], "draft", p["vertical"])
-            self._set_article(p, article, "drafted", "01-claude-draft.html")
+            self._set_article(
+                p, article, "drafted", "01-claude-draft.html",
+                call_purpose="draft",
+            )
         elif stage == "drafted":
             report = self._openai_review(p, final=False)
             draft_findings = deterministic_findings(
@@ -1474,7 +1525,12 @@ class WorkbenchEngine:
                 ):
                     self._set_stage(project_id, "compliance_reviewed")
         elif stage == "compliance_reviewed":
-            memory = self._learned_guidance(p["platform"], p["vertical"])
+            memory = "\n".join(filter(None, (
+                self._learned_guidance(p["platform"], p["vertical"]),
+                self._source_failure_guidance(
+                    p["fact_source_hash"], p["platform"], p["vertical"]
+                ),
+            )))
             repair_purpose = "compliance_repair"
             primary_route = route_for(repair_purpose, p["vertical"])
             if (
@@ -1502,17 +1558,13 @@ class WorkbenchEngine:
             ), p["id"], repair_purpose, p["vertical"])
             candidate_words = self._article_word_count(article)
             current_words = self._article_word_count(p["article_text"])
-            platform_floor = (
-                1400
-                if p["platform"] == "Barchart Advertorial"
-                and p["vertical"] == "device"
-                else 900
-            )
+            profile = publication_profile(p["platform"], p["vertical"])
+            platform_floor = profile["hard_floor"] or 900
             minimum_preserved = max(
                 platform_floor,
                 int(current_words * 0.80),
             )
-            enforce_floor = platform_floor == 1400 or current_words >= 900
+            enforce_floor = bool(profile["hard_floor"]) or current_words >= 900
             if enforce_floor and candidate_words < minimum_preserved:
                 self._event(
                     p["id"],
@@ -1535,6 +1587,7 @@ class WorkbenchEngine:
                     else "03-quality-rescue-revision.html"
                 ),
                 bump=True,
+                call_purpose=repair_purpose,
             )
         elif stage == "revised":
             preflight = audit_article(
@@ -1595,6 +1648,27 @@ class WorkbenchEngine:
                         "operator_decision_required": False,
                     },
                 )
+                # A depth-only stop is recoverable from the two paid writer
+                # artifacts already produced in this same transaction. Perform
+                # that zero-cost reconciliation immediately so the continuous
+                # runner can proceed to the reserved exact-hash sign-off
+                # without requiring an operator to resume or rebuild.
+                if (
+                    {item.get("id") for item in preflight["blockers"]}
+                    == {"D18"}
+                    and self._recover_locked_pre_signoff(project_id)
+                ):
+                    self._event(
+                        p["id"],
+                        "depth_reconciled_inline",
+                        self.get(project_id)["stage"],
+                        self.get(project_id)["article_hash"],
+                        {
+                            "paid_calls_added": 0,
+                            "next_action": "reserved_final_signoff",
+                            "operator_decision_required": False,
+                        },
+                    )
                 return self.get(project_id)
             # Recover projects created before adjudicated sign-off advanced the
             # state. If the paid review ceiling is already exhausted, validate
@@ -1686,6 +1760,7 @@ class WorkbenchEngine:
                     else "07-quality-rescue-seo-repair.html"
                 ),
                 bump=True,
+                call_purpose=repair_purpose,
             )
         elif stage == "seo_repaired":
             post_route = route_for("post_seo_signoff", p["vertical"])
@@ -1757,10 +1832,25 @@ class WorkbenchEngine:
         self._set_report(p, report, target, "manual-openai-report.json")
 
     def _claude(self, prompt, project_id, purpose, vertical):
+        replay = self._latest_pending_call(project_id, purpose)
+        if replay:
+            self._event(
+                project_id,
+                "paid_response_replayed",
+                self.get(project_id)["stage"],
+                self.get(project_id)["article_hash"],
+                {
+                    "purpose": purpose,
+                    "call_id": replay["id"],
+                    "paid_calls_added": 0,
+                },
+            )
+            return replay["raw_output"]
         key = os.environ.get("ANTHROPIC_API_KEY")
         if not key:
             raise RuntimeError("ANTHROPIC_API_KEY is not configured")
         route = route_for(purpose, vertical)
+        self._assert_prompt_budget(project_id, purpose, prompt)
         self._assert_call_budget(project_id, purpose, route)
         import anthropic
         client = anthropic.Anthropic(
@@ -1794,20 +1884,11 @@ class WorkbenchEngine:
             lifecycle="provider_succeeded",
         )
         if getattr(msg, "stop_reason", None) == "max_tokens":
+            self._mark_llm_call_lifecycle(call_id, "invalid")
             raise RuntimeError("Claude output was truncated at the token limit; no partial article was saved")
-        self._mark_llm_call_applied(call_id)
         return text
 
     def _openai_review(self, p, final, purpose=None):
-        key = os.environ.get("OPENAI_API_KEY")
-        if not key:
-            raise RuntimeError("OPENAI_API_KEY is not configured; use manual report import")
-        from openai import OpenAI
-        client = OpenAI(
-            api_key=key,
-            timeout=float(os.environ.get("NEWSWIRE_PROVIDER_TIMEOUT", "90")),
-            max_retries=int(os.environ.get("NEWSWIRE_PROVIDER_RETRIES", "0")),
-        )
         prompt = compliance_prompt(
             p["source_text"], p["article_text"], p["platform"], p["vertical"],
             p["last_report"], final=final,
@@ -1815,29 +1896,61 @@ class WorkbenchEngine:
         )
         purpose = purpose or ("final_signoff" if final else "compliance")
         route = route_for(purpose, p["vertical"])
-        self._assert_call_budget(p["id"], purpose, route)
-        try:
-            reviewer_system = (
-                "You are the executive editorial adjudicator. Distinguish actual "
-                "publication blockers from preferences. Approve the exact article "
-                "when all material source, platform, legal, and reader-value "
-                "requirements pass; never invent objections or demand unsupported "
-                "facts. Return valid JSON only."
-                if purpose in {
-                    "executive_rescue_signoff", "war_room_signoff"
-                }
-                else "You are an independent, publication-focused compliance "
-                     "editor. Return valid JSON only."
+        pending = self._latest_pending_call(p["id"], purpose)
+        if pending:
+            text = pending["raw_output"]
+            call_id = pending["id"]
+            self._event(
+                p["id"],
+                "paid_response_replayed",
+                p["stage"],
+                p["article_hash"],
+                {
+                    "purpose": purpose,
+                    "call_id": call_id,
+                    "paid_calls_added": 0,
+                },
             )
-            response = client.responses.create(
-            model=route.model,
-            input=[{"role": "system", "content": reviewer_system},
-                   {"role": "user", "content": prompt}],
-            text={"format": {
-                "type": "json_schema",
-                "name": "newswire_compliance_report",
-                "strict": True,
-                "schema": {
+        else:
+            key = os.environ.get("OPENAI_API_KEY")
+            if not key:
+                raise RuntimeError(
+                    "OPENAI_API_KEY is not configured; use manual report import"
+                )
+            from openai import OpenAI
+            client = OpenAI(
+                api_key=key,
+                timeout=float(
+                    os.environ.get("NEWSWIRE_PROVIDER_TIMEOUT", "90")
+                ),
+                max_retries=int(
+                    os.environ.get("NEWSWIRE_PROVIDER_RETRIES", "0")
+                ),
+            )
+            self._assert_call_budget(p["id"], purpose, route)
+            self._assert_prompt_budget(p["id"], purpose, prompt)
+            try:
+                reviewer_system = (
+                    "You are the executive editorial adjudicator. Distinguish "
+                    "actual publication blockers from preferences. Approve the "
+                    "exact article when all material source, platform, legal, "
+                    "and reader-value requirements pass; never invent objections "
+                    "or demand unsupported facts. Return valid JSON only."
+                    if purpose in {
+                        "executive_rescue_signoff", "war_room_signoff"
+                    }
+                    else "You are an independent, publication-focused compliance "
+                         "editor. Return valid JSON only."
+                )
+                response = client.responses.create(
+                    model=route.model,
+                    input=[{"role": "system", "content": reviewer_system},
+                           {"role": "user", "content": prompt}],
+                    text={"format": {
+                    "type": "json_schema",
+                    "name": "newswire_compliance_report",
+                    "strict": True,
+                    "schema": {
                     "type": "object",
                     "additionalProperties": False,
                     "properties": {
@@ -1870,32 +1983,44 @@ class WorkbenchEngine:
                     },
                     "required": ["verdict", "mandatory_count", "source_accuracy", "mandatory_edits",
                                  "recommended_edits", "approved_elements", "notes"],
-                },
-            }},
+                    },
+                    }},
+                )
+            except Exception as exc:
+                self._record_llm_call(
+                    p["id"], purpose, route, status="failed", error=str(exc)
+                )
+                error_text = str(exc).lower()
+                if (
+                    "authentication" in error_text
+                    or "api key" in error_text
+                    or "401" in error_text
+                ):
+                    raise RuntimeError(
+                        "OpenAI authentication failed. Replace OPENAI_API_KEY "
+                        "in Streamlit Secrets with an active key from "
+                        "platform.openai.com/api-keys."
+                    ) from exc
+                raise
+            usage = getattr(response, "usage", None)
+            text = response.output_text.strip()
+            call_id = self._record_llm_call(
+                p["id"], purpose, route,
+                input_tokens=int(
+                    getattr(usage, "input_tokens", 0) or 0
+                ),
+                output_tokens=int(
+                    getattr(usage, "output_tokens", 0) or 0
+                ),
+                raw_output=text,
+                lifecycle="provider_succeeded",
             )
-        except Exception as exc:
-            self._record_llm_call(p["id"], purpose, route, status="failed", error=str(exc))
-            error_text = str(exc).lower()
-            if "authentication" in error_text or "api key" in error_text or "401" in error_text:
-                raise RuntimeError(
-                    "OpenAI authentication failed. Replace OPENAI_API_KEY in Streamlit "
-                    "Secrets with an active key from platform.openai.com/api-keys."
-                ) from exc
-            raise
-        usage = getattr(response, "usage", None)
-        text = response.output_text.strip()
-        call_id = self._record_llm_call(
-            p["id"], purpose, route,
-            input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
-            output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
-            raw_output=text,
-            lifecycle="provider_succeeded",
-        )
         if text.startswith("```"):
             text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.S)
         try:
             report = json.loads(text)
         except (TypeError, json.JSONDecodeError) as exc:
+            self._mark_llm_call_lifecycle(call_id, "invalid")
             self._event(
                 p["id"],
                 "reviewer_output_invalid",
@@ -1916,7 +2041,6 @@ class WorkbenchEngine:
         report["reviewed_article_hash"] = p["article_hash"]
         report["approval_purpose"] = purpose
         report["prompt_version"] = PROMPT_VERSION
-        self._mark_llm_call_applied(call_id)
         self._event(
             p["id"],
             "reviewer_report_received",
@@ -2021,12 +2145,31 @@ class WorkbenchEngine:
             )
             return cursor.lastrowid
 
-    def _mark_llm_call_applied(self, call_id):
+    def _mark_llm_call_lifecycle(self, call_id, lifecycle):
         with self._connect() as conn:
             conn.execute(
-                "UPDATE llm_calls SET lifecycle='applied' WHERE id=?",
-                (call_id,),
+                "UPDATE llm_calls SET lifecycle=? WHERE id=?",
+                (lifecycle, call_id),
             )
+
+    def _mark_llm_call_applied(self, call_id):
+        self._mark_llm_call_lifecycle(call_id, "applied")
+
+    def _latest_pending_call(self, project_id, purpose):
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id,raw_output,output_hash FROM llm_calls "
+                "WHERE project_id=? AND stage=? AND status='success' "
+                "AND lifecycle='provider_succeeded' AND raw_output<>'' "
+                "ORDER BY id DESC LIMIT 1",
+                (project_id, purpose),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def _mark_latest_pending_call_applied(self, project_id, purpose):
+        pending = self._latest_pending_call(project_id, purpose)
+        if pending:
+            self._mark_llm_call_applied(pending["id"])
 
     def _assert_call_budget(self, project_id, stage, route):
         total_calls = int(self.usage_summary(project_id)["calls"])
@@ -2053,7 +2196,34 @@ class WorkbenchEngine:
         stage_calls = self._billable_call_count(project_id, stage)
         if stage_calls >= route.max_calls:
             raise RuntimeError(
-                f"Automated {stage} call ceiling reached; routed to admin review instead of repeating paid work"
+                f"Automated {stage} call ceiling reached; routed to admin "
+                "review instead of repeating paid work"
+            )
+
+    def _assert_prompt_budget(self, project_id, purpose, prompt):
+        """Log and bound stage context before any paid provider request."""
+        estimated_tokens = max(1, len(str(prompt or "")) // 4)
+        ceiling = int(
+            os.environ.get("NEWSWIRE_PROMPT_TOKEN_CEILING", "28000")
+        )
+        project = self.get(project_id)
+        self._event(
+            project_id,
+            "paid_context_manifest",
+            project["stage"],
+            project["article_hash"],
+            {
+                "purpose": purpose,
+                "characters": len(str(prompt or "")),
+                "estimated_tokens": estimated_tokens,
+                "ceiling": ceiling,
+            },
+        )
+        if estimated_tokens > ceiling:
+            raise RuntimeError(
+                f"{purpose} context is approximately {estimated_tokens:,} "
+                f"tokens, above the safe {ceiling:,}-token pre-call ceiling; "
+                "no paid request was made"
             )
 
     def _billable_call_count(self, project_id, stage):
@@ -2189,7 +2359,14 @@ class WorkbenchEngine:
             report["verdict"] = "approved"
         return report
 
-    def _set_article(self, p, article, stage, filename, bump=False):
+    def _set_article(
+        self, p, article, stage, filename, bump=False, call_purpose=None
+    ):
+        from .human_copy import (
+            human_copy_diagnostics,
+            normalize_american_english,
+        )
+        article, american_english_changes = normalize_american_english(article)
         article = ensure_article_html(article)
         article = repair_source_grounding(
             article, p["source_text"], p["vertical"]
@@ -2224,7 +2401,18 @@ class WorkbenchEngine:
                 (title, article, digest, stage, round_no, _now(), p["id"]),
             )
         self._write(p["id"], filename, article)
+        diagnostics = human_copy_diagnostics(article)
+        diagnostics["american_english_changes"] = american_english_changes
+        self._write(
+            p["id"],
+            "human-copy-diagnostics.json",
+            json.dumps(diagnostics, indent=2, ensure_ascii=False),
+        )
         self._event(p["id"], "article_created", stage, digest, {"filename": filename})
+        if call_purpose:
+            self._mark_latest_pending_call_applied(
+                p["id"], call_purpose
+            )
 
     def _persist_preflight_article(self, p, preflight, stage):
         """Persist a fixed-point mechanical repair without consuming a model call."""
@@ -2268,6 +2456,9 @@ class WorkbenchEngine:
         self._write(p["id"], filename, json.dumps(report, indent=2, ensure_ascii=False))
         event_id = self._event(p["id"], "compliance_report", stage, p["article_hash"], report)
         self._record_issue_observations(event_id, p, report)
+        purpose = report.get("approval_purpose")
+        if purpose:
+            self._mark_latest_pending_call_applied(p["id"], purpose)
 
     @staticmethod
     def _validate_report(report):
@@ -2294,6 +2485,21 @@ class WorkbenchEngine:
                 "Package creation lost its exact signed-off artifact snapshot."
             )
         p = current
+        final_preflight = audit_article(
+            p["article_text"],
+            p["platform"],
+            p["vertical"],
+            _source_affiliate_link(p["source_text"]),
+        )
+        if final_preflight["blockers"]:
+            raise RuntimeError(
+                "Package creation is blocked because the exact approved "
+                "artifact no longer passes the complete publication preflight: "
+                + ", ".join(
+                    item.get("id", "unknown")
+                    for item in final_preflight["blockers"]
+                )
+            )
         report = p.get("last_report") or {}
         if (
             report.get("verdict") != "approved"
@@ -2351,8 +2557,13 @@ class WorkbenchEngine:
             json.dumps(claim_ledger, indent=2, ensure_ascii=False),
         )
         export_path = self.exports_dir / f"{p['id']}-submission-package.zip"
+        pending_export = self.exports_dir / (
+            f".{p['id']}-{p['article_hash'][:12]}.pending.zip"
+        )
         project_dir = self.projects_dir / p["id"]
-        with zipfile.ZipFile(export_path, "w", zipfile.ZIP_DEFLATED) as archive:
+        with zipfile.ZipFile(
+            pending_export, "w", zipfile.ZIP_DEFLATED
+        ) as archive:
             for name in (
                 "00-source-record.txt", "FINAL-ARTICLE.html",
                 "claim-provenance.json", "submission-manifest.json",
@@ -2369,13 +2580,53 @@ class WorkbenchEngine:
                 (_now(), p["id"], p["article_hash"]),
             )
         if cursor.rowcount != 1:
+            pending_export.unlink(missing_ok=True)
             raise RuntimeError(
                 "Package compare-and-swap rejected a concurrent artifact mutation."
             )
+        os.replace(pending_export, export_path)
         self._event(p["id"], "package_ready", "package_ready", p["article_hash"], manifest)
 
     def export_path(self, project_id):
         return self.exports_dir / f"{project_id}-submission-package.zip"
+
+    def _ensure_package_export(self, project):
+        """Finish or rebuild an exact-hash package after an interrupted handoff."""
+        export_path = self.export_path(project["id"])
+        if export_path.exists():
+            return export_path
+        pending_export = self.exports_dir / (
+            f".{project['id']}-{project['article_hash'][:12]}.pending.zip"
+        )
+        if pending_export.exists():
+            os.replace(pending_export, export_path)
+            self._event(
+                project["id"],
+                "package_handoff_recovered",
+                "package_ready",
+                project["article_hash"],
+                {"recovery": "pending_archive_promoted"},
+            )
+            return export_path
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE projects SET stage='signed_off',updated_at=? "
+                "WHERE id=? AND stage='package_ready' AND article_hash=?",
+                (_now(), project["id"], project["article_hash"]),
+            )
+        if cursor.rowcount != 1:
+            raise RuntimeError(
+                "Package recovery lost the exact approved artifact snapshot."
+            )
+        self._event(
+            project["id"],
+            "package_handoff_recovered",
+            "signed_off",
+            project["article_hash"],
+            {"recovery": "package_rebuilt_from_exact_approved_artifact"},
+        )
+        self._build_package(self.get(project["id"]))
+        return export_path
 
     def _adjudication_count(self, project_id):
         with self._connect() as conn:
@@ -2595,6 +2846,7 @@ class WorkbenchEngine:
                     p["stage"],
                     f"10-quality-rescue-{rescue_count + 1}.html",
                     bump=True,
+                    call_purpose="quality_rescue",
                 )
                 rescued = self.get(project_id)
                 self._event(
@@ -2649,6 +2901,7 @@ class WorkbenchEngine:
                     p, rebuilt, p["stage"],
                     f"11-war-room-rebuild-{war_count + 1}.html",
                     bump=True,
+                    call_purpose="war_room_rebuild",
                 )
                 return self._complete_adjudicated_signoff(
                     project_id, target_stage, filename
