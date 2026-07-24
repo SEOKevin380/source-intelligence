@@ -381,10 +381,21 @@ def repair_publication_gates(html, platform, vertical, affiliate_href=""):
             or "a commission may be earned" in paragraph_text
         ):
             paragraph.decompose()
+    affiliate_href = str(affiliate_href or "").strip()
+    has_material_affiliate_link = bool(
+        affiliate_href
+        and affiliate_href.upper() != "TRAFFIC-FIRST"
+        and any(
+            str(node.get("href") or "").strip() == affiliate_href
+            for node in soup.find_all("a", href=True)
+        )
+    )
     disclosure_html = (
         "<p><strong>Paid Advertorial:</strong> Compensation may be received "
         "if a purchase is made through links in this advertorial.</p>"
-        if affiliate_href and affiliate_href.upper() != "TRAFFIC-FIRST"
+        if (
+            has_material_affiliate_link
+        )
         else "<p><strong>Paid Advertorial</strong></p>"
     )
     disclosure = BeautifulSoup(disclosure_html, "html.parser").p

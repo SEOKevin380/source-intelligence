@@ -527,6 +527,13 @@ compliance report below.
   to appliances, compatibility with existing electrical systems, available
   customer support, return rights, or comparative value unless those exact
   facts are permitted in the sealed publication ledger.
+- “Buyer guidance,” examples, questions, comparisons, and explanations of why
+  a missing fact matters remain factual content. Do not invent engineering
+  metrics, operating environments, buyer cohorts, building types, category
+  science, taxes or fees, support procedures, substitute systems, or
+  conditional savings logic in those sections. Name only the gap recorded in
+  `required_facts.missing` and tell the reader to verify that gap with the
+  seller.
 - If D19 is present, reconstruct instead of merely paraphrasing. Put at least
   two product-value sections before limitations. Explain sourced features,
   operation, setup, price, and best-fit readers affirmatively. Use exactly one

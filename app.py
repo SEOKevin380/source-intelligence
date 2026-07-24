@@ -1935,35 +1935,34 @@ else:
                     )
                 except Exception:
                     _prior_diagnostics = None
-            _mechanical_resume = bool(
-                _prior_project
-                and _workbench.can_recover_locked_pre_signoff(
-                    _prior_project_id
+            _run_action = (
+                _workbench.run_action(
+                    _prior_project_id,
+                    WORKBENCH_SOURCE_CONTEXT_VERSION,
                 )
+                if _prior_project else {
+                    "action": "build",
+                    "label": "Build Draft Automatically",
+                    "reason": "No durable project exists for this sealed pack.",
+                }
             )
-            _is_rebuild = bool(
-                _prior_project
-                and (
-                    (
-                        _prior_project["stage"] == "admin_review"
-                        and not _mechanical_resume
-                    )
-                    or (
-                        _prior_diagnostics
-                        and _prior_diagnostics.get("workflow_version")
-                        != WORKBENCH_SOURCE_CONTEXT_VERSION
-                        and not _mechanical_resume
-                    )
-                )
-            )
-            _is_resume = bool(
-                _prior_project
-                and (not _is_rebuild or _mechanical_resume)
-                and _prior_project["stage"] != "package_ready"
-            )
-            _is_complete = bool(
-                _prior_project
-                and _prior_project["stage"] == "package_ready"
+            _action_name = _run_action["action"]
+            _is_rebuild = _action_name == "rebuild_obsolete_workflow"
+            _is_resume = _action_name in {
+                "resume", "resume_zero_cost", "resume_paid_reserved"
+            }
+            _is_complete = _action_name == "complete"
+            _action_requires_models = _action_name in {
+                "build",
+                "resume",
+                "resume_zero_cost",
+                "resume_paid_reserved",
+                "rebuild_obsolete_workflow",
+            }
+            _action_prerequisite_missing = bool(
+                _action_requires_models and not _ready_to_run
+                or _action_name == "retry_wordpress"
+                and not _workbench_caps.get("wordpress", False)
             )
             if _prior_project:
                 _prior_usage = _workbench.usage_summary(_prior_project_id)
@@ -2171,41 +2170,24 @@ else:
                 st.session_state.pop(_pending_key, None)
                 _pending_project_id = None
             if st.button(
-                (
-                    "Package Ready — No Rebuild Needed"
-                    if _is_complete
-                    else (
-                        "Rebuild With Latest Workflow"
-                        if _is_rebuild
-                        else (
-                            "Resume Current Workflow"
-                            if _is_resume else "Build Draft Automatically"
-                        )
-                    )
-                ),
+                _run_action["label"],
                 type="primary",
                 use_container_width=True,
                 disabled=(
-                    not _ready_to_run
+                    _action_prerequisite_missing
                     or bool(_pending_project_id)
                     or _is_complete
-                    or bool(
-                        _prior_preflight
-                        and not _prior_preflight["system_contract"]["passed"]
-                        or _prior_preflight
-                        and not _prior_preflight.get(
-                            "policy_intelligence", {}
-                        ).get("current", False)
-                        or _prior_preflight
-                        and not _prior_preflight.get(
-                            "policy_intelligence", {}
-                        ).get("exact_snapshot_match", False)
-                        and not _is_rebuild
-                    )
+                    or _action_name in {
+                        "human_decision", "system_blocked",
+                        "refresh_source_policy",
+                    }
                 ),
                 key=f"build_newswire_{product_key or _quick_slug}",
             ):
-                if _is_resume:
+                if _action_name == "retry_wordpress":
+                    _workbench.send_to_wordpress_draft(_prior_project_id)
+                    st.rerun()
+                elif _is_resume:
                     _project_id = _prior_project_id
                 else:
                     _project_id = _workbench.create_project_from_pack(
@@ -2355,20 +2337,20 @@ else:
                     _failed_diagnostics = _workbench.article_diagnostics(
                         _active_project_id
                     )
-                    if _workbench.can_recover_locked_pre_signoff(
-                        _active_project_id
-                    ):
+                    _active_action = _workbench.run_action(
+                        _active_project_id,
+                        WORKBENCH_SOURCE_CONTEXT_VERSION,
+                    )
+                    if _active_action["action"] in {
+                        "resume", "resume_zero_cost", "resume_paid_reserved",
+                    }:
                         st.warning(
-                            "The workflow preserved its remaining paid-call "
-                            "capacity and has a zero-cost owned recovery. Click "
-                            "**Resume Current Workflow** above; it will repair "
-                            "the exact project before any final review call."
+                            _active_action["reason"] + " Click **"
+                            + _active_action["label"] + "** above."
                         )
                     else:
                         st.warning(
-                            "This run did not pass the publication gates. Click "
-                            "**Rebuild With Latest Workflow** above; a clean, "
-                            "product-scoped run will be created automatically."
+                            _active_action["reason"]
                         )
                     st.caption(
                         "Remaining gates: "

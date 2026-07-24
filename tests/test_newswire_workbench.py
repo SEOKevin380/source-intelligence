@@ -31,11 +31,13 @@ from newswire_workbench.formatting import (
     repair_source_grounding,
 )
 from newswire_workbench.routing import risk_tier, route_for
+from newswire_workbench.publication_profiles import publication_profile
 from newswire_workbench.human_copy import (
     human_copy_diagnostics,
     normalize_american_english,
 )
 from source_pack_contract import seal_source_pack
+from article_provenance import build_article_claim_ledger
 
 
 def _three_literal_claims():
@@ -72,6 +74,24 @@ def test_vertical_detection_is_category_aware():
     assert detect_vertical("investment stock newsletter") == "financial"
     assert detect_vertical("commemorative gold-plated coin") == "collectible"
     assert detect_vertical("supplement facts serving size") == "health"
+
+
+@pytest.mark.parametrize(
+    "platform",
+    [
+        "Barchart Advertorial",
+        "AccessNewsWire",
+        "Newswire.com",
+        "Globe Newswire",
+        "Domain Site",
+        "Unknown Future Publisher",
+    ],
+)
+def test_every_publisher_has_a_nonzero_depth_contract(platform):
+    profile = publication_profile(platform, "general_consumer")
+    assert profile["hard_floor"] > 0
+    assert profile["target_min"] >= profile["hard_floor"]
+    assert profile["recovery_target"] >= profile["target_min"]
 
 
 def test_generation_prompt_preserves_client_advocacy_without_invention():
@@ -115,6 +135,7 @@ def test_barchart_prompts_target_excellence_above_the_rejection_floor():
         {"mandatory_edits": []},
         "Barchart Advertorial",
         "device",
+        "https://partner.example/product",
     )
     review_prompt = compliance_prompt(
         "sealed source",
@@ -367,6 +388,20 @@ def test_only_latest_durable_project_is_authoritative_run_target(tmp_path):
     )
 
 
+def test_replaced_run_lease_cannot_be_heartbeated_by_old_runner(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Device", "Barchart Advertorial", "legacy source", "device"
+    )
+    with engine._connect() as conn:
+        conn.execute(
+            "UPDATE projects SET run_token=?,run_started_at=? WHERE id=?",
+            ("new-owner", "2026-07-23T00:00:00+00:00", pid),
+        )
+    with pytest.raises(RuntimeError, match="lease was replaced"):
+        engine._heartbeat_run(pid, "old-owner")
+
+
 def test_two_tabs_converge_on_one_active_pack_project(tmp_path):
     pack = seal_source_pack({
         "product": {
@@ -463,7 +498,9 @@ def test_invalid_legacy_package_is_automatically_rebuilt(tmp_path):
     engine._set_report(
         current, approval, "package_ready", "legacy-approval.json"
     )
-    rebuilt = engine.create_project_from_pack(pack, "Barchart Advertorial")
+    rebuilt = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
     assert rebuilt != legacy
     assert engine.get(rebuilt)["stage"] == "source_ready"
     assert "EXPLICIT REBUILD RUN:" in engine.get(rebuilt)["source_text"]
@@ -780,7 +817,10 @@ def test_zero_cost_packaging_finishes_after_fourth_paid_call(tmp_path):
 
     with patch.object(
         engine, "_run_next_unlocked", side_effect=package
-    ) as run_next:
+    ) as run_next, patch.object(
+        engine, "_ensure_package_export",
+        side_effect=lambda project: engine.export_path(project["id"]),
+    ):
         result = engine.run_to_completion(pid, "")
     assert result["stage"] == "package_ready"
     run_next.assert_called_once()
@@ -810,6 +850,78 @@ def test_current_workflow_reserves_one_call_per_required_purpose(tmp_path):
             pid, "quality_rescue", route_for("quality_rescue", "device")
         )
     assert engine.usage_details(pid)[0]["stage"] == "draft"
+
+
+def test_engine_owns_build_and_obsolete_rebuild_actions(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Device", "Barchart Advertorial", "legacy source", "device"
+    )
+    assert engine.run_action(pid)["action"] == "build"
+    engine._set_stage(pid, "admin_review")
+    action = engine.run_action(pid, "current-workflow")
+    assert action["action"] == "rebuild_obsolete_workflow"
+    assert action["label"] == "Rebuild With Latest Workflow"
+
+
+@pytest.mark.parametrize(
+    "stage",
+    [
+        "source_ready",
+        "drafted",
+        "compliance_reviewed",
+        "revised",
+        "signed_off",
+        "admin_review",
+    ],
+)
+def test_obsolete_nonterminal_workflow_never_resumes(tmp_path, stage):
+    engine = WorkbenchEngine(tmp_path / stage)
+    pid = engine.create_project(
+        "Device", "Barchart Advertorial", "legacy source", "device"
+    )
+    engine._set_stage(pid, stage)
+    action = engine.run_action(pid, "current-workflow")
+    assert action["action"] == "rebuild_obsolete_workflow"
+
+
+def test_unapproved_package_ready_project_does_not_retry_wordpress(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Device", "Barchart Advertorial", "legacy source", "device"
+    )
+    engine._set_stage(pid, "package_ready")
+    action = engine.run_action(pid)
+    assert action["action"] == "system_blocked"
+    assert action["may_start_paid_call"] is False
+
+
+def test_sparse_long_form_pack_is_reconciled_before_paid_generation(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Sparse Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {
+            "missing": [
+                "key_features", "specifications", "warranty",
+                "manufacturer", "certifications", "power_source",
+            ],
+        },
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    action = engine.run_action(pid, WORKBENCH_SOURCE_CONTEXT_VERSION)
+    assert action["action"] == "refresh_source_policy"
+    assert "SOURCE-COVERAGE" in action["reason"]
+    assert engine.usage_summary(pid)["calls"] == 0
 
 
 def test_current_workflow_rejects_out_of_order_paid_calls(tmp_path):
@@ -1299,6 +1411,45 @@ def test_unsupported_device_safety_and_certification_advice_triggers_d20():
     assert "D20" in ids
 
 
+@pytest.mark.parametrize("text", [
+    (
+        "Seller headings do not provide technical details such as voltage "
+        "regulation ranges, harmonic distortion reduction metrics, surge "
+        "suppression ratings in joules, or frequency response data."
+    ),
+    (
+        "Dirty electricity reduction is distinct from energy efficiency. "
+        "Utility bill impact would depend on whether current electrical "
+        "issues are actively driving inefficiency in appliances."
+    ),
+    (
+        "This reasonable trial product is a natural fit for tech-forward "
+        "consumers, renters, and residents of older buildings who cannot "
+        "install permanent electrical upgrades."
+    ),
+    (
+        "The manufacturer's phone and email allow you to follow up with "
+        "questions or concerns. Buyers should verify wet, humid, "
+        "high-temperature, or outdoor-adjacent environmental ratings."
+    ),
+    (
+        "Check geographic restrictions and the final total with applicable "
+        "taxes or fees, plus promotional offers or discounts."
+    ),
+])
+def test_device_buyer_guidance_cannot_smuggle_external_facts_past_d20(text):
+    article = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        f"<p>{text}</p>"
+    )
+    ids = {
+        item["id"] for item in deterministic_findings(
+            article, "Barchart Advertorial", "device"
+        )
+    }
+    assert "D20" in ids
+
+
 def test_barchart_affiliate_links_are_added_and_bolded():
     html = "".join(
         [
@@ -1368,7 +1519,28 @@ def test_disclosure_variants_collapse_to_one_opening_disclosure():
     )
     plain = BeautifulSoup(repaired, "html.parser").get_text(" ", strip=True)
     assert plain.casefold().count("paid advertorial") == 1
-    assert plain.casefold().count("compensation may be received") == 1
+    assert plain.casefold().count("compensation may be received") == 0
+
+
+def test_negated_advertorial_language_does_not_satisfy_disclosure_gate():
+    findings = deterministic_findings(
+        "<p>This is not an advertorial.</p><p>Editorial analysis.</p>",
+        "Barchart Advertorial",
+        "device",
+        "https://partner.example/product",
+    )
+    assert "D1" in {item["id"] for item in findings}
+
+
+def test_linked_advertorial_requires_passive_compensation_disclosure():
+    findings = deterministic_findings(
+        "<p><strong>Paid Advertorial</strong></p>"
+        '<p><a href="https://partner.example/product">Review the offer</a></p>',
+        "Barchart Advertorial",
+        "device",
+        "https://partner.example/product",
+    )
+    assert "D5" in {item["id"] for item in findings}
 
 
 def test_source_aware_repair_removes_complete_ecowatt_objection_family():
@@ -1400,6 +1572,59 @@ def test_source_aware_repair_removes_complete_ecowatt_objection_family():
     assert "Dirty electricity comes" not in repaired
     assert "costs less than professional" not in repaired
     assert "Seller materials state" in repaired
+
+
+@pytest.mark.parametrize(
+    ("claim_text", "article_sentence"),
+    [
+        (
+            "The seller lists a 50 mg serving.",
+            "The seller lists a 500 mg serving.",
+        ),
+        (
+            "Seller materials describe voltage stabilization.",
+            "Seller materials do not describe voltage stabilization.",
+        ),
+        (
+            "Seller materials describe voltage stabilization.",
+            "Buyers should ask whether the product provides voltage stabilization.",
+        ),
+    ],
+)
+def test_provenance_rejects_numeric_polarity_and_hypothetical_false_matches(
+    claim_text,
+    article_sentence,
+):
+    pack = {
+        "publication_claims": {
+            "features": [{
+                "claim_id": "claim-1",
+                "text": claim_text,
+                "publication_treatment": "seller_attribution_required",
+            }],
+        },
+    }
+    ledger = build_article_claim_ledger(pack, f"<p>{article_sentence}</p>")
+    assert ledger["used_claim_count"] == 0
+    assert ledger["mapped_sentence_count"] == 0
+
+
+def test_provenance_does_not_treat_researcher_attribution_as_seller_attribution():
+    pack = {
+        "publication_claims": {
+            "features": [{
+                "claim_id": "claim-1",
+                "text": "The product is described as supporting voltage stabilization.",
+                "publication_treatment": "seller_attribution_required",
+            }],
+        },
+    }
+    ledger = build_article_claim_ledger(
+        pack,
+        "<p>According to researchers, the product supports voltage stabilization.</p>",
+    )
+    assert ledger["used_claim_count"] == 1
+    assert ledger["attribution_violations"]
 
 
 def test_approved_first_review_packages_without_post_approval_seo_mutation(
@@ -1611,6 +1836,78 @@ def test_contradictory_compliance_report_is_rejected(tmp_path):
             "verdict": "approved",
             "mandatory_edits": [{"id": "M1"}],
         })
+
+
+def test_contradictory_paid_reviewer_report_is_quarantined_not_replayed(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Test", "Barchart Advertorial", "device source", vertical="device"
+    )
+    engine.import_manual_article(
+        pid,
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<p>Seller materials describe the test device.</p>",
+    )
+    engine._record_llm_call(
+        pid,
+        "compliance",
+        route_for("compliance", "device"),
+        100,
+        100,
+        raw_output=json.dumps({
+            "verdict": "approved",
+            "mandatory_count": 1,
+            "source_accuracy": {"verified": 1, "checked": 1},
+            "mandatory_edits": [{
+                "id": "M1", "category": "source", "issue": "Contradiction",
+                "exact_text": "x", "replacement": "y",
+            }],
+            "recommended_edits": [],
+            "approved_elements": [],
+            "notes": [],
+        }),
+        lifecycle="provider_succeeded",
+    )
+    with pytest.raises(RuntimeError, match="contradictory"):
+        engine._openai_review(engine.get(pid), final=False)
+    assert engine._latest_pending_call(pid, "compliance") is None
+    assert any(
+        event["event_type"] == "reviewer_report_invalid"
+        for event in engine.events(pid)
+    )
+
+
+def test_stale_report_cannot_advance_a_mutated_article(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Test", "Barchart Advertorial", "device source", vertical="device"
+    )
+    engine.import_manual_article(
+        pid, "<p><strong>Paid Advertorial:</strong> First article.</p>"
+    )
+    stale = engine.get(pid)
+    with engine._connect() as conn:
+        conn.execute(
+            "UPDATE projects SET article_text=?,article_hash=? WHERE id=?",
+            (
+                "<p><strong>Paid Advertorial:</strong> Mutated article.</p>",
+                "mutated-hash",
+                pid,
+            ),
+        )
+    report = {
+        "verdict": "approved",
+        "mandatory_edits": [],
+        "reviewed_article_hash": stale["article_hash"],
+        "approval_purpose": "final_signoff",
+    }
+    with pytest.raises(RuntimeError, match="changed during review"):
+        engine._set_report(stale, report, "signed_off", "stale.json")
+    current = engine.get(pid)
+    assert current["article_hash"] != stale["article_hash"]
+    assert current["stage"] == stale["stage"]
 
 
 def test_duplicate_paid_run_is_blocked_and_stale_lock_recovers(tmp_path, monkeypatch):
@@ -1847,7 +2144,7 @@ def test_rejected_repair_candidate_preserves_canonical_and_review(tmp_path):
     )
 
 
-def test_existing_d18_only_rejection_reopens_without_another_paid_call(
+def test_historical_d18_rejection_cannot_replace_canonical_without_full_inputs(
     tmp_path,
 ):
     engine = WorkbenchEngine(tmp_path)
@@ -1895,13 +2192,12 @@ def test_existing_d18_only_rejection_reopens_without_another_paid_call(
         engine.get(pid)["article_hash"],
         {"blockers": [{"id": "D18", "issue": "Draft is short."}]},
     )
-    assert engine.can_recover_locked_pre_signoff(pid)
-    with patch.object(
-        engine, "_recover_depth_from_paid_artifacts", return_value=True
-    ) as recover:
-        assert engine._recover_locked_pre_signoff(pid)
-    recover.assert_called_once_with(pid)
-    assert engine.get(pid)["stage"] == "revised"
+    original = engine.get(pid)
+    assert engine.can_recover_locked_pre_signoff(pid) is False
+    assert engine._recover_locked_pre_signoff(pid) is False
+    current = engine.get(pid)
+    assert current["article_hash"] == original["article_hash"]
+    assert current["article_text"] == original["article_text"]
     assert engine.usage_summary(pid)["calls"] == 1
 
 
@@ -2145,7 +2441,7 @@ def test_continuous_runner_finishes_clean_admin_artifact_without_rebuild(
     with patch.object(
         engine, "_openai_review", return_value=approved
     ) as reviewer:
-        result = engine._run_to_completion_unlocked(pid, "")
+        result = engine.run_to_completion(pid, "")
     assert reviewer.call_count == 1
     assert result["stage"] == "package_ready"
 
@@ -2275,7 +2571,11 @@ def test_package_builds_downloadable_zip(tmp_path):
         pid,
         "<p>Seller materials state Literal product fact 0.</p>"
         "<p>Seller materials state Literal product fact 1.</p>"
-        "<p>Seller materials state Literal product fact 2.</p>",
+        "<p>Seller materials state Literal product fact 2.</p>"
+        + (
+            "<p>This source-grounded reader section explains the documented "
+            "offer clearly without adding unsupported product facts.</p>"
+        ) * 230,
     )
     p = engine.get(pid)
     report = _independent_approval(engine, pid)

@@ -96,6 +96,10 @@ def test_device_pack_recovers_literal_affiliate_seller_headings():
             "Stabilizes the Power",
             "Reduces Dirty Electricity",
             "Easy to Install, No Maintenance Required",
+            "Plug In the Device",
+            "Check the Active Indicator",
+            "Designed for Continuous Operation",
+            "Filter, Stabilize and Save",
             "GET UP TO 65% OFF NOW",
         ],
     }]
@@ -108,6 +112,9 @@ def test_device_pack_recovers_literal_affiliate_seller_headings():
         "Stabilizes the Power",
         "Reduces Dirty Electricity",
         "Easy to Install, No Maintenance Required",
+        "Plug In the Device",
+        "Check the Active Indicator",
+        "Designed for Continuous Operation",
     ]
     assert all(
         claim["publication_treatment"] == "seller_attribution_required"
@@ -126,6 +133,27 @@ def test_contextual_seller_headings_do_not_rescue_non_device_pack():
     }]
     pack = seal_source_pack(raw)
     assert pack["source_pack_contract"]["readiness"] == "blocked"
+
+
+def test_unverified_affiliate_remains_a_source_attributed_promotion():
+    raw = _pack()
+    raw["claims_by_type"] = {}
+    raw["all_artifacts"]["affiliate-art"] = {
+        "source_url": "https://partner.example/device",
+        "source_class": "third_party_web_search",
+    }
+    raw["contextual_source_profiles"] = [{
+        "source_type": "affiliate_page",
+        "artifact_id": "affiliate-art",
+        "headings": ["Stabilizes the Power"],
+    }]
+    pack = seal_source_pack(raw)
+    recovered = pack["publication_claims"]["manufacturer_claim"]
+    assert recovered[0]["source_class"] == "third_party_web_search"
+    assert (
+        recovered[0]["publication_treatment"]
+        == "source_attribution_required"
+    )
 
 
 def test_resealing_legacy_publication_ledger_does_not_erase_claims():

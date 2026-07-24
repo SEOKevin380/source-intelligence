@@ -84,19 +84,25 @@ def audit_article(
     max_mechanical_passes: int = 5,
 ) -> dict:
     """Expose all gates together and replay deterministic repairs to fixed point."""
-    original_findings = deterministic_findings(article, platform, vertical)
+    original_findings = deterministic_findings(
+        article, platform, vertical, affiliate_href
+    )
     current = article
     passes = []
     seen = {current}
     for pass_number in range(1, max_mechanical_passes + 1):
-        before = deterministic_findings(current, platform, vertical)
+        before = deterministic_findings(
+            current, platform, vertical, affiliate_href
+        )
         mechanical_before = [
             item for item in before if item.get("id") in MECHANICAL_GATES
         ]
         repaired = repair_publication_gates(
             current, platform, vertical, affiliate_href
         )
-        after = deterministic_findings(repaired, platform, vertical)
+        after = deterministic_findings(
+            repaired, platform, vertical, affiliate_href
+        )
         passes.append({
             "pass": pass_number,
             "before": [item["id"] for item in before],

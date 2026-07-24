@@ -32,6 +32,18 @@ def _tokens(value: str) -> set[str]:
     }
 
 
+def _numbers(value: str) -> set[str]:
+    """Return exact numeric atoms; 50 mg must never substantiate 500 mg."""
+    return set(re.findall(r"(?<![a-z])\d+(?:\.\d+)?%?", value.casefold()))
+
+
+def _negated(value: str) -> bool:
+    return bool(re.search(
+        r"\b(?:no|not|never|cannot|can't|does not|doesn't|without)\b",
+        value.casefold(),
+    ))
+
+
 def _sentences(article: str) -> list[str]:
     """Split within semantic blocks so headings cannot contaminate claims.
 
@@ -88,10 +100,26 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
             denominator = max(
                 min(len(sentence_tokens), claim_token_count), 1
             )
+            claim_numbers = _numbers(claim["text"])
+            sentence_numbers = _numbers(sentence)
+            hypothetical = bool(re.search(
+                r"\b(?:ask whether|check whether|verify whether|"
+                r"if the seller|whether the product|could it|does it)\b",
+                sentence.casefold(),
+            ))
+            polarity_conflict = (
+                _negated(sentence) != _negated(claim["text"])
+                and overlap >= required_overlap
+            )
             if (
                 claim_token_count
                 and overlap >= required_overlap
                 and overlap / denominator >= 0.45
+                # A mapped clause may not smuggle in additional quantities.
+                # Every numeric atom must be supported by the same claim.
+                and claim_numbers == sentence_numbers
+                and not polarity_conflict
+                and not hypothetical
             ):
                 matches.append({
                     key: value for key, value in claim.items() if key != "tokens"
@@ -103,8 +131,7 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
                 r"\b(?:seller|offer|vendor|manufacturer|product page|"
                 r"sales page|source materials?|materials?)\b.{0,50}"
                 r"\b(?:states?|says?|describes?|lists?|reports?|claims?|"
-                r"calls?|presents?|identifies?)\b|"
-                r"\baccording to\b",
+                r"calls?|presents?|identifies?)\b",
                 sentence_lower,
             ))
             # A seller/source noun phrase can govern a later reporting verb in
@@ -115,6 +142,11 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
                 r"product page|sales page|source materials?|materials?)\b"
                 r".*\b(?:states?|says?|describes?|lists?|reports?|claims?|"
                 r"calls?|presents?|identifies?)\b",
+                sentence_lower,
+            ))
+            seller_attributed = seller_attributed or bool(re.search(
+                r"\baccording to (?:the )?(?:seller|vendor|manufacturer|"
+                r"product page|sales page|offer)\b",
                 sentence_lower,
             ))
             source_attributed = seller_attributed or bool(re.search(

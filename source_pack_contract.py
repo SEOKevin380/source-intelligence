@@ -60,6 +60,7 @@ _CONTEXTUAL_SELLER_HEADING_BLOCKLIST = (
     "save up to",
     "cut your",
     "slash your",
+    "save",
 )
 
 
@@ -228,6 +229,14 @@ def _contextual_seller_claims(pack: dict) -> dict:
 
     recovered = []
     seen = set()
+    artifacts = pack.get("all_artifacts") or {}
+    if isinstance(artifacts, list):
+        artifact_index = {
+            str(item.get("artifact_id", "")): item
+            for item in artifacts if isinstance(item, dict)
+        }
+    else:
+        artifact_index = artifacts if isinstance(artifacts, dict) else {}
     for profile in pack.get("contextual_source_profiles") or []:
         if not isinstance(profile, dict):
             continue
@@ -236,6 +245,20 @@ def _contextual_seller_claims(pack: dict) -> dict:
         artifact_id = str(profile.get("artifact_id", "")).strip()
         if not artifact_id:
             continue
+        artifact = artifact_index.get(artifact_id) or {}
+        source_class = str(
+            artifact.get("source_class") or profile.get("source_class") or ""
+        ).strip().casefold()
+        if source_class not in {
+            "official_vendor", "authorized_reseller", "user_generated",
+            "third_party_web_search",
+        }:
+            continue
+        treatment = (
+            "seller_attribution_required"
+            if source_class in {"official_vendor", "authorized_reseller"}
+            else "source_attribution_required"
+        )
         for heading in profile.get("headings") or []:
             text = html.unescape(
                 " ".join(str(heading or "").split()).strip()
@@ -244,7 +267,6 @@ def _contextual_seller_claims(pack: dict) -> dict:
             if (
                 len(text) < 12
                 or len(text) > 180
-                or text.isupper()
                 or folded in seen
                 or any(term in folded for term in _CONTEXTUAL_SELLER_HEADING_BLOCKLIST)
             ):
@@ -261,16 +283,20 @@ def _contextual_seller_claims(pack: dict) -> dict:
             recovered.append({
                 "text": text,
                 "artifact_id": artifact_id,
-                "source_class": "authorized_reseller",
+                "source_class": source_class,
                 "review_status": "needs_verification",
-                "publication_treatment": "seller_attribution_required",
+                "publication_treatment": treatment,
                 "metadata": {
                     "excerpt_is_literal": True,
                     "contextual_seller_heading": True,
                     "source_pack_field": "contextual_source_profiles.headings",
                 },
             })
-            if len(recovered) >= 3:
+            # A long-form device advertorial needs more than three isolated
+            # headings. Keep a bounded set of literal, non-promissory seller
+            # statements so the writer has enough distinct source material
+            # without importing sales-page hype.
+            if len(recovered) >= 6:
                 break
     return {"manufacturer_claim": recovered} if recovered else {}
 
@@ -279,7 +305,11 @@ def _merge_contextual_seller_claims(source_claims: dict, pack: dict) -> dict:
     """Use literal seller headings only when the primary ledger is too thin."""
     merged = copy.deepcopy(source_claims or {})
     count = sum(len(items or []) for items in merged.values())
-    if count >= MINIMUM_PUBLICATION_CLAIMS:
+    product_type = str(
+        (pack.get("product") or {}).get("product_type", "")
+    ).strip().casefold()
+    contextual_floor = 6 if product_type == "device" else MINIMUM_PUBLICATION_CLAIMS
+    if count >= contextual_floor:
         return merged
     existing = {
         str(claim.get("text", "")).strip().casefold()
@@ -399,16 +429,21 @@ def seal_source_pack(full_data: dict) -> dict:
                 and not compliance_blocked
             )
             source_attribution_required = bool(
-                status == "unreviewed"
+                status in {"unreviewed", "needs_verification"}
                 and literal
                 and has_artifact
                 and not seller_attribution_required
+                and (
+                    status == "unreviewed"
+                    or metadata.get("contextual_seller_heading") is True
+                )
                 and not compliance_blocked
             )
             safe = not compliance_blocked and (
                 status == "accepted"
                 or (status == "unreviewed" and literal and has_artifact)
                 or seller_attribution_required
+                or source_attribution_required
             )
             if safe:
                 publication_claim = copy.deepcopy(claim)

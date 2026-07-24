@@ -128,3 +128,39 @@ def test_heading_is_not_joined_to_unattributed_pricing_paragraph():
     )
     assert ledger["used_claim_count"] == 1
     assert ledger["attribution_violations"]
+
+
+def test_according_to_seller_is_valid_seller_attribution():
+    pack = {
+        "publication_claims": {
+            "feature": [{
+                "claim_id": "seller-attribution",
+                "text": "Voltage stabilization",
+                "publication_treatment": "seller_attribution_required",
+            }]
+        }
+    }
+    ledger = build_article_claim_ledger(
+        pack,
+        "<p>According to the seller, voltage stabilization is a listed "
+        "product feature.</p>",
+    )
+    assert ledger["used_claim_count"] == 1
+    assert not ledger["attribution_violations"]
+
+
+def test_mapped_claim_cannot_smuggle_an_extra_number():
+    pack = {
+        "publication_claims": {
+            "pricing": [{
+                "claim_id": "price",
+                "text": "Single Unit $49.99",
+                "publication_treatment": "seller_attribution_required",
+            }]
+        }
+    }
+    ledger = build_article_claim_ledger(
+        pack,
+        "<p>The seller lists one unit at $49.99 and promises 50% savings.</p>",
+    )
+    assert ledger["used_claim_count"] == 0

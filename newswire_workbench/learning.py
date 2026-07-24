@@ -9,7 +9,7 @@ from .publication_profiles import publication_profile
 from .gate_registry import PUBLICATION_BLOCKER_IDS
 
 
-PROMPT_VERSION = "newswire-v2.3-artifact-integrity"
+PROMPT_VERSION = "newswire-v2.4-closed-loop-source-contract"
 
 HARD_BLOCKER_RATIONALE = {
     "D1": ("legal_disclosure", "Paid native advertising must be identifiable."),
@@ -57,7 +57,7 @@ def issue_fingerprint(category, issue):
     return hashlib.sha256(" ".join(tokens[:24]).encode()).hexdigest()[:20]
 
 
-def deterministic_findings(article, platform, vertical):
+def deterministic_findings(article, platform, vertical, affiliate_href=""):
     """Return non-negotiable mechanical issues before model judgment."""
     findings = []
     lowered = article.casefold()
@@ -124,7 +124,18 @@ def deterministic_findings(article, platform, vertical):
                 "into clean rendered article-body HTML."
             ),
         })
-    if "advertorial" not in lowered[:1200]:
+    opening_plain = re.sub(
+        r"\s+", " ", BeautifulSoup(article[:2400], "html.parser").get_text(" ")
+    ).strip().casefold()
+    advertorial_label = re.search(
+        r"\b(?:paid advertorial|advertorial disclosure|paid advertising)\b",
+        opening_plain[:1200],
+    )
+    negated_advertorial = re.search(
+        r"\b(?:not|isn't|is not|never)\s+(?:a\s+)?(?:paid\s+)?advertorial\b",
+        opening_plain[:1200],
+    )
+    if not advertorial_label or negated_advertorial:
         findings.append({
             "id": "D1", "category": "Deterministic disclosure gate",
             "issue": "Paid advertorial label is missing near the top.",
@@ -157,7 +168,20 @@ def deterministic_findings(article, platform, vertical):
             "exact_text": first_person_disclosure.group(0),
             "replacement": "Compensation may be received if a subscription is purchased through links in this advertorial.",
         })
-    if "affiliate" in lowered and not re.search(r"compensation may be received|a commission may be earned", lowered):
+    affiliate_href = str(affiliate_href or "").strip()
+    has_material_affiliate_link = bool(
+        affiliate_href
+        and affiliate_href.upper() != "TRAFFIC-FIRST"
+        and any(
+            str(node.get("href") or "").strip() == affiliate_href
+            for node in soup.find_all("a", href=True)
+        )
+    )
+    passive_compensation = re.search(
+        r"\b(?:compensation may be received|a commission may be earned)\b",
+        opening_plain[:1600],
+    )
+    if has_material_affiliate_link and not passive_compensation:
         findings.append({
             "id": "D5", "category": "Affiliate disclosure gate",
             "issue": "Passive affiliate compensation disclosure is missing.",
@@ -311,7 +335,36 @@ def deterministic_findings(article, platform, vertical):
             r"legitimate product should|"
             r"(?:deploy|place|install) multiple units?.{0,100}"
             r"(?:room|circuit|throughout)|"
-            r"industry[- ]standard|risk[- ]free trial)\b",
+            r"industry[- ]standard|risk[- ]free trial|"
+            # Invented engineering examples are still factual additions even
+            # when presented as questions or examples of missing evidence.
+            r"harmonic distortion|surge suppression ratings?|"
+            r"frequency response data|ratings? in joules|"
+            r"voltage regulation ranges?|environmental ratings?|"
+            # Do not manufacture category science or conditional performance
+            # logic to explain an absent product claim.
+            r"distinct from energy efficiency|"
+            r"not the same as (?:a )?device|"
+            r"utility bill impact.{0,160}(?:depend|inefficien)|"
+            r"operating costs?.{0,100}(?:offset|claimed benefits?)|"
+            # Buyer cohorts and substitute-system comparisons require source
+            # support; they are not neutral connective prose.
+            r"tech[- ]forward consumers?|"
+            r"reasonable trial product|"
+            r"professional[- ]grade|whole[- ]home systems?|"
+            r"renters?|residents? of older buildings?|"
+            r"cannot install permanent electrical upgrades?|"
+            r"entry[- ]level power[- ]conditioning|"
+            # Missing-fact discussion may identify the recorded gap, but may
+            # not invent availability, procedures, environments, or commerce.
+            r"allow you to follow up with questions or concerns|"
+            r"what happens if you plug it in|"
+            r"wet, humid, high[- ]temperature|outdoor[- ]adjacent|"
+            r"geographic restrictions?|applicable taxes or fees|"
+            r"promotional offers? or discounts?|"
+            r"most heavily regulated|"
+            r"independent certification is often|"
+            r"critical decisions about electrical safety)\b",
             plain_lower,
         )
         if vertical == "device" else []

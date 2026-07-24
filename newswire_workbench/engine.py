@@ -42,9 +42,9 @@ from .execution_budget import (
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v33-recovery-convergence"
+    "serp-differentiation-depth-v34-closed-loop-action-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "recovery-convergence-20260723-r3"
+WORKBENCH_RUNTIME_REVISION = "closed-loop-action-contract-20260723-r4"
 
 STAGES = (
     "source_ready",
@@ -318,6 +318,9 @@ class WorkbenchEngine:
                 ("lifecycle", "TEXT DEFAULT 'applied'"),
                 ("raw_output", "TEXT DEFAULT ''"),
                 ("output_hash", "TEXT DEFAULT ''"),
+                ("request_hash", "TEXT DEFAULT ''"),
+                ("input_article_hash", "TEXT DEFAULT ''"),
+                ("input_source_hash", "TEXT DEFAULT ''"),
             ):
                 if name not in llm_columns:
                     add_column_if_missing("llm_calls", name, declaration)
@@ -364,8 +367,17 @@ class WorkbenchEngine:
             infer_niche,
             retrieve_exemplars,
         )
-        from source_pack_contract import validate_source_pack
+        from source_pack_contract import seal_source_pack, validate_source_pack
         from policy_intelligence import format_policy_context
+        validate_source_pack(pack, allow_limited=True)
+        # Apply deterministic contract migrations to already-sealed stored
+        # reports (for example, newly supported literal seller headings)
+        # before selecting exemplars or calculating the immutable fact hash.
+        # This adds no external facts and prevents yesterday's valid capture
+        # from remaining artificially thin after the engine improves.
+        reconciled_pack = seal_source_pack(pack)
+        pack.clear()
+        pack.update(reconciled_pack)
         validate_source_pack(pack, allow_limited=True)
         product = pack.get("product") or {}
         manifest = pack.get("intake_manifest") or {}
@@ -414,32 +426,9 @@ class WorkbenchEngine:
                 (source_hash, platform),
             ).fetchone()
         if existing:
-            existing_project = self.get(existing["id"])
-            blockers = []
-            if existing_project["stage"] == "package_ready":
-                findings = deterministic_findings(
-                    existing_project.get("article_text") or "",
-                    existing_project["platform"],
-                    existing_project["vertical"],
-                )
-                blockers, _ = partition_findings(findings)
-            approval_hash_mismatch = (
-                existing_project["stage"] == "package_ready"
-                and existing_project.get("last_report", {}).get(
-                    "reviewed_article_hash"
-                ) != existing_project.get("article_hash")
-            )
-            if (
-                not force_new
-                and (
-                    existing_project["stage"] == "admin_review"
-                    or blockers
-                    or approval_hash_mismatch
-                )
-            ):
-                return self.create_project_from_pack(
-                    pack, platform, vertical=resolved_vertical, force_new=True
-                )
+            # Project creation is idempotent. A caller must explicitly request
+            # a new immutable transaction; an overloaded admin/package state
+            # must never silently discard a resumable or diagnosable run.
             return existing["id"]
         # Claim the one active project for this exact pack/platform/workflow
         # inside a write transaction. Multiple Streamlit tabs must converge on
@@ -824,11 +813,15 @@ class WorkbenchEngine:
             self._billable_call_count(project_id, "final_signoff")
             < self._purpose_call_limit(p, "final_signoff", final_route)
         )
+        final_available = bool(
+            final_capacity
+            or self._latest_pending_call(project_id, "final_signoff")
+        )
         if (
             not current_preflight["blockers"]
             and not current_provenance.get("coverage_violations")
             and not current_provenance.get("attribution_violations")
-            and final_capacity
+            and final_available
         ):
             return True
         # Recovery follows the current canonical artifact, never the rejected
@@ -838,7 +831,8 @@ class WorkbenchEngine:
         if (
             current_blocker_ids == {"D18"}
             and not current_provenance.get("coverage_violations")
-            and final_capacity
+            and not current_provenance.get("attribution_violations")
+            and final_available
             and self._latest_successful_call_output(project_id, "draft")
             and self._latest_successful_call_output(
                 project_id, "compliance_repair"
@@ -849,31 +843,14 @@ class WorkbenchEngine:
             event for event in self.events(project_id)
             if event["event_type"] == "pre_signoff_blocked"
         ]
-        rejected = [
-            event for event in self.events(project_id)
-            if event["event_type"] == "candidate_rejected"
-        ]
-        if rejected:
-            payload = rejected[-1].get("payload") or "{}"
-            if isinstance(payload, str):
-                payload = json.loads(payload)
-            rejected_ids = {
-                item.get("id") for item in payload.get("blockers") or []
-            }
-            if (
-                rejected_ids == {"D18"}
-                and self._latest_successful_call_output(
-                    project_id, "compliance_repair"
-                )
-                and self._billable_call_count(project_id, "final_signoff")
-                < self._purpose_call_limit(p, "final_signoff", final_route)
-            ):
-                return True
         if not relevant:
             return False
         payload = relevant[-1].get("payload") or "{}"
         if isinstance(payload, str):
-            payload = json.loads(payload)
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                payload = {}
         blockers = payload.get("blockers") or []
         blocker_ids = {item.get("id") for item in blockers}
         depth_recoverable = (
@@ -1044,6 +1021,140 @@ class WorkbenchEngine:
             "admin_review": "Kevin review queue",
         }[project["stage"]]
 
+    def run_action(self, project_id, current_workflow_version=""):
+        """Return the single engine-owned action for the durable project.
+
+        The UI must not infer recovery, rebuild, delivery, or terminal state
+        from the overloaded ``admin_review`` stage.
+        """
+        project = self.get(project_id)
+        stage = project["stage"]
+        diagnostics = self.article_diagnostics(project_id)
+        preflight = self.offline_preflight(project_id)
+        action = {
+            "action": "human_decision",
+            "label": "Review Required",
+            "reason": "The project is in a typed state with no automatic owner.",
+            "may_start_paid_call": False,
+        }
+        if stage == "package_ready":
+            if preflight["publication_ready"]:
+                return {
+                    **action,
+                    "action": "complete",
+                    "label": "Publication Package Complete",
+                    "reason": (
+                        "The exact approved hash is packaged and bound to the "
+                        "verified WordPress draft."
+                    ),
+                }
+            policy = preflight.get("policy_intelligence") or {}
+            if not (
+                preflight["ready_for_packaging"]
+                and policy.get("current")
+                and policy.get("exact_snapshot_match")
+            ):
+                return {
+                    **action,
+                    "action": "system_blocked",
+                    "label": "Repair Package Contract",
+                    "reason": (
+                        "The package is not bound to a clean, currently "
+                        "approved artifact. WordPress delivery is not a valid "
+                        "recovery action."
+                    ),
+                }
+            return {
+                **action,
+                "action": "retry_wordpress",
+                "label": "Retry WordPress Delivery",
+                "reason": (
+                    "Editorial approval and packaging are complete; the exact "
+                    "current hash still needs a verified WordPress draft."
+                ),
+            }
+        if (
+            current_workflow_version
+            and diagnostics["workflow_version"] != current_workflow_version
+        ):
+            return {
+                **action,
+                "action": "rebuild_obsolete_workflow",
+                "label": "Rebuild With Latest Workflow",
+                "reason": (
+                    "This transaction belongs to an obsolete workflow "
+                    "contract and cannot continue under the current workflow."
+                ),
+                "may_start_paid_call": True,
+            }
+        prepaid = self._prepaid_contract_blockers(project)
+        if prepaid and (
+            stage in PAID_CALL_STAGES or stage == "admin_review"
+        ):
+            ids = {item.get("id") for item in prepaid}
+            return {
+                **action,
+                "action": "refresh_source_policy",
+                "label": "Refresh Source or Policy Contract",
+                "reason": (
+                    "Paid generation is blocked before execution: "
+                    + ", ".join(sorted(ids))
+                ),
+            }
+        if stage == "source_ready":
+            return {
+                **action,
+                "action": "build",
+                "label": "Build Draft Automatically",
+                "reason": "The sealed pre-run contract is ready.",
+                "may_start_paid_call": True,
+            }
+        if stage != "admin_review":
+            return {
+                **action,
+                "action": "resume",
+                "label": "Resume Current Workflow",
+                "reason": f"The owned {stage} stage can continue.",
+                "may_start_paid_call": stage in PAID_CALL_STAGES,
+            }
+        if self.can_recover_locked_pre_signoff(project_id):
+            return {
+                **action,
+                "action": "resume_zero_cost",
+                "label": "Resume Current Workflow",
+                "reason": (
+                    "The engine owns a deterministic recovery before the "
+                    "remaining independent review."
+                ),
+            }
+        semantic = preflight["semantic_review"]
+        if (
+            semantic["last_verdict"] == "not_approved"
+            and semantic["remaining_calls"] == 0
+        ):
+            return {
+                **action,
+                "action": "system_blocked",
+                "label": "Run Requires a New Corrected Transaction",
+                "reason": (
+                    "The exact artifact was rejected and its independent "
+                    "review budget is exhausted. Blind resume or rebuild is "
+                    "not authorized until the failure family is corrected."
+                ),
+            }
+        if semantic["remaining_calls"] > 0 and not preflight["blockers"]:
+            return {
+                **action,
+                "action": "resume_paid_reserved",
+                "label": "Resume Independent Sign-Off",
+                "reason": (
+                    "The deterministic contract is clean and a reserved exact-"
+                    "hash independent review remains."
+                ),
+                "may_start_paid_call": True,
+            }
+        return action
+
     def run_to_completion(
         self, project_id, master_instructions, max_steps=20,
         progress_callback=None,
@@ -1068,6 +1179,7 @@ class WorkbenchEngine:
                 master_instructions,
                 max_steps=max_steps,
                 progress_callback=progress_callback,
+                run_token=token,
             )
         except Exception as exc:
             p = self.get(project_id)
@@ -1086,13 +1198,14 @@ class WorkbenchEngine:
 
     def _run_to_completion_unlocked(
         self, project_id, master_instructions, max_steps=20,
-        progress_callback=None,
+        progress_callback=None, run_token="",
     ):
         """Internal continuous runner; caller must hold the project lease."""
         budget = execution_budget()
         call_limit = budget["calls"]
         no_progress = 0
         for _ in range(max_steps):
+            self._heartbeat_run(project_id, run_token)
             project = self.get(project_id)
             if not self._is_authoritative_project_context(project):
                 self._event(
@@ -1225,6 +1338,28 @@ class WorkbenchEngine:
                     "at least 3 are required before paid drafting."
                 ),
             })
+        required_facts = pack.get("required_facts") or {}
+        missing_facts = list(required_facts.get("missing") or [])
+        profile = publication_profile(
+            project["platform"], project["vertical"]
+        )
+        if (
+            profile["hard_floor"] >= 1000
+            and claim_count < 6
+            and len(set(missing_facts)) >= 5
+        ):
+            blockers.append({
+                "id": "SOURCE-COVERAGE",
+                "issue": (
+                    "The long-form publication contract is not supportable: "
+                    f"only {claim_count} permitted claims remain while "
+                    f"{len(set(missing_facts))} material fact families are "
+                    "recorded as missing. At least 6 distinct permitted claims "
+                    "are required for a long-form release. "
+                    "Refresh or reconcile captured seller records before any "
+                    "paid drafting call."
+                ),
+            })
         from policy_intelligence import policy_status
         policy = policy_status(project["vertical"])
         source_policy_hash = _source_policy_hash(project["source_text"])
@@ -1293,41 +1428,6 @@ class WorkbenchEngine:
                 # contract explicit for injected/custom recovery handlers too.
                 self._set_stage(project_id, "revised")
             return recovered
-        rejected = [
-            event for event in self.events(project_id)
-            if event["event_type"] == "candidate_rejected"
-        ]
-        if rejected:
-            payload = rejected[-1].get("payload") or "{}"
-            if isinstance(payload, str):
-                payload = json.loads(payload)
-            rejected_ids = {
-                item.get("id") for item in payload.get("blockers") or []
-            }
-            if rejected_ids == {"D18"}:
-                raw_repair = self._latest_successful_call_output(
-                    project_id, "compliance_repair"
-                )
-                if raw_repair and self._set_article(
-                    p,
-                    raw_repair,
-                    "revised",
-                    "03-claude-revision.html",
-                    bump=True,
-                    require_publishable=False,
-                ):
-                    self._event(
-                        project_id,
-                        "depth_candidate_reopened",
-                        "revised",
-                        self.get(project_id)["article_hash"],
-                        {
-                            "paid_calls_added": 0,
-                            "reason": "D18_only",
-                            "operator_decision_required": False,
-                        },
-                    )
-                    return self._recover_depth_from_paid_artifacts(project_id)
         relevant = [
             event for event in self.events(project_id)
             if event["event_type"] == "pre_signoff_blocked"
@@ -1336,7 +1436,10 @@ class WorkbenchEngine:
             return False
         payload = relevant[-1].get("payload") or "{}"
         if isinstance(payload, str):
-            payload = json.loads(payload)
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                payload = {}
         blockers = payload.get("blockers") or []
         if {item.get("id") for item in blockers} == {"D18"}:
             return self._recover_depth_from_paid_artifacts(project_id)
@@ -1381,60 +1484,14 @@ class WorkbenchEngine:
             extract_sealed_pack,
         )
         sealed_pack = extract_sealed_pack(p["source_text"])
-        # Fix claim-local attribution in memory. The canonical artifact is not
-        # mutated unless the complete reconstructed candidate passes every
-        # deterministic and provenance gate below.
+        # Do not "repair" a mixed sentence by prefixing the whole sentence with
+        # seller attribution. That can launder unrelated unsupported clauses.
+        # Attribution must already be claim-local before a paid artifact is
+        # eligible for zero-cost reuse.
         base_html = p["article_text"]
         current_ledger = build_article_claim_ledger(sealed_pack, base_html)
         if current_ledger.get("attribution_violations"):
-            attribution_soup = BeautifulSoup(base_html, "html.parser")
-            for violation in current_ledger["attribution_violations"]:
-                sentence = re.sub(
-                    r"\s+", " ",
-                    str(violation.get("article_sentence") or ""),
-                ).strip()
-                if not sentence:
-                    continue
-                treatment = violation.get("required_treatment")
-                prefix = (
-                    "Seller materials state that "
-                    if treatment == "seller_attribution_required"
-                    else "According to the recorded source, "
-                )
-                for node in attribution_soup.find_all(
-                    ["p", "li", "td", "th", "figcaption"]
-                ):
-                    node_text = re.sub(
-                        r"\s+", " ", node.get_text(" ", strip=True)
-                    ).strip()
-                    if sentence not in node_text:
-                        continue
-                    for text_node in node.find_all(string=True):
-                        raw = str(text_node)
-                        if sentence in raw:
-                            text_node.replace_with(
-                                raw.replace(
-                                    sentence,
-                                    prefix + sentence[:1].lower() + sentence[1:],
-                                    1,
-                                )
-                            )
-                            break
-                    else:
-                        node.insert(
-                            0, prefix + sentence[:1].lower() + sentence[1:] + " "
-                        )
-                    break
-            base_html = str(attribution_soup)
-        missing_fact_tokens = {
-            token
-            for item in (
-                (sealed_pack.get("required_facts") or {}).get("missing") or []
-            )
-            for token in re.findall(r"[a-z0-9]+", str(item).casefold())
-            if len(token) > 3
-        }
-
+            return False
         report_path = project_dir / "02-openai-review.json"
         try:
             report = json.loads(report_path.read_text()) if report_path.exists() else {}
@@ -1501,33 +1558,7 @@ class WorkbenchEngine:
                     block_ledger["used_claim_count"] >= 1
                     and not block_ledger["attribution_violations"]
                 )
-                explains_recorded_gap = bool(
-                    missing_fact_tokens & tokens
-                    and re.search(
-                        r"\b(?:not established|not documented|not available|"
-                        r"unavailable|missing|unverified|not verified|verify|"
-                        r"confirm|ask the seller|check the current)\b",
-                        lowered,
-                    )
-                )
-                neutral_buyer_guidance = bool(
-                    re.search(
-                        r"\b(?:buyer|reader|shopper|before ordering|before "
-                        r"buying|verify|confirm|compare|check the current|"
-                        r"decision|fit|priorit)\b",
-                        lowered,
-                    )
-                    and re.search(
-                        r"\b(?:verify|confirm|compare|check|consider|review|"
-                        r"ask|decide|look for|weigh)\b",
-                        lowered,
-                    )
-                )
-                if (
-                    not maps_permitted_claim
-                    and not explains_recorded_gap
-                    and not neutral_buyer_guidance
-                ):
+                if not maps_permitted_claim:
                     continue
                 block_findings = deterministic_findings(
                     str(node), p["platform"], p["vertical"]
@@ -1730,6 +1761,20 @@ class WorkbenchEngine:
             self._event(project_id, "stale_run_recovered", project["stage"],
                         project["article_hash"], {"age_seconds": recovered_age})
 
+    def _heartbeat_run(self, project_id, run_token):
+        """Keep a live continuous-run lease from being reclaimed as stale."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """UPDATE projects SET run_started_at=?
+                WHERE id=? AND run_token=? AND COALESCE(run_token,'')<>''""",
+                (_now(), project_id, run_token),
+            )
+        if cursor.rowcount != 1:
+            raise RuntimeError(
+                "The continuous-run lease was replaced; this runner is no "
+                "longer authorized to call providers or mutate the project."
+            )
+
     def _run_next_unlocked(self, project_id, master_instructions):
         p = self.get(project_id)
         stage = p["stage"]
@@ -1845,6 +1890,9 @@ class WorkbenchEngine:
                 self._billable_call_count(p["id"], repair_purpose)
                 >= self._purpose_call_limit(
                     p, repair_purpose, primary_route
+                )
+                and not self._latest_pending_call(
+                    p["id"], repair_purpose
                 )
             ):
                 if self._uses_locked_call_path(p):
@@ -1993,6 +2041,9 @@ class WorkbenchEngine:
                     p, "final_signoff", final_route
                 )
                 and self._adjudication_count(p["id"]) > 0
+                and not self._latest_pending_call(
+                    p["id"], "final_signoff"
+                )
             ):
                 self._complete_adjudicated_signoff(
                     p["id"], "signed_off", "04-adjudicated-signoff.json"
@@ -2146,7 +2197,10 @@ class WorkbenchEngine:
         self._set_report(p, report, target, "manual-openai-report.json")
 
     def _claude(self, prompt, project_id, purpose, vertical):
-        replay = self._latest_pending_call(project_id, purpose)
+        request_hash = _hash(prompt)
+        replay = self._latest_pending_call(
+            project_id, purpose, request_hash=request_hash
+        )
         if replay:
             self._event(
                 project_id,
@@ -2196,6 +2250,7 @@ class WorkbenchEngine:
             output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
             raw_output=text,
             lifecycle="provider_succeeded",
+            request_hash=request_hash,
         )
         if getattr(msg, "stop_reason", None) == "max_tokens":
             self._mark_llm_call_lifecycle(call_id, "invalid")
@@ -2210,7 +2265,10 @@ class WorkbenchEngine:
         )
         purpose = purpose or ("final_signoff" if final else "compliance")
         route = route_for(purpose, p["vertical"])
-        pending = self._latest_pending_call(p["id"], purpose)
+        request_hash = _hash(prompt)
+        pending = self._latest_pending_call(
+            p["id"], purpose, request_hash=request_hash
+        )
         if pending:
             text = pending["raw_output"]
             call_id = pending["id"]
@@ -2328,6 +2386,7 @@ class WorkbenchEngine:
                 ),
                 raw_output=text,
                 lifecycle="provider_succeeded",
+                request_hash=request_hash,
             )
         if text.startswith("```"):
             text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.S)
@@ -2351,6 +2410,30 @@ class WorkbenchEngine:
             raise RuntimeError(
                 f"{purpose} returned an invalid structured report; its reserved "
                 "call was consumed and cannot be borrowed by another stage"
+            ) from exc
+        try:
+            self._validate_report(report)
+        except ValueError as exc:
+            self._mark_llm_call_lifecycle(call_id, "invalid")
+            self._event(
+                p["id"],
+                "reviewer_report_invalid",
+                p["stage"],
+                p["article_hash"],
+                {
+                    "purpose": purpose,
+                    "error": str(exc),
+                    "verdict": report.get("verdict"),
+                    "mandatory_count": len(
+                        report.get("mandatory_edits") or []
+                    ),
+                    "paid_call_consumed": True,
+                    "operator_decision_required": False,
+                },
+            )
+            raise RuntimeError(
+                f"{purpose} returned a contradictory structured report; its "
+                "reserved call was consumed and will not be replayed"
             ) from exc
         report["reviewed_article_hash"] = p["article_hash"]
         report["approval_purpose"] = purpose
@@ -2421,12 +2504,6 @@ class WorkbenchEngine:
                     continue
                 sentence = violation["article_sentence"]
                 treatment = violation["required_treatment"]
-                prefix = (
-                    "Seller materials state that "
-                    if treatment == "seller_attribution_required"
-                    else "According to the recorded source, "
-                )
-                replacement = prefix + sentence[:1].lower() + sentence[1:]
                 existing.append({
                     "id": finding_id,
                     "category": "Claim provenance",
@@ -2435,7 +2512,13 @@ class WorkbenchEngine:
                         f"{treatment.replace('_', ' ')}."
                     ),
                     "exact_text": sentence,
-                    "replacement": replacement,
+                    # Never launder a mixed supported/unsupported sentence by
+                    # prefixing attribution to the entire sentence. The repair
+                    # model must reconstruct from isolated ledger claims.
+                    "replacement": (
+                        "Reconstruct this sentence from isolated permitted "
+                        "claim text and add claim-local attribution."
+                    ),
                 })
             report["mandatory_count"] = len(existing)
             report["verdict"] = "not_approved"
@@ -2444,18 +2527,22 @@ class WorkbenchEngine:
     def _record_llm_call(
         self, project_id, stage, route, input_tokens=0,
         output_tokens=0, status="success", error="", raw_output="",
-        lifecycle="applied",
+        lifecycle="applied", request_hash="",
     ):
         cost = estimated_cost(route, input_tokens, output_tokens)
+        project = self.get(project_id)
         with self._connect() as conn:
             cursor = conn.execute(
                 """INSERT INTO llm_calls(project_id,stage,provider,model,input_tokens,
                 output_tokens,estimated_cost,status,error,created_at,lifecycle,
-                raw_output,output_hash)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                raw_output,output_hash,request_hash,input_article_hash,
+                input_source_hash)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (project_id, stage, route.provider, route.model, input_tokens,
                  output_tokens, cost, status, error[:2000], _now(), lifecycle,
-                 raw_output, _hash(raw_output) if raw_output else ""),
+                 raw_output, _hash(raw_output) if raw_output else "",
+                 request_hash, project.get("article_hash") or "",
+                 project.get("source_hash") or ""),
             )
             return cursor.lastrowid
 
@@ -2469,21 +2556,75 @@ class WorkbenchEngine:
     def _mark_llm_call_applied(self, call_id):
         self._mark_llm_call_lifecycle(call_id, "applied")
 
-    def _latest_pending_call(self, project_id, purpose):
+    def _latest_pending_call(
+        self, project_id, purpose, request_hash=None
+    ):
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT id,raw_output,output_hash FROM llm_calls "
+                "SELECT id,raw_output,output_hash,request_hash,"
+                "input_article_hash,input_source_hash FROM llm_calls "
                 "WHERE project_id=? AND stage=? AND status='success' "
                 "AND lifecycle='provider_succeeded' AND raw_output<>'' "
                 "ORDER BY id DESC LIMIT 1",
                 (project_id, purpose),
             ).fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        pending = dict(row)
+        project = self.get(project_id)
+        exact_input = (
+            pending.get("input_article_hash", "")
+            == (project.get("article_hash") or "")
+            and pending.get("input_source_hash", "")
+            == (project.get("source_hash") or "")
+            and (
+                request_hash is None
+                or not pending.get("request_hash")
+                or pending.get("request_hash") == request_hash
+            )
+        )
+        if exact_input:
+            return pending
+        self._mark_llm_call_lifecycle(pending["id"], "stale_input")
+        self._event(
+            project_id,
+            "paid_response_input_mismatch",
+            project["stage"],
+            project["article_hash"],
+            {
+                "purpose": purpose,
+                "call_id": pending["id"],
+                "request_hash_match": (
+                    request_hash is None
+                    or pending.get("request_hash") == request_hash
+                ),
+                "article_hash_match": (
+                    pending.get("input_article_hash", "")
+                    == (project.get("article_hash") or "")
+                ),
+                "source_hash_match": (
+                    pending.get("input_source_hash", "")
+                    == (project.get("source_hash") or "")
+                ),
+                "paid_call_consumed": True,
+                "operator_decision_required": False,
+            },
+        )
+        return None
 
     def _mark_latest_pending_call_applied(self, project_id, purpose):
-        pending = self._latest_pending_call(project_id, purpose)
-        if pending:
-            self._mark_llm_call_applied(pending["id"])
+        # Application can itself change the canonical article hash, so locate
+        # the response by immutable purpose/lifecycle rather than re-running
+        # the pre-application input comparison after the write.
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM llm_calls WHERE project_id=? AND stage=? "
+                "AND status='success' AND lifecycle='provider_succeeded' "
+                "AND raw_output<>'' ORDER BY id DESC LIMIT 1",
+                (project_id, purpose),
+            ).fetchone()
+        if row:
+            self._mark_llm_call_applied(row["id"])
 
     def _assert_call_budget(self, project_id, stage, route):
         total_calls = int(self.usage_summary(project_id)["calls"])
@@ -2840,10 +2981,19 @@ class WorkbenchEngine:
             (p.get("release_title") or p["title"]) + "\n" + repaired
         )
         with self._connect() as conn:
-            conn.execute(
+            result = conn.execute(
                 "UPDATE projects SET article_text=?,article_hash=?,stage=?,"
-                "last_report='{}',updated_at=? WHERE id=?",
-                (repaired, digest, stage, _now(), p["id"]),
+                "last_report='{}',updated_at=? WHERE id=? "
+                "AND article_hash=? AND stage=?",
+                (
+                    repaired, digest, stage, _now(), p["id"],
+                    p["article_hash"], p["stage"],
+                ),
+            )
+        if result.rowcount != 1:
+            raise RuntimeError(
+                "Mechanical repair was not applied because the canonical "
+                "article or stage changed during preflight"
             )
         self._write(p["id"], "03b-pre-signoff-mechanical-repair.html", repaired)
         self._event(
@@ -2866,9 +3016,38 @@ class WorkbenchEngine:
         if reviewed_hash != p["article_hash"]:
             raise ValueError("Compliance report does not match the current article version")
         with self._connect() as conn:
-            conn.execute(
-                "UPDATE projects SET last_report=?,stage=?,updated_at=? WHERE id=?",
-                (json.dumps(report), stage, _now(), p["id"]),
+            result = conn.execute(
+                "UPDATE projects SET last_report=?,stage=?,updated_at=? "
+                "WHERE id=? AND article_hash=? AND stage=?",
+                (
+                    json.dumps(report), stage, _now(), p["id"],
+                    p["article_hash"], p["stage"],
+                ),
+            )
+        if result.rowcount != 1:
+            purpose = report.get("approval_purpose")
+            if purpose:
+                pending = self._latest_pending_call(p["id"], purpose)
+                if pending:
+                    self._mark_llm_call_lifecycle(
+                        pending["id"], "stale_input"
+                    )
+            current = self.get(p["id"])
+            self._event(
+                p["id"],
+                "stale_review_rejected",
+                current["stage"],
+                current["article_hash"],
+                {
+                    "reviewed_article_hash": reviewed_hash,
+                    "expected_stage": p["stage"],
+                    "current_stage": current["stage"],
+                    "operator_decision_required": False,
+                },
+            )
+            raise RuntimeError(
+                "Compliance report was not applied because the canonical "
+                "article or stage changed during review"
             )
         self._write(p["id"], filename, json.dumps(report, indent=2, ensure_ascii=False))
         event_id = self._event(p["id"], "compliance_report", stage, p["article_hash"], report)
@@ -3010,12 +3189,28 @@ class WorkbenchEngine:
     def _ensure_package_export(self, project):
         """Finish or rebuild an exact-hash package after an interrupted handoff."""
         export_path = self.export_path(project["id"])
-        if export_path.exists():
+        if export_path.exists() and self._package_export_matches(
+            export_path, project
+        ):
             return export_path
+        if export_path.exists():
+            quarantine = export_path.with_suffix(
+                f".invalid-{uuid.uuid4().hex[:8]}.zip"
+            )
+            os.replace(export_path, quarantine)
+            self._event(
+                project["id"],
+                "stale_package_quarantined",
+                project["stage"],
+                project["article_hash"],
+                {"artifact": quarantine.name},
+            )
         pending_export = self.exports_dir / (
             f".{project['id']}-{project['article_hash'][:12]}.pending.zip"
         )
-        if pending_export.exists():
+        if pending_export.exists() and self._package_export_matches(
+            pending_export, project
+        ):
             os.replace(pending_export, export_path)
             self._event(
                 project["id"],
@@ -3025,6 +3220,8 @@ class WorkbenchEngine:
                 {"recovery": "pending_archive_promoted"},
             )
             return export_path
+        if pending_export.exists():
+            pending_export.unlink()
         with self._connect() as conn:
             cursor = conn.execute(
                 "UPDATE projects SET stage='signed_off',updated_at=? "
@@ -3044,6 +3241,60 @@ class WorkbenchEngine:
         )
         self._build_package(self.get(project["id"]))
         return export_path
+
+    def _package_export_matches(self, path, project):
+        """Validate that an archive is the exact current approved artifact."""
+        try:
+            with zipfile.ZipFile(path) as archive:
+                if archive.testzip() is not None:
+                    return False
+                manifest = json.loads(
+                    archive.read("submission-manifest.json")
+                )
+                article = archive.read("FINAL-ARTICLE.html").decode("utf-8")
+                packaged_provenance = json.loads(
+                    archive.read("claim-provenance.json")
+                )
+        except (
+            OSError, KeyError, UnicodeDecodeError, json.JSONDecodeError,
+            zipfile.BadZipFile,
+        ):
+            return False
+        expected_hash = _hash(
+            (project.get("release_title") or project["title"])
+            + "\n" + article
+        )
+        from article_provenance import (
+            build_article_claim_ledger,
+            extract_sealed_pack,
+        )
+        from policy_intelligence import policy_status
+        expected_provenance = build_article_claim_ledger(
+            extract_sealed_pack(project["source_text"]), article
+        )
+        current_policy = policy_status(project["vertical"])
+        approval = manifest.get("approval_report") or {}
+        project_approval = project.get("last_report") or {}
+        return bool(
+            manifest.get("project_id") == project["id"]
+            and manifest.get("article_hash") == project["article_hash"]
+            and manifest.get("source_hash") == project["source_hash"]
+            and expected_hash == project["article_hash"]
+            and manifest.get("platform") == project["platform"]
+            and manifest.get("vertical") == project["vertical"]
+            and str(manifest.get("wordpress_site_url") or "").rstrip("/")
+            == str(os.environ.get("NEWSWIRE_WORDPRESS_URL") or "").rstrip("/")
+            and manifest.get("policy_snapshot_hash")
+            == current_policy.get("snapshot_hash")
+            and current_policy.get("current")
+            and approval.get("verdict") == "approved"
+            and approval.get("reviewed_article_hash") == project["article_hash"]
+            and approval.get("approval_purpose")
+            in {"final_signoff", "post_seo_signoff"}
+            and approval == project_approval
+            and packaged_provenance == expected_provenance
+            and packaged_provenance.get("passed")
+        )
 
     def _adjudication_count(self, project_id):
         with self._connect() as conn:
