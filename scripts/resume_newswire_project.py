@@ -166,7 +166,9 @@ def main() -> None:
             raise RuntimeError("--action import requires --article-file")
         article_path = Path(args.article_file).resolve()
         article = article_path.read_text(encoding="utf-8")
-        engine.import_manual_article(args.project_id, article)
+        engine.import_manual_article(
+            args.project_id, article, final_candidate=True
+        )
         print(json.dumps({
             "imported_from": str(article_path),
             "after": snapshot(engine, args.project_id),

@@ -857,6 +857,44 @@ def test_current_workflow_reserves_one_call_per_required_purpose(tmp_path):
     assert engine.usage_details(pid)[0]["stage"] == "draft"
 
 
+def test_zero_cost_final_candidate_uses_only_reserved_signoff(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    engine.import_manual_article(
+        pid,
+        "<h2><strong>Test Device</strong></h2><p>Exact candidate.</p>",
+        final_candidate=True,
+    )
+    assert engine.get(pid)["stage"] == "revised"
+    assert engine.usage_summary(pid)["calls"] == 0
+    engine._assert_call_budget(
+        pid, "final_signoff", route_for("final_signoff", "device")
+    )
+
+    engine.import_manual_article(
+        pid,
+        "<h2><strong>Test Device</strong></h2><p>Mutated candidate.</p>",
+    )
+    with pytest.raises(
+        RuntimeError, match="exact zero-cost final candidate import"
+    ):
+        engine._assert_call_budget(
+            pid, "final_signoff", route_for("final_signoff", "device")
+        )
+
+
 def test_engine_owns_build_and_obsolete_rebuild_actions(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     pid = engine.create_project(

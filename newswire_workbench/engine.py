@@ -2699,10 +2699,29 @@ class WorkbenchEngine:
             self._build_package(p)
         return self.get(project_id)
 
-    def import_manual_article(self, project_id, article):
+    def import_manual_article(
+        self, project_id, article, *, final_candidate=False
+    ):
         p = self.get(project_id)
-        next_stage = "drafted" if p["stage"] == "source_ready" else "revised"
+        next_stage = (
+            "revised"
+            if final_candidate
+            else ("drafted" if p["stage"] == "source_ready" else "revised")
+        )
         self._set_article(p, article, next_stage, "manual-article.html")
+        if final_candidate:
+            saved = self.get(project_id)
+            self._event(
+                project_id,
+                "manual_final_candidate_imported",
+                saved["stage"],
+                saved["article_hash"],
+                {
+                    "paid_calls_added": 0,
+                    "next_action": "reserved_final_signoff",
+                    "operator_decision_required": False,
+                },
+            )
 
     def import_manual_report(self, project_id, report_text):
         p = self.get(project_id)
@@ -3209,10 +3228,24 @@ class WorkbenchEngine:
             if stage == "final_signoff" and (
                 counts["draft"] != 1 or counts["compliance"] != 1
             ):
-                raise RuntimeError(
-                    "Final sign-off requires the completed draft and "
-                    "compliance review"
+                manual_candidate = (
+                    project["stage"] == "revised"
+                    and counts["draft"] == 0
+                    and counts["compliance"] == 0
+                    and counts["compliance_repair"] == 0
+                    and any(
+                        event["event_type"]
+                        == "manual_final_candidate_imported"
+                        and event["article_hash"] == project["article_hash"]
+                        for event in self.events(project_id)
+                    )
                 )
+                if not manual_candidate:
+                    raise RuntimeError(
+                        "Final sign-off requires the completed draft and "
+                        "compliance review, or an exact zero-cost final "
+                        "candidate import"
+                    )
         stage_calls = self._billable_call_count(project_id, stage)
         if stage_calls >= route.max_calls:
             raise RuntimeError(
