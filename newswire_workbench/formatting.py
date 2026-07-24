@@ -613,6 +613,8 @@ def repair_source_grounding(html, source_text, vertical):
         r"\bprice is low enough to test\b",
         r"\bmodest cost\b.{0,100}\b(?:simple installation|test|purchase)\b",
         r"\bwilling to purchase based on seller claims\b",
+        r"\bharmonic distortion\b|\bharmonics\b",
+        r"\bremove unsupported external assertions\b",
     )
     for node in list(soup.find_all(["p", "li"])):
         for text_node in list(node.find_all(string=True)):

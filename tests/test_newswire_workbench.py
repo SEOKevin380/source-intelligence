@@ -3684,3 +3684,19 @@ def test_source_grounding_scopes_missing_terms_and_removes_self_testing_advice()
     assert "low enough to test" not in repaired
     assert "willing to purchase" not in repaired
     assert "Seller materials state zero maintenance." in repaired
+
+
+def test_source_grounding_removes_d20_engineering_and_repair_residue():
+    article = (
+        "<ul><li>Voltage delivery across Remove unsupported external "
+        "assertions. Build depth from sealed product facts. ranges.</li>"
+        "<li>The device filters harmonic distortion from household "
+        "circuits.</li></ul>"
+        "<p>Harmonics are measured by utility engineers using standards.</p>"
+        "<p>Seller materials state zero maintenance.</p>"
+    )
+    repaired = repair_source_grounding(article, "", "device")
+    assert "Remove unsupported external assertions" not in repaired
+    assert "harmonic distortion" not in repaired
+    assert "utility engineers" not in repaired
+    assert "Seller materials state zero maintenance." in repaired
