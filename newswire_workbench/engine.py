@@ -42,7 +42,7 @@ from .execution_budget import (
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v27-durable-recovery-contract"
+    "serp-differentiation-depth-v28-pre-review-source-contract"
 )
 
 STAGES = (
@@ -1479,6 +1479,73 @@ class WorkbenchEngine:
                 p, article, "drafted", "01-claude-draft.html",
                 call_purpose="draft",
             )
+            drafted = self.get(project_id)
+            from article_provenance import (
+                build_article_claim_ledger,
+                extract_sealed_pack,
+            )
+            pre_review = audit_article(
+                drafted["article_text"],
+                drafted["platform"],
+                drafted["vertical"],
+                _source_affiliate_link(drafted["source_text"]),
+            )
+            provenance = build_article_claim_ledger(
+                extract_sealed_pack(drafted["source_text"]),
+                drafted["article_text"],
+            )
+            owned = [
+                item for item in pre_review["blockers"]
+                if item.get("id") == "D18"
+            ]
+            for violation in provenance.get("coverage_violations") or []:
+                owned.append({
+                    "id": violation["id"],
+                    "category": "Claim provenance",
+                    "issue": violation["issue"],
+                    "exact_text": "",
+                    "replacement": (
+                        "Use the complete relevant permitted claim ledger with "
+                        "the required attribution while expanding missing "
+                        "reader jobs."
+                    ),
+                })
+            if owned:
+                report = {
+                    "verdict": "not_approved",
+                    "mandatory_count": len(owned),
+                    "source_accuracy": {
+                        "verified": provenance["used_claim_count"],
+                        "checked": provenance["publication_claim_count"],
+                    },
+                    "mandatory_edits": owned,
+                    "recommended_edits": [],
+                    "approved_elements": [],
+                    "notes": [
+                        "Zero-cost pre-review detected deterministic depth or "
+                        "claim-coverage failure before spending the independent "
+                        "review call."
+                    ],
+                    "reviewed_article_hash": drafted["article_hash"],
+                    "approval_purpose": "pre_review_quality",
+                }
+                self._set_report(
+                    drafted,
+                    report,
+                    "compliance_reviewed",
+                    "01b-pre-review-quality.json",
+                )
+                self._event(
+                    project_id,
+                    "pre_review_writer_repair_required",
+                    "compliance_reviewed",
+                    drafted["article_hash"],
+                    {
+                        "blockers": owned,
+                        "independent_review_call_preserved": True,
+                        "operator_decision_required": False,
+                    },
+                )
         elif stage == "drafted":
             report = self._openai_review(p, final=False)
             draft_findings = deterministic_findings(
@@ -1579,10 +1646,16 @@ class WorkbenchEngine:
                     },
                 )
                 article = p["article_text"]
+            pre_review_repair = (
+                (p.get("last_report") or {}).get("approval_purpose")
+                == "pre_review_quality"
+            )
             self._set_article(
-                p, article, "revised",
+                p, article, "drafted" if pre_review_repair else "revised",
                 (
-                    "03-claude-revision.html"
+                    "01c-pre-review-repair.html"
+                    if pre_review_repair
+                    else "03-claude-revision.html"
                     if repair_purpose == "compliance_repair"
                     else "03-quality-rescue-revision.html"
                 ),

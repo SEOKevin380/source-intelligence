@@ -68,8 +68,16 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
         matches = []
         for claim in claims:
             overlap = len(sentence_tokens & claim["tokens"])
-            denominator = max(min(len(sentence_tokens), len(claim["tokens"])), 1)
-            if overlap >= 3 and overlap / denominator >= 0.45:
+            claim_token_count = len(claim["tokens"])
+            required_overlap = min(3, claim_token_count)
+            denominator = max(
+                min(len(sentence_tokens), claim_token_count), 1
+            )
+            if (
+                claim_token_count
+                and overlap >= required_overlap
+                and overlap / denominator >= 0.45
+            ):
                 matches.append({
                     key: value for key, value in claim.items() if key != "tokens"
                 })

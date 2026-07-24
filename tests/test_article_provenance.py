@@ -50,3 +50,23 @@ def test_unattributed_mapped_seller_claim_fails_provenance():
     )
     assert ledger["passed"] is False
     assert ledger["attribution_violations"]
+
+
+def test_short_exact_device_claim_maps_with_required_attribution():
+    pack = {
+        "publication_claims": {
+            "feature": [{
+                "claim_id": "short-feature",
+                "text": "Voltage stabilization",
+                "publication_treatment": "seller_attribution_required",
+            }]
+        }
+    }
+    ledger = build_article_claim_ledger(
+        pack,
+        "<p>Seller materials describe voltage stabilization as a listed "
+        "product feature.</p>",
+    )
+    assert ledger["used_claim_count"] == 1
+    assert ledger["mapped_sentence_count"] == 1
+    assert not ledger["attribution_violations"]

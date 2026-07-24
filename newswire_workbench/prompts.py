@@ -20,6 +20,31 @@ def split_editorial_context(source_text: str) -> tuple[str, str]:
     return editorial.strip(), facts.strip()
 
 
+def writer_evidence_view(sealed_facts: str) -> str:
+    """Expose publication-safe facts to writers; reviewers retain the full pack."""
+    try:
+        pack = json.loads(sealed_facts)
+    except (TypeError, json.JSONDecodeError):
+        return sealed_facts
+    safe = {
+        "product": {
+            key: value
+            for key, value in (pack.get("product") or {}).items()
+            if key in {
+                "product_name", "official_url", "product_type", "category",
+                "publishing_platform", "publishing_channel",
+            }
+        },
+        "publication_claims": pack.get("publication_claims") or {},
+        "required_facts": pack.get("required_facts") or {},
+        "publication_claim_summary": (
+            pack.get("publication_claim_summary") or {}
+        ),
+        "source_pack_contract": pack.get("source_pack_contract") or {},
+    }
+    return json.dumps(safe, ensure_ascii=False, sort_keys=True)
+
+
 def select_stage_editorial_context(
     editorial_context: str, stage: str
 ) -> str:
@@ -110,6 +135,7 @@ def generation_prompt(source_text: str, platform: str, vertical: str,
         else ""
     )
     editorial_context, sealed_facts = split_editorial_context(source_text)
+    sealed_facts = writer_evidence_view(sealed_facts)
     return f"""You are the first-draft writer in a multi-stage editorial system.
 
 Create a complete, publishable {platform} advertorial draft from the supplied
@@ -125,6 +151,9 @@ Operating rules:
 - The sealed source record is exclusive for product and technical facts. Do
   not add scientific, engineering, market, utility-billing, competitor-pricing,
   or industry-statistic assertions from memory.
+- Build around the complete relevant `publication_claims` ledger. Use each
+  useful permitted claim once with its required attribution. Never discuss,
+  rebut, or repeat excluded/raw claim inventories.
 - Treat supplied sales pages and VSLs as records of what the advertiser says,
   not automatic proof that a claim is true.
 - In a sealed JSON pack, `publication_claims` are the only claim-ledger items
@@ -382,6 +411,7 @@ def revision_prompt(source_text: str, article: str, report: dict,
                     platform: str, vertical: str, memory: str = "",
                     release_title: str = "") -> str:
     editorial_context, sealed_facts = split_editorial_context(source_text)
+    sealed_facts = writer_evidence_view(sealed_facts)
     editorial_context = select_stage_editorial_context(
         editorial_context, "repair"
     )
@@ -413,6 +443,8 @@ compliance report below.
   adding unsupported facts.
 - Do not refuse, debate the assignment, ask questions, or print process notes.
 - Do not fabricate facts or first-hand experience.
+- Preserve and use the complete relevant `publication_claims` ledger with its
+  required attribution. Do not discuss, rebut, or repeat excluded/raw claims.
 - Restore client-positive balance if the current article became defensive or
   adversarial. Lead with verified value, consolidate repeated caveats, preserve
   each material limitation once, identify best-fit readers, and build naturally

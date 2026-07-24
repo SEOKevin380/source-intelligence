@@ -14,6 +14,7 @@ from newswire_workbench.prompts import (
     generation_prompt,
     revision_prompt,
     select_stage_editorial_context,
+    writer_evidence_view,
 )
 from newswire_workbench.learning import deterministic_findings, partition_findings
 from newswire_workbench.audit import audit_article, audit_system_contract
@@ -139,6 +140,54 @@ def test_review_context_keeps_whole_governed_sections_only():
     assert "omit me" not in selected
 
 
+def test_writer_evidence_excludes_raw_and_prohibited_claim_inventories():
+    pack = {
+        "product": {
+            "product_name": "Device",
+            "official_url": "https://example.com",
+            "claims": ["raw prohibited claim"],
+        },
+        "claims_by_type": {
+            "feature": [{"text": "raw prohibited claim"}]
+        },
+        "excluded_publication_claims": [{
+            "text": "raw prohibited claim",
+        }],
+        "all_artifacts": {
+            "a1": {"content": "raw prohibited claim"}
+        },
+        "publication_claims": {
+            "feature": [{"text": "Permitted seller description"}]
+        },
+        "required_facts": {"missing": ["warranty"]},
+    }
+    safe = writer_evidence_view(json.dumps(pack))
+    assert "Permitted seller description" in safe
+    assert "raw prohibited claim" not in safe
+    assert "warranty" in safe
+    source = (
+        "trusted context\n"
+        "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══\n"
+        + json.dumps(pack)
+    )
+    assert "raw prohibited claim" not in generation_prompt(
+        source, "Barchart Advertorial", "device", ""
+    )
+    assert "raw prohibited claim" not in revision_prompt(
+        source,
+        "<p>draft</p>",
+        {"mandatory_edits": []},
+        "Barchart Advertorial",
+        "device",
+    )
+    assert "raw prohibited claim" in compliance_prompt(
+        source,
+        "<p>draft</p>",
+        "Barchart Advertorial",
+        "device",
+    )
+
+
 def test_human_copy_diagnostics_are_advisory_and_use_american_english():
     article = (
         "<p>This organisation describes the colour clearly. "
@@ -218,7 +267,7 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert project["stage"] == "source_ready"
     assert (
         "AUTOMATION CONTEXT VERSION: "
-            "serp-differentiation-depth-v27-durable-recovery-contract"
+            "serp-differentiation-depth-v28-pre-review-source-contract"
         in project["source_text"]
     )
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
@@ -277,7 +326,7 @@ def test_explicit_rebuild_reuses_active_project_then_rebuilds_terminal(tmp_path)
     assert engine.latest_project_from_pack(
         pack,
         "AccessNewsWire",
-            "serp-differentiation-depth-v27-durable-recovery-contract",
+            "serp-differentiation-depth-v28-pre-review-source-contract",
     ) == rebuilt
     assert engine.latest_project_from_pack(
         pack, "AccessNewsWire", "nonexistent-future-workflow"
@@ -306,7 +355,7 @@ def test_only_latest_durable_project_is_authoritative_run_target(tmp_path):
     newer = engine.create_project_from_pack(
         pack, "Barchart Advertorial", force_new=True
     )
-    version = "serp-differentiation-depth-v27-durable-recovery-contract"
+    version = "serp-differentiation-depth-v28-pre-review-source-contract"
     assert not engine.is_authoritative_run_target(
         older, pack, "Barchart Advertorial", version
     )
@@ -1615,6 +1664,56 @@ def test_depth_only_preflight_recovers_inline_without_operator_resume(tmp_path):
         event["event_type"] == "depth_reconciled_inline"
         for event in engine.events(pid)
     )
+
+
+def test_short_first_draft_uses_writer_repair_before_independent_review(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    short = (
+        "<h1>Test Device Review</h1>"
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<p>Seller materials state Literal product fact 0.</p>"
+    )
+    with patch.object(engine, "_claude", return_value=short):
+        engine._run_next_unlocked(pid, "")
+    assert engine.get(pid)["stage"] == "compliance_reviewed"
+    assert engine.get(pid)["last_report"]["approval_purpose"] == (
+        "pre_review_quality"
+    )
+    assert not [
+        call for call in engine.usage_details(pid)
+        if call["stage"] == "compliance"
+    ]
+
+    repaired = (
+        "<h1>Test Device Review</h1>"
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<p>Seller materials state Literal product fact 0.</p>"
+        "<p>Seller materials state Literal product fact 1.</p>"
+        "<p>Seller materials state Literal product fact 2.</p>"
+        + "".join(
+            f"<p>Reader decision context {index} explains what is recorded "
+            "and what a buyer should verify before ordering this device.</p>"
+            for index in range(100)
+        )
+    )
+    with patch.object(engine, "_claude", return_value=repaired):
+        engine._run_next_unlocked(pid, "")
+    assert engine.get(pid)["stage"] == "drafted"
 
 
 def test_depth_recovery_reads_immutable_paid_output_before_revision_file(
