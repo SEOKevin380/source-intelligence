@@ -2144,7 +2144,7 @@ def test_rejected_repair_candidate_preserves_canonical_and_review(tmp_path):
     )
 
 
-def test_historical_d18_rejection_cannot_replace_canonical_without_full_inputs(
+def test_safe_rejected_paid_candidate_is_recovered_without_another_paid_call(
     tmp_path,
 ):
     engine = WorkbenchEngine(tmp_path)
@@ -2192,13 +2192,30 @@ def test_historical_d18_rejection_cannot_replace_canonical_without_full_inputs(
         engine.get(pid)["article_hash"],
         {"blockers": [{"id": "D18", "issue": "Draft is short."}]},
     )
-    original = engine.get(pid)
-    assert engine.can_recover_locked_pre_signoff(pid) is False
-    assert engine._recover_locked_pre_signoff(pid) is False
+    assert engine.can_recover_locked_pre_signoff(pid) is True
+    assert engine._recover_locked_pre_signoff(pid) is True
     current = engine.get(pid)
-    assert current["article_hash"] == original["article_hash"]
-    assert current["article_text"] == original["article_text"]
+    assert current["stage"] == "revised"
     assert engine.usage_summary(pid)["calls"] == 1
+    assert any(
+        event["event_type"] == "rejected_candidate_recovered"
+        for event in engine.events(pid)
+    )
+
+
+def test_source_grounding_removes_invented_device_buyer_cohorts():
+    article = (
+        "<h2><strong>Buyer Fit</strong></h2>"
+        "<p>This product may appeal to homeowners or renters with concerns "
+        "about electrical power quality.</p>"
+        "<p>Professional-grade recording systems and medical devices make "
+        "this an affordable low-risk option to test.</p>"
+        "<p>Seller materials describe Literal product fact 0.</p>"
+    )
+    repaired = repair_source_grounding(article, "", "device")
+    assert "renters" not in repaired
+    assert "Professional-grade" not in repaired
+    assert "Seller materials describe Literal product fact 0." in repaired
 
 
 def test_reviewer_exact_edits_after_pre_review_repair_reach_signoff(

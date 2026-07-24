@@ -546,6 +546,19 @@ def repair_source_grounding(html, source_text, vertical):
         r"\b(?:deploy|place|install) multiple units?\b.{0,120}"
         r"\b(?:room|circuit|throughout)\b",
         r"\bindustry[- ]standard\b|\brisk[- ]free trial\b",
+        # Do not invent buyer cohorts from a product category. These generic
+        # audience constructions repeatedly survive model repair even though
+        # the sealed record says nothing about ownership, tenancy, building
+        # type, or installation environment.
+        r"\b(?:appeal(?:s|ing)? to|best for|designed for|ideal for)\b.{0,100}"
+        r"\b(?:homeowners?|renters?|landlords?|business owners?)\b",
+        r"\b(?:tech[- ]forward consumers?|reasonable trial product|"
+        r"professional[- ]grade|whole[- ]home systems?|"
+        r"residents? of older buildings?|"
+        r"cannot install permanent electrical upgrades?|"
+        r"entry[- ]level power[- ]conditioning)\b",
+        r"\b(?:medical devices?|health[- ]related emf|emf exposure)\b.{0,180}"
+        r"\b(?:option|trial|test|concern|equipment)\b",
     )
     for node in list(soup.find_all(["p", "li"])):
         lowered = node.get_text(" ", strip=True).casefold()

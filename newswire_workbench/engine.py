@@ -44,7 +44,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v34-closed-loop-action-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "closed-loop-action-contract-20260723-r4"
+WORKBENCH_RUNTIME_REVISION = "rejected-candidate-recovery-20260723-r5"
 
 STAGES = (
     "source_ready",
@@ -824,6 +824,18 @@ class WorkbenchEngine:
             and final_available
         ):
             return True
+        # A rejected paid repair is still an immutable candidate artifact.
+        # If a reserved final review remains, the engine owns one zero-cost
+        # normalization/acceptance attempt before asking a human to intervene.
+        # This prevents a single deterministic phrase from discarding the
+        # safer repair and stranding a worse canonical article.
+        if (
+            final_available
+            and self._latest_rejected_candidate_output(
+                project_id, "compliance_repair"
+            )
+        ):
+            return True
         # Recovery follows the current canonical artifact, never the rejected
         # candidate's blocker list. A D18-only canonical can be safely expanded
         # from already-paid immutable writer outputs while preserving the final
@@ -1414,6 +1426,8 @@ class WorkbenchEngine:
                 },
             )
             return True
+        if self._recover_rejected_compliance_candidate(project_id):
+            return True
         current_blocker_ids = {
             item.get("id") for item in current_preflight["blockers"]
         }
@@ -1464,6 +1478,38 @@ class WorkbenchEngine:
             {
                 "repaired_gates": [item.get("id") for item in blockers],
                 "paid_calls_added": 0,
+                "operator_decision_required": False,
+            },
+        )
+        return True
+
+    def _recover_rejected_compliance_candidate(self, project_id):
+        """Normalize and accept a previously paid repair at zero added cost."""
+        p = self.get(project_id)
+        candidate = self._latest_rejected_candidate_output(
+            project_id, "compliance_repair"
+        )
+        if not candidate:
+            return False
+        if not self._set_article(
+            p,
+            candidate,
+            "revised",
+            "03b-recovered-compliance-revision.html",
+            bump=True,
+            require_publishable=True,
+        ):
+            return False
+        recovered = self.get(project_id)
+        self._event(
+            project_id,
+            "rejected_candidate_recovered",
+            "revised",
+            recovered["article_hash"],
+            {
+                "source_artifact": "llm_calls:compliance_repair",
+                "paid_calls_added": 0,
+                "next_action": "reserved_final_signoff",
                 "operator_decision_required": False,
             },
         )
@@ -1648,6 +1694,18 @@ class WorkbenchEngine:
                 "SELECT raw_output FROM llm_calls "
                 "WHERE project_id=? AND stage=? AND status='success' "
                 "AND raw_output<>'' ORDER BY id DESC LIMIT 1",
+                (project_id, purpose),
+            ).fetchone()
+        return str(row["raw_output"] or "") if row else ""
+
+    def _latest_rejected_candidate_output(self, project_id, purpose):
+        """Return the newest immutable provider candidate rejected by gates."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT raw_output FROM llm_calls "
+                "WHERE project_id=? AND stage=? AND status='success' "
+                "AND lifecycle='candidate_rejected' AND raw_output<>'' "
+                "ORDER BY id DESC LIMIT 1",
                 (project_id, purpose),
             ).fetchone()
         return str(row["raw_output"] or "") if row else ""
