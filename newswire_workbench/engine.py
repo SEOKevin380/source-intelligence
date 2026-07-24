@@ -42,9 +42,9 @@ from .execution_budget import (
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v31-candidate-acceptance"
+    "serp-differentiation-depth-v32-artifact-integrity"
 )
-WORKBENCH_RUNTIME_REVISION = "clean-admin-resume-20260723-r1"
+WORKBENCH_RUNTIME_REVISION = "artifact-integrity-20260723-r2"
 
 STAGES = (
     "source_ready",

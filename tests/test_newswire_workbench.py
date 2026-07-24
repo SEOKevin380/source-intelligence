@@ -7,7 +7,11 @@ from unittest.mock import patch
 import pytest
 from bs4 import BeautifulSoup
 
-from newswire_workbench.engine import WorkbenchEngine, _source_affiliate_link
+from newswire_workbench.engine import (
+    WORKBENCH_SOURCE_CONTEXT_VERSION,
+    WorkbenchEngine,
+    _source_affiliate_link,
+)
 from newswire_workbench.prompts import detect_vertical
 from newswire_workbench.prompts import (
     compliance_prompt,
@@ -266,8 +270,7 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     project = engine.get(first)
     assert project["stage"] == "source_ready"
     assert (
-        "AUTOMATION CONTEXT VERSION: "
-            "serp-differentiation-depth-v31-candidate-acceptance"
+        "AUTOMATION CONTEXT VERSION: " + WORKBENCH_SOURCE_CONTEXT_VERSION
         in project["source_text"]
     )
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
@@ -326,7 +329,7 @@ def test_explicit_rebuild_reuses_active_project_then_rebuilds_terminal(tmp_path)
     assert engine.latest_project_from_pack(
         pack,
         "AccessNewsWire",
-            "serp-differentiation-depth-v31-candidate-acceptance",
+            WORKBENCH_SOURCE_CONTEXT_VERSION,
     ) == rebuilt
     assert engine.latest_project_from_pack(
         pack, "AccessNewsWire", "nonexistent-future-workflow"
@@ -355,7 +358,7 @@ def test_only_latest_durable_project_is_authoritative_run_target(tmp_path):
     newer = engine.create_project_from_pack(
         pack, "Barchart Advertorial", force_new=True
     )
-    version = "serp-differentiation-depth-v31-candidate-acceptance"
+    version = WORKBENCH_SOURCE_CONTEXT_VERSION
     assert not engine.is_authoritative_run_target(
         older, pack, "Barchart Advertorial", version
     )
@@ -562,6 +565,24 @@ def test_markdown_bold_residue_is_a_publication_blocker():
     article = (
         "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
         "<p>**What Buyers Should Know** before ordering.</p>"
+    )
+    ids = {
+        item["id"] for item in deterministic_findings(
+            article, "Barchart Advertorial", "device"
+        )
+    }
+    assert "D17" in ids
+
+
+def test_mixed_plaintext_repair_instructions_and_metadata_are_blocked():
+    article = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "Unwrapped reader-facing prose."
+        "\n---\n"
+        "<h2><strong>Product Details</strong></h2>"
+        "<p>Remove unsupported external assertions. Build depth from sealed "
+        "product facts.</p>"
+        "<p>Word Count: 1,500</p>"
     )
     ids = {
         item["id"] for item in deterministic_findings(
@@ -1254,6 +1275,21 @@ def test_unsourced_categorical_background_triggers_source_grounding_gate():
         "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
         "<p>Utilities solely measure one factor. Equipment typically ranges "
         "from $300 to $700.</p>"
+    )
+    ids = {
+        item["id"] for item in deterministic_findings(
+            article, "Barchart Advertorial", "device"
+        )
+    }
+    assert "D20" in ids
+
+
+def test_unsupported_device_safety_and_certification_advice_triggers_d20():
+    article = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<p>Transient voltage spikes can damage sensitive electronics and "
+        "create safety risks. Buyers should use a UPS instead and require "
+        "UL, ETL, or CSA certification.</p>"
     )
     ids = {
         item["id"] for item in deterministic_findings(

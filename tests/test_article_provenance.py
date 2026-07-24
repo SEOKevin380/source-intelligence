@@ -70,3 +70,23 @@ def test_short_exact_device_claim_maps_with_required_attribution():
     assert ledger["used_claim_count"] == 1
     assert ledger["mapped_sentence_count"] == 1
     assert not ledger["attribution_violations"]
+
+
+def test_seller_calls_phrase_satisfies_required_attribution():
+    pack = {
+        "publication_claims": {
+            "feature": [{
+                "claim_id": "seller-phrase",
+                "text": "Dirty EMF electricity filtering",
+                "publication_treatment": "seller_attribution_required",
+            }]
+        }
+    }
+    ledger = build_article_claim_ledger(
+        pack,
+        '<p>The stated function relates to reducing what the seller calls '
+        '"dirty EMF electricity."</p>',
+    )
+    assert ledger["used_claim_count"] == 1
+    assert ledger["mapped_sentence_count"] == 1
+    assert not ledger["attribution_violations"]

@@ -251,6 +251,10 @@ Operating rules:
   footprint: 10 phrases below 1,600 words, 11 from 1,600–2,199 words, and 12
   at 2,200+ words. Never bold whole paragraphs or whole bullet items.
 - Output article HTML only. Do not include html/head/body wrappers.
+- Every reader-facing sentence must be inside a valid article-body HTML
+  element. Never output Markdown separators or lists, naked URLs, word-count
+  notes, coverage allocations, production metadata, reviewer instructions, or
+  repair language.
 - Begin the model response with the release headline in H1. The workbench will
   extract it into WordPress's separate title field and remove it from the saved
   article body, whose section headings must be bolded H2/H3 only.
@@ -475,6 +479,14 @@ compliance report below.
   with explicit recorded-source attribution. Never restore an
   `excluded_publication_claim`.
 - Return the complete revised article HTML only.
+- Apply reviewer replacements as editorial directions; never paste their
+  instructional wording into the article. Every reader-facing sentence must
+  be inside a valid HTML element. Never output Markdown separators or lists,
+  naked URLs, word-count notes, coverage allocations, or production metadata.
+- For device copy, do not add electrical-safety consequences, certification
+  recommendations, installation/placement guidance, multi-unit deployment
+  logic, technical definitions, category comparisons, or alternative-product
+  advice unless that exact point is permitted by the sealed claim ledger.
 - Begin the model response with the revised release headline in H1 so the
   workbench can store it in WordPress's separate title field; the saved article
   body will contain only bolded H2/H3 section headings.

@@ -325,6 +325,45 @@ def repair_publication_gates(html, platform, vertical, affiliate_href=""):
     html = ensure_article_html(html)
     soup = BeautifulSoup(html, "html.parser")
 
+    # Models sometimes mix valid HTML with top-level prose or production
+    # notes. Preserve ordinary prose by wrapping it, but remove separators and
+    # workflow instructions that can never be reader-facing.
+    for node in list(soup.contents):
+        if not isinstance(node, NavigableString) or not str(node).strip():
+            continue
+        raw = str(node).strip()
+        if re.fullmatch(r"---+|~~~+", raw):
+            node.extract()
+            continue
+        if re.search(
+            r"\b(?:remove unsupported external assertions|"
+            r"build depth from sealed product facts|"
+            r"semantic reconstruction required|"
+            r"word count|coverage allocation)\b",
+            raw,
+            re.I,
+        ):
+            node.extract()
+            continue
+        paragraph = soup.new_tag("p")
+        paragraph.string = raw
+        node.replace_with(paragraph)
+
+    for node in list(soup.find_all(["p", "div"])):
+        text_value = node.get_text(" ", strip=True)
+        if re.search(
+            r"\b(?:remove unsupported external assertions|"
+            r"build depth from sealed product facts|"
+            r"semantic reconstruction required)\b",
+            text_value,
+            re.I,
+        ) or re.match(
+            r"^(?:word count|coverage allocation)\s*:",
+            text_value,
+            re.I,
+        ):
+            node.decompose()
+
     # WordPress stores the release title separately.
     for heading in list(soup.find_all("h1")):
         heading.decompose()
@@ -489,6 +528,13 @@ def repair_source_grounding(html, source_text, vertical):
         r"\b(?:comes?|caused|generated|created|sources?)\b",
         r"\b(?:cheaper|less expensive|costs? less|low-risk trial)\b.{0,120}"
         r"\b(?:professional|audit|appliance|upgrade|electrician)\b",
+        r"\btransient voltage spikes?\b.{0,140}\b(?:damage|safety risks?)\b",
+        r"\b(?:use|choose|buy) (?:a |an )?ups instead\b",
+        r"\b(?:ul|etl|csa)(?: certification| certified|,|\s+or\s+)",
+        r"\blegitimate product should\b",
+        r"\b(?:deploy|place|install) multiple units?\b.{0,120}"
+        r"\b(?:room|circuit|throughout)\b",
+        r"\bindustry[- ]standard\b|\brisk[- ]free trial\b",
     )
     for node in list(soup.find_all(["p", "li"])):
         lowered = node.get_text(" ", strip=True).casefold()

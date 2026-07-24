@@ -3,11 +3,13 @@
 import hashlib
 import re
 
+from bs4 import BeautifulSoup, NavigableString
+
 from .publication_profiles import publication_profile
 from .gate_registry import PUBLICATION_BLOCKER_IDS
 
 
-PROMPT_VERSION = "newswire-v2.2-audited-transaction-contract"
+PROMPT_VERSION = "newswire-v2.3-artifact-integrity"
 
 HARD_BLOCKER_RATIONALE = {
     "D1": ("legal_disclosure", "Paid native advertising must be identifiable."),
@@ -59,9 +61,19 @@ def deterministic_findings(article, platform, vertical):
     """Return non-negotiable mechanical issues before model judgment."""
     findings = []
     lowered = article.casefold()
+    soup = BeautifulSoup(article, "html.parser")
+    top_level_plaintext = next(
+        (
+            str(node).strip()
+            for node in soup.contents
+            if isinstance(node, NavigableString) and str(node).strip()
+        ),
+        "",
+    )
     markdown_residue = re.search(
         r"(?m)\*\*[^*\n]{2,120}\*\*|"
-        r"^\s{0,3}#{1,6}\s+\S|^\s*```|```\s*$",
+        r"^\s{0,3}#{1,6}\s+\S|^\s*```|```\s*$|"
+        r"^\s*(?:---+|[-*•]\s+\S|\d+[.)]\s+\S)",
         article,
     )
     escaped_html = re.search(
@@ -70,8 +82,27 @@ def deterministic_findings(article, platform, vertical):
         article,
         re.I | re.S,
     )
-    if markdown_residue or escaped_html or not re.search(
+    production_residue = re.search(
+        r"\b(?:word count|coverage allocation)\s*:",
+        re.sub(r"<[^>]+>", " ", article),
+        re.I,
+    )
+    leaked_repair_instruction = re.search(
+        r"\b(?:remove unsupported external assertions|"
+        r"build depth from sealed product facts|"
+        r"semantic reconstruction required)\b",
+        re.sub(r"<[^>]+>", " ", article),
+        re.I,
+    )
+    if (
+        markdown_residue
+        or escaped_html
+        or top_level_plaintext
+        or production_residue
+        or leaked_repair_instruction
+        or not re.search(
         r"<(?:p|h[1-6]|ul|ol|li|div|blockquote)\b", article, re.I
+        )
     ):
         findings.append({
             "id": "D17", "category": "Submission HTML gate",
@@ -82,7 +113,11 @@ def deterministic_findings(article, platform, vertical):
             "exact_text": (
                 markdown_residue.group(0).strip()
                 if markdown_residue else
-                escaped_html.group(0) if escaped_html else ""
+                escaped_html.group(0) if escaped_html else
+                top_level_plaintext or
+                production_residue.group(0) if production_residue else
+                leaked_repair_instruction.group(0)
+                if leaked_repair_instruction else ""
             ),
             "replacement": (
                 "Remove code fences and convert escaped or Markdown markup "
@@ -268,7 +303,20 @@ def deterministic_findings(article, platform, vertical):
         r"breaks down approximately as)\b",
         plain_lower,
     )
-    if len(categorical_external_claims) >= 2:
+    unsupported_device_assertions = (
+        re.findall(
+            r"\b(?:transient voltage spikes?.{0,100}(?:damage|safety risks?)|"
+            r"(?:use|choose|buy) (?:a |an )?ups instead|"
+            r"(?:ul|etl|csa)(?: certification| certified|,|\s+or\s+)|"
+            r"legitimate product should|"
+            r"(?:deploy|place|install) multiple units?.{0,100}"
+            r"(?:room|circuit|throughout)|"
+            r"industry[- ]standard|risk[- ]free trial)\b",
+            plain_lower,
+        )
+        if vertical == "device" else []
+    )
+    if len(categorical_external_claims) >= 2 or unsupported_device_assertions:
         findings.append({
             "id": "D20",
             "category": "Source-grounded analysis gate",
@@ -276,7 +324,11 @@ def deterministic_findings(article, platform, vertical):
                 "The draft relies on multiple categorical technical, market, "
                 "pricing, or industry assertions beyond the sealed record."
             ),
-            "exact_text": categorical_external_claims[0],
+            "exact_text": (
+                categorical_external_claims[0]
+                if categorical_external_claims
+                else unsupported_device_assertions[0]
+            ),
             "replacement": (
                 "Remove unsupported external assertions. Build depth from sealed "
                 "product facts, attributed positioning, reader questions, "

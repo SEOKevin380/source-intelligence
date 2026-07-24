@@ -88,7 +88,7 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
                 r"\b(?:seller|offer|vendor|manufacturer|product page|"
                 r"sales page|source materials?|materials?)\b.{0,50}"
                 r"\b(?:states?|says?|describes?|lists?|reports?|claims?|"
-                r"presents?|identifies?)\b|"
+                r"calls?|presents?|identifies?)\b|"
                 r"\baccording to\b",
                 sentence_lower,
             ))
