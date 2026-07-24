@@ -7,7 +7,7 @@ from .publication_profiles import publication_profile
 from .gate_registry import PUBLICATION_BLOCKER_IDS
 
 
-PROMPT_VERSION = "newswire-v2.1-pre-review-source-contract"
+PROMPT_VERSION = "newswire-v2.2-audited-transaction-contract"
 
 HARD_BLOCKER_RATIONALE = {
     "D1": ("legal_disclosure", "Paid native advertising must be identifiable."),

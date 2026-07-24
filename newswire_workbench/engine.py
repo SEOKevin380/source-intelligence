@@ -42,7 +42,7 @@ from .execution_budget import (
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v28-pre-review-source-contract"
+    "serp-differentiation-depth-v29-audited-transaction-contract"
 )
 
 STAGES = (
@@ -538,16 +538,17 @@ class WorkbenchEngine:
         )
         purpose = "final_signoff"
         route = route_for(purpose, p["vertical"])
+        route_limit = self._purpose_call_limit(p, purpose, route)
         used = self._billable_call_count(project_id, purpose)
         total_used = int(self.usage_summary(project_id)["calls"])
         budget = execution_budget()
         project_call_maximum = budget["calls"]
         project_remaining = max(project_call_maximum - total_used, 0)
-        route_remaining = max(route.max_calls - used, 0)
+        route_remaining = max(route_limit - used, 0)
         reviewer_capacity = {
             purpose: {
                 "used": used,
-                "maximum": route.max_calls,
+                "maximum": route_limit,
                 "remaining": min(route_remaining, project_remaining),
             },
             "project": {
@@ -1582,8 +1583,23 @@ class WorkbenchEngine:
                     p, report, "drafted", "02-openai-review.json"
                 )
                 reviewed = self.get(project_id)
+                repair_route = route_for(
+                    "compliance_repair", reviewed["vertical"]
+                )
+                repair_already_used = (
+                    self._billable_call_count(
+                        project_id, "compliance_repair"
+                    ) >= self._purpose_call_limit(
+                        reviewed, "compliance_repair", repair_route
+                    )
+                )
                 adjudication_target = (
-                    "compliance_reviewed"
+                    "revised"
+                    if (
+                        self._uses_locked_call_path(reviewed)
+                        and repair_already_used
+                    )
+                    else "compliance_reviewed"
                     if self._uses_locked_call_path(reviewed)
                     else "revised"
                 )
@@ -1602,7 +1618,9 @@ class WorkbenchEngine:
             primary_route = route_for(repair_purpose, p["vertical"])
             if (
                 self._billable_call_count(p["id"], repair_purpose)
-                >= primary_route.max_calls
+                >= self._purpose_call_limit(
+                    p, repair_purpose, primary_route
+                )
             ):
                 if self._uses_locked_call_path(p):
                     self._set_stage(project_id, "admin_review")
@@ -1662,6 +1680,42 @@ class WorkbenchEngine:
                 bump=True,
                 call_purpose=repair_purpose,
             )
+            if pre_review_repair:
+                repaired = self.get(project_id)
+                repaired_preflight = audit_article(
+                    repaired["article_text"],
+                    repaired["platform"],
+                    repaired["vertical"],
+                    _source_affiliate_link(repaired["source_text"]),
+                )
+                from article_provenance import (
+                    build_article_claim_ledger,
+                    extract_sealed_pack,
+                )
+                repaired_provenance = build_article_claim_ledger(
+                    extract_sealed_pack(repaired["source_text"]),
+                    repaired["article_text"],
+                )
+                remaining = [
+                    item for item in repaired_preflight["blockers"]
+                    if item.get("id") == "D18"
+                ]
+                remaining.extend(
+                    repaired_provenance.get("coverage_violations") or []
+                )
+                if remaining:
+                    self._set_stage(project_id, "admin_review")
+                    self._event(
+                        project_id,
+                        "pre_review_repair_incomplete",
+                        "admin_review",
+                        repaired["article_hash"],
+                        {
+                            "blockers": remaining,
+                            "independent_review_call_preserved": True,
+                            "operator_decision_required": False,
+                        },
+                    )
         elif stage == "revised":
             preflight = audit_article(
                 p["article_text"],
@@ -1750,7 +1804,9 @@ class WorkbenchEngine:
             final_route = route_for("final_signoff", p["vertical"])
             if (
                 self._billable_call_count(p["id"], "final_signoff")
-                >= final_route.max_calls
+                >= self._purpose_call_limit(
+                    p, "final_signoff", final_route
+                )
                 and self._adjudication_count(p["id"]) > 0
             ):
                 self._complete_adjudicated_signoff(
@@ -2272,6 +2328,12 @@ class WorkbenchEngine:
                 f"Automated {stage} call ceiling reached; routed to admin "
                 "review instead of repeating paid work"
             )
+
+    def _purpose_call_limit(self, project, purpose, route):
+        """Return the authoritative per-purpose limit for this project."""
+        if self._uses_locked_call_path(project):
+            return int(PURPOSE_CALL_LIMITS.get(purpose, 0))
+        return int(route.max_calls)
 
     def _assert_prompt_budget(self, project_id, purpose, prompt):
         """Log and bound stage context before any paid provider request."""

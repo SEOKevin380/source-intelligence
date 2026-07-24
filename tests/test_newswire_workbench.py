@@ -267,7 +267,7 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert project["stage"] == "source_ready"
     assert (
         "AUTOMATION CONTEXT VERSION: "
-            "serp-differentiation-depth-v28-pre-review-source-contract"
+            "serp-differentiation-depth-v29-audited-transaction-contract"
         in project["source_text"]
     )
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
@@ -326,7 +326,7 @@ def test_explicit_rebuild_reuses_active_project_then_rebuilds_terminal(tmp_path)
     assert engine.latest_project_from_pack(
         pack,
         "AccessNewsWire",
-            "serp-differentiation-depth-v28-pre-review-source-contract",
+            "serp-differentiation-depth-v29-audited-transaction-contract",
     ) == rebuilt
     assert engine.latest_project_from_pack(
         pack, "AccessNewsWire", "nonexistent-future-workflow"
@@ -355,7 +355,7 @@ def test_only_latest_durable_project_is_authoritative_run_target(tmp_path):
     newer = engine.create_project_from_pack(
         pack, "Barchart Advertorial", force_new=True
     )
-    version = "serp-differentiation-depth-v28-pre-review-source-contract"
+    version = "serp-differentiation-depth-v29-audited-transaction-contract"
     assert not engine.is_authoritative_run_target(
         older, pack, "Barchart Advertorial", version
     )
@@ -1714,6 +1714,99 @@ def test_short_first_draft_uses_writer_repair_before_independent_review(
     with patch.object(engine, "_claude", return_value=repaired):
         engine._run_next_unlocked(pid, "")
     assert engine.get(pid)["stage"] == "drafted"
+
+
+def test_incomplete_pre_review_repair_preserves_reviewer_call(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    short = (
+        "<h1>Test Device Review</h1>"
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<p>Seller materials state Literal product fact 0.</p>"
+    )
+    with patch.object(engine, "_claude", return_value=short):
+        engine._run_next_unlocked(pid, "")
+        engine._run_next_unlocked(pid, "")
+    assert engine.get(pid)["stage"] == "admin_review"
+    assert not [
+        call for call in engine.usage_details(pid)
+        if call["stage"] == "compliance"
+    ]
+    assert any(
+        event["event_type"] == "pre_review_repair_incomplete"
+        for event in engine.events(pid)
+    )
+
+
+def test_reviewer_exact_edits_after_pre_review_repair_reach_signoff(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    article = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<p>Seller materials state Literal product fact 0.</p>"
+        "<p>Seller materials state Literal product fact 1.</p>"
+        "<p>Seller materials state Literal product fact 2.</p>"
+        "<p>Old exact wording.</p>"
+        + "".join(
+            f"<p>Reader decision context {index} explains what is recorded "
+            "and what a buyer should verify before ordering this device.</p>"
+            for index in range(100)
+        )
+    )
+    engine.import_manual_article(pid, article)
+    engine._set_stage(pid, "drafted")
+    repair_route = route_for("compliance_repair", "device")
+    engine._record_llm_call(
+        pid, "compliance_repair", repair_route, 10, 10
+    )
+    p = engine.get(pid)
+    rejection = {
+        "verdict": "not_approved",
+        "mandatory_count": 1,
+        "source_accuracy": {"verified": 3, "checked": 3},
+        "mandatory_edits": [{
+            "id": "M1",
+            "category": "Source accuracy",
+            "issue": "Use the exact supported wording.",
+            "exact_text": "Old exact wording.",
+            "replacement": "Repaired exact wording.",
+        }],
+        "recommended_edits": [],
+        "approved_elements": [],
+        "notes": [],
+        "reviewed_article_hash": p["article_hash"],
+        "approval_purpose": "compliance",
+    }
+    with patch.object(engine, "_openai_review", return_value=rejection):
+        engine._run_next_unlocked(pid, "")
+    assert engine.get(pid)["stage"] == "revised"
+    assert "Repaired exact wording." in engine.get(pid)["article_text"]
 
 
 def test_depth_recovery_reads_immutable_paid_output_before_revision_file(
