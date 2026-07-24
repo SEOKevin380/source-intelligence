@@ -44,7 +44,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v34-closed-loop-action-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "sealed-depth-recovery-20260724-r13"
+WORKBENCH_RUNTIME_REVISION = "sealed-source-handoff-20260724-r14"
 
 STAGES = (
     "source_ready",
@@ -1749,7 +1749,9 @@ class WorkbenchEngine:
         publication_claims = sealed_pack.get("publication_claims") or {}
         feature_claims = [
             str(item.get("text") or "").strip()
-            for item in publication_claims.get("manufacturer_claim", [])
+            for claim_type, items in publication_claims.items()
+            if claim_type != "pricing"
+            for item in (items or [])
             if str(item.get("text") or "").strip()
         ]
         pricing_claims = [
@@ -3166,9 +3168,11 @@ class WorkbenchEngine:
                 reason = "house_rule_forbids_reader_facing_affiliate_routing_explanation"
             elif (
                 re.search(
-                    r"\b(?:affiliate|partner|non-public)\s+(?:url|domain)|"
+                    r"\braw affiliate(?:/intermediary)?\s+url\b|"
+                    r"\b(?:affiliate|intermediary|partner|non-public)"
+                    r"(?:/intermediary)?\s+(?:url|domain)|"
                     r"\baffiliate\s+(?:destination|routing)|"
-                    r"\braw affiliate url\b",
+                    r"\bduplicate intermediary-domain links?\b",
                     issue,
                     re.I,
                 )

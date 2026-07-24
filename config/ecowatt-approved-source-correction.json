@@ -1,0 +1,27 @@
+{
+  "product_name": "EcoWatt Power Saver",
+  "approved_by": "operator session statement",
+  "approved_at": "2026-07-24",
+  "basis": "Facts explicitly designated as approved seller/source-material facts in the July 24, 2026 production-recovery session statement. All require seller/source attribution and are not independently verified.",
+  "covered_facts": [
+    "key_features",
+    "specifications"
+  ],
+  "product_patch": {
+    "key_features": [
+      "Voltage stabilization",
+      "Power-factor correction",
+      "Dirty-electricity filtering",
+      "Power-surge reduction",
+      "Plug-and-play installation",
+      "24/7 operation",
+      "Zero maintenance",
+      "Green active-operation light",
+      "Claimed six-to-eight-week optimization period"
+    ],
+    "specifications": {
+      "stated voltage range": "90V–250V",
+      "stated capacity": "30kW"
+    }
+  }
+}

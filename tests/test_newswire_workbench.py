@@ -3516,3 +3516,116 @@ def test_learning_memory_drops_house_conflicts_and_narrows_prior_link_rule():
     assert len(cleaned) == 2
     assert "preserve one quiet contextual backlink" in cleaned[0]["issue"]
     assert "Utility-grid assertions" in cleaned[1]["issue"]
+def test_device_source_grounding_removes_full_ecowatt_failure_family():
+    article = (
+        "<p>The device is marketed for residential use and requires no "
+        "technical knowledge or professional installation.</p>"
+        "<p>The seller uses dirty EMF electricity to describe power quality "
+        "variations and electromagnetic field issues on electrical lines.</p>"
+        "<p>Make Sure Your Device Is Working suggests a visible indicator or "
+        "confirmation method for ongoing operation.</p>"
+        "<p>Results may vary with regional grid conditions, existing home "
+        "wiring, and individual home electrical systems.</p>"
+        "<p>Buyers can seek before-and-after measurements, professional "
+        "electrical audits, or use their own monitoring.</p>"
+        "<p>The source does not specify the power source, heat generation, or "
+        "whether it draws minimal power.</p>"
+        "<p>Seller materials describe voltage stabilization.</p>"
+    )
+    repaired = repair_source_grounding(article, "", "device")
+    assert "residential use" not in repaired
+    assert "power quality variations" not in repaired
+    assert "visible indicator" not in repaired
+    assert "regional grid conditions" not in repaired
+    assert "professional electrical audits" not in repaired
+    assert "power source" not in repaired
+    assert "Seller materials describe voltage stabilization." in repaired
+
+
+def test_reviewer_cannot_relabel_clean_affiliate_ctas_as_raw_urls(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    article = (
+        '<p><a href="https://partner.example/offer">'
+        "<strong>Review the current product details</strong></a></p>"
+    )
+    report = {
+        "verdict": "not_approved",
+        "mandatory_count": 2,
+        "mandatory_edits": [
+            {
+                "id": "M1",
+                "issue": "Raw affiliate/intermediary URL is visible as anchor text.",
+                "exact_text": article,
+                "replacement": "Add affiliate routing disclosure.",
+            },
+            {
+                "id": "M2",
+                "issue": "Remove duplicate intermediary-domain links.",
+                "exact_text": article,
+                "replacement": "Replace them with official-site links.",
+            },
+        ],
+        "notes": [],
+    }
+    cleaned = engine._remove_house_rule_conflicts(report, article)
+    assert cleaned["verdict"] == "approved"
+    assert cleaned["mandatory_edits"] == []
+
+
+def test_source_grounding_rebuilds_malformed_sealed_pricing_section():
+    pack = {
+        "publication_claims": {
+            "pricing": [
+                {"text": "Single Unit: $49.99; $49.99 per unit"},
+                {"text": "4-Unit Bundle: $139.96; $34.99 per unit"},
+            ]
+        },
+        "excluded_publication_claims": [],
+    }
+    source = (
+        "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══\n"
+        + json.dumps(pack)
+    )
+    article = (
+        "<h2><strong>Current Pricing and Package Information</strong></h2>"
+        "<p>According to the seller, Single Unit: $49.99; $49.99 per unit.</p>"
+        "<p>According to the seller, 4-Unit Bundle: $139.96; $34.99 per unit.</p>"
+        "<p>According to the seller, pricing is structured in two options:</p>"
+        "<h2><strong>Limitations</strong></h2><p>Shipping is not established.</p>"
+    )
+    repaired = repair_source_grounding(article, source, "device")
+    soup = BeautifulSoup(repaired, "html.parser")
+    pricing_heading = soup.find("h2")
+    assert pricing_heading.find_next_sibling("p").get_text() == (
+        "According to the seller, pricing is structured in these options:"
+    )
+    pricing_list = pricing_heading.find_next_sibling("ul")
+    assert len(pricing_list.find_all("li")) == 2
+    assert repaired.count("Single Unit: $49.99") == 1
+    assert repaired.count("4-Unit Bundle: $139.96") == 1
+    assert "Shipping is not established." in repaired
+
+
+def test_sealed_depth_block_uses_all_nonpricing_claim_types():
+    pack = {
+        "product": {
+            "product_name": "Device",
+            "pricing": [],
+        },
+        "publication_claims": {
+            "manufacturer_claim": [{"text": "Voltage stabilization"}],
+            "feature": [{"text": "24/7 operation"}],
+            "specification": [
+                {"text": "stated voltage range: 90V–250V"},
+                {"text": "stated capacity: 30kW"},
+            ],
+        },
+        "required_facts": {"missing": []},
+    }
+    block = WorkbenchEngine._sealed_pack_decision_block(
+        None, {"title": "Device"}, pack
+    )
+    assert "Voltage stabilization" in block
+    assert "24/7 operation" in block
+    assert "90V–250V" in block
+    assert "30kW" in block

@@ -585,6 +585,28 @@ def repair_source_grounding(html, source_text, vertical):
         r"\breconstruct this sentence from isolated permitted claim text\b",
         r"\bForecasts\s*&\s*Strategies\b",
         r"\bsimple access to the current offer\b",
+        r"\bmarketed for residential use\b",
+        r"\b(?:standard electrical|standard) outlet\b.{0,160}"
+        r"\b(?:immediately|professional installation|special wiring|"
+        r"technical knowledge|configuration)\b",
+        r"\b(?:technical knowledge|special wiring modifications?|"
+        r"professional installation|app connectivity|monitoring dashboard|"
+        r"set-and-forget)\b",
+        r"\bdirty (?:emf )?electricity\b.{0,180}"
+        r"\b(?:power quality variations?|electromagnetic field|"
+        r"household current|electrical lines?)\b",
+        r"\bmake sure your device is working\b.{0,240}"
+        r"\b(?:indicator|confirmation|verify|ongoing operation)\b",
+        r"\b(?:individual home electrical systems?|regional grid conditions?|"
+        r"existing home wiring|environmental factors?)\b",
+        r"\b(?:customer outcome studies?|before-and-after measurements?|"
+        r"professional electrical audits?|documented case studies?|"
+        r"your own monitoring)\b",
+        r"\b(?:similar products?|power-quality or electrical-protection "
+        r"devices?)\b",
+        r"\b(?:electricity bills?|appliance lifespan|real home environment)\b",
+        r"\b(?:draws? minimal power|heat generation|power source)\b",
+        r"\b(?:continuous-operation safety|continuous versus intermittent)\b",
     )
     for node in list(soup.find_all(["p", "li"])):
         lowered = node.get_text(" ", strip=True).casefold()
@@ -635,21 +657,18 @@ def repair_source_grounding(html, source_text, vertical):
         ):
             node.decompose()
 
-    # When the sealed ledger contains pricing, an empty CTA-only pricing
-    # section is not commercially useful and needlessly consumes semantic
-    # review. Restore each price as its own claim-local, seller-attributed
-    # sentence so numeric provenance remains exact.
+    # Canonicalize sealed pricing as one clean seller-attributed list. Merely
+    # checking whether the digits occur somewhere allowed malformed fragments
+    # and an empty "two options" lead-in to survive all the way to sign-off.
     pricing_claims = (
         (pack.get("publication_claims") or {}).get("pricing") or []
     )
-    article_plain = soup.get_text(" ", strip=True)
-    pricing_to_add = []
+    canonical_pricing = []
     for item in pricing_claims:
         claim = str(item.get("text") or "").strip()
-        numbers = re.findall(r"\d+(?:\.\d+)?", claim)
-        if claim and numbers and not all(number in article_plain for number in numbers):
-            pricing_to_add.append(claim)
-    if pricing_to_add:
+        if claim and re.search(r"\d+(?:\.\d+)?", claim):
+            canonical_pricing.append(claim.rstrip("."))
+    if canonical_pricing:
         heading = next(
             (
                 node for node in soup.find_all(["h2", "h3"])
@@ -657,17 +676,25 @@ def repair_source_grounding(html, source_text, vertical):
             ),
             None,
         )
-        insertion_point = heading
         if heading is None:
             heading = soup.new_tag("h2")
             strong = soup.new_tag("strong")
             strong.string = "Current Pricing and Package Information"
             heading.append(strong)
             soup.append(heading)
-            insertion_point = heading
-        for claim in pricing_to_add:
-            paragraph = soup.new_tag("p")
-            paragraph.string = f"According to the seller, {claim}."
-            insertion_point.insert_after(paragraph)
-            insertion_point = paragraph
+        else:
+            cursor = heading.find_next_sibling()
+            while cursor is not None and cursor.name not in {"h2", "h3"}:
+                following = cursor.find_next_sibling()
+                cursor.decompose()
+                cursor = following
+        lead = soup.new_tag("p")
+        lead.string = "According to the seller, pricing is structured in these options:"
+        pricing_list = soup.new_tag("ul")
+        for claim in canonical_pricing:
+            item = soup.new_tag("li")
+            item.string = f"According to the seller, {claim}."
+            pricing_list.append(item)
+        heading.insert_after(pricing_list)
+        heading.insert_after(lead)
     return str(soup)

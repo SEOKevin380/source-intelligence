@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -42,6 +43,14 @@ def main() -> None:
         choices=("inspect", "recover", "continue", "rebuild"),
         default="inspect",
     )
+    parser.add_argument(
+        "--source-correction",
+        help=(
+            "Operator-approved JSON correction to merge into the new sealed "
+            "pack. Valid only with --action rebuild; never mutates the rejected "
+            "project."
+        ),
+    )
     args = parser.parse_args()
     engine = WorkbenchEngine()
     print(json.dumps({"before": snapshot(engine, args.project_id)}, indent=2))
@@ -67,6 +76,7 @@ def main() -> None:
     elif args.action == "rebuild":
         from article_provenance import extract_sealed_pack
         from newswire_workbench.engine import WORKBENCH_SOURCE_CONTEXT_VERSION
+        from source_pack_contract import seal_source_pack
 
         action = engine.run_action(
             args.project_id, WORKBENCH_SOURCE_CONTEXT_VERSION
@@ -77,8 +87,58 @@ def main() -> None:
                 "exact-hash-rejected project."
             )
         old = engine.get(args.project_id)
+        pack = extract_sealed_pack(old["source_text"])
+        if args.source_correction:
+            correction_path = Path(args.source_correction).resolve()
+            correction = json.loads(correction_path.read_text(encoding="utf-8"))
+            expected_name = str(correction.get("product_name") or "").strip()
+            actual_name = str(
+                (pack.get("product") or {}).get("product_name") or ""
+            ).strip()
+            if not expected_name or expected_name.casefold() != actual_name.casefold():
+                raise RuntimeError(
+                    "Source correction product identity does not match the "
+                    "rejected transaction."
+                )
+            product_patch = correction.get("product_patch") or {}
+            if not isinstance(product_patch, dict) or not product_patch:
+                raise RuntimeError("Source correction has no product_patch.")
+            pack.setdefault("product", {}).update(product_patch)
+            correction_bytes = json.dumps(
+                correction, sort_keys=True, ensure_ascii=False
+            ).encode("utf-8")
+            correction_id = hashlib.sha256(correction_bytes).hexdigest()
+            pack.setdefault("all_artifacts", {})[correction_id] = {
+                "artifact_type": "structured_data",
+                "source_url": "intake://operator-approved-source-correction",
+                "source_class": "official_vendor",
+                "captured_at": correction.get("approved_at", ""),
+                "tls_verified": True,
+                "is_usable": True,
+                "acquisition_phase": "OPERATOR_SOURCE_CORRECTION",
+                "metadata": {
+                    "approved_by": correction.get("approved_by", ""),
+                    "basis": correction.get("basis", ""),
+                    "correction_sha256": correction_id,
+                },
+            }
+            required = pack.setdefault("required_facts", {})
+            covered = set(required.get("covered") or [])
+            missing = set(required.get("missing") or [])
+            for fact in correction.get("covered_facts") or []:
+                covered.add(str(fact))
+                missing.discard(str(fact))
+            required["covered"] = sorted(covered)
+            required["missing"] = sorted(missing)
+            pack.setdefault("source_corrections", []).append({
+                "artifact_id": correction_id,
+                "approved_by": correction.get("approved_by", ""),
+                "approved_at": correction.get("approved_at", ""),
+                "basis": correction.get("basis", ""),
+            })
+            pack = seal_source_pack(pack)
         new_id = engine.create_project_from_pack(
-            extract_sealed_pack(old["source_text"]),
+            pack,
             old["platform"],
             vertical=old["vertical"],
             force_new=True,
