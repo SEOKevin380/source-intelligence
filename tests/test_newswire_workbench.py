@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 import pytest
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString
 
 from newswire_workbench.engine import (
     WORKBENCH_SOURCE_CONTEXT_VERSION,
@@ -3697,6 +3697,69 @@ def test_editorial_utility_allows_natural_attributed_product_story():
         )
     }
     assert "D21" not in ids
+
+
+def test_mixed_html_wraps_naked_paragraphs_and_markdown_bullets():
+    raw = (
+        "<h2><strong>Who May Find the Offer Worth Evaluating</strong></h2>\n\n"
+        "EcoWatt may be worth considering for readers who value simple setup.\n\n"
+        "- Plug-and-play installation\n"
+        "- Green active-operation light\n"
+        "- Zero maintenance\n\n"
+        "<h2><strong>Current Pricing</strong></h2>\n\n"
+        "According to the seller, one unit costs $49.99."
+    )
+    repaired = ensure_article_html(raw)
+    soup = BeautifulSoup(repaired, "html.parser")
+    assert soup.find("p").get_text() == (
+        "EcoWatt may be worth considering for readers who value simple setup."
+    )
+    assert [item.get_text() for item in soup.find("ul").find_all("li")] == [
+        "Plug-and-play installation",
+        "Green active-operation light",
+        "Zero maintenance",
+    ]
+    assert not any(
+        isinstance(node, NavigableString) and str(node).strip()
+        for node in soup.contents
+    )
+
+
+def test_rejected_mixed_html_draft_recovers_before_reserved_review(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    candidate = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<h2><strong>What the Seller Describes</strong></h2>\n\n"
+        "Seller materials describe Literal product fact 0.\n\n"
+        "- Literal product fact 1\n"
+        "- Literal product fact 2"
+    )
+    engine._record_llm_call(
+        pid,
+        "draft",
+        route_for("draft", "device"),
+        100,
+        100,
+        raw_output=candidate,
+        lifecycle="candidate_rejected",
+    )
+    engine._set_stage(pid, "admin_review")
+    assert engine._recover_locked_pre_signoff(pid) is True
+    assert engine.get(pid)["stage"] == "drafted"
+    assert engine.usage_summary(pid)["calls"] == 1
 
 
 def test_depth_recovery_drops_mixed_unattributed_claim_blocks():

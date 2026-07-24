@@ -822,6 +822,17 @@ class WorkbenchEngine:
             or self._latest_pending_call(project_id, "final_signoff")
         )
         if (
+            not p["article_hash"]
+            and self.usage_summary(project_id)["calls"] == 1
+            and self._latest_rejected_candidate_output(project_id, "draft")
+            and self._billable_call_count(project_id, "compliance") == 0
+            and self._billable_call_count(
+                project_id, "compliance_repair"
+            ) == 0
+            and final_available
+        ):
+            return True
+        if (
             not current_preflight["blockers"]
             and not current_provenance.get("coverage_violations")
             and not current_provenance.get("attribution_violations")
@@ -1449,6 +1460,8 @@ class WorkbenchEngine:
                 },
             )
             return True
+        if self._recover_rejected_draft_candidate(project_id):
+            return True
         if self._recover_rejected_compliance_candidate(project_id):
             return True
         current_blocker_ids = {
@@ -1540,6 +1553,39 @@ class WorkbenchEngine:
                 "source_artifact": "llm_calls:compliance_repair",
                 "paid_calls_added": 0,
                 "next_action": "reserved_final_signoff",
+                "operator_decision_required": False,
+            },
+        )
+        return True
+
+    def _recover_rejected_draft_candidate(self, project_id):
+        """Normalize a paid draft before spending its reserved review calls."""
+        p = self.get(project_id)
+        if p["stage"] != "admin_review" or p["article_hash"]:
+            return False
+        candidate = self._latest_rejected_candidate_output(
+            project_id, "draft"
+        )
+        if not candidate:
+            return False
+        if not self._set_article(
+            p,
+            candidate,
+            "drafted",
+            "01b-recovered-draft.html",
+            bump=False,
+        ):
+            return False
+        recovered = self.get(project_id)
+        self._event(
+            project_id,
+            "rejected_draft_recovered",
+            "drafted",
+            recovered["article_hash"],
+            {
+                "source_artifact": "llm_calls:draft",
+                "paid_calls_added": 0,
+                "next_action": "reserved_compliance_review",
                 "operator_decision_required": False,
             },
         )

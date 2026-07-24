@@ -82,6 +82,18 @@ def _repair_mixed_markdown(value):
             last.replace_with(
                 str(last)[:closing.start(1)] + str(last)[closing.end(1):]
             )
+
+    # Mixed model output often contains valid headings followed by naked
+    # paragraphs and Markdown bullets at the document root. Those text nodes
+    # are visible copy, not harmless whitespace. Render each one through the
+    # plain-text normalizer so a single formatting lapse cannot discard an
+    # otherwise usable paid draft.
+    for node in list(soup.contents):
+        if not isinstance(node, NavigableString) or not str(node).strip():
+            continue
+        rendered = ensure_article_html(str(node))
+        fragment = BeautifulSoup(rendered, "html.parser")
+        node.replace_with(*list(fragment.contents))
     return str(soup)
 
 
@@ -131,7 +143,7 @@ def ensure_article_html(value):
         return _repair_mixed_markdown(value)
 
     blocks = [
-        re.sub(r"\s*\n\s*", " ", block).strip()
+        block.strip()
         for block in re.split(r"\n\s*\n+", value)
         if block.strip()
     ]
@@ -143,21 +155,24 @@ def ensure_article_html(value):
         "contact", "bottom line",
     )
     for block in blocks:
-        markdown_heading = re.match(r"^#{1,6}\s+(.+)$", block)
+        normalized_block = re.sub(r"\s*\n\s*", " ", block).strip()
+        markdown_heading = re.match(
+            r"^#{1,6}\s+(.+)$", normalized_block
+        )
         if markdown_heading:
-            block = markdown_heading.group(1).strip()
+            normalized_block = markdown_heading.group(1).strip()
         is_heading = bool(
-            len(block) <= 120
-            and not re.search(r"[.!?]$", block)
+            len(normalized_block) <= 120
+            and not re.search(r"[.!?]$", normalized_block)
             and (
                 markdown_heading
-                or block.casefold().startswith(heading_markers)
-                or block.istitle()
+                or normalized_block.casefold().startswith(heading_markers)
+                or normalized_block.istitle()
             )
         )
         if is_heading:
             rendered.append(
-                f"<h2><strong>{html_lib.escape(block)}</strong></h2>"
+                f"<h2><strong>{html_lib.escape(normalized_block)}</strong></h2>"
             )
             continue
 
@@ -177,7 +192,7 @@ def ensure_article_html(value):
                 ) + "</ul>"
             )
         else:
-            rendered.append(f"<p>{html_lib.escape(block)}</p>")
+            rendered.append(f"<p>{html_lib.escape(normalized_block)}</p>")
     return "\n".join(rendered)
 
 
