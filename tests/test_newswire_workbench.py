@@ -267,7 +267,7 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert project["stage"] == "source_ready"
     assert (
         "AUTOMATION CONTEXT VERSION: "
-            "serp-differentiation-depth-v29-audited-transaction-contract"
+            "serp-differentiation-depth-v30-current-artifact-recovery"
         in project["source_text"]
     )
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
@@ -326,7 +326,7 @@ def test_explicit_rebuild_reuses_active_project_then_rebuilds_terminal(tmp_path)
     assert engine.latest_project_from_pack(
         pack,
         "AccessNewsWire",
-            "serp-differentiation-depth-v29-audited-transaction-contract",
+            "serp-differentiation-depth-v30-current-artifact-recovery",
     ) == rebuilt
     assert engine.latest_project_from_pack(
         pack, "AccessNewsWire", "nonexistent-future-workflow"
@@ -355,7 +355,7 @@ def test_only_latest_durable_project_is_authoritative_run_target(tmp_path):
     newer = engine.create_project_from_pack(
         pack, "Barchart Advertorial", force_new=True
     )
-    version = "serp-differentiation-depth-v29-audited-transaction-contract"
+    version = "serp-differentiation-depth-v30-current-artifact-recovery"
     assert not engine.is_authoritative_run_target(
         older, pack, "Barchart Advertorial", version
     )
@@ -1807,6 +1807,115 @@ def test_reviewer_exact_edits_after_pre_review_repair_reach_signoff(
         engine._run_next_unlocked(pid, "")
     assert engine.get(pid)["stage"] == "revised"
     assert "Repaired exact wording." in engine.get(pid)["article_text"]
+
+
+def test_clean_admin_artifact_ignores_stale_depth_event_and_reaches_signoff(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    article = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<p>Seller materials state Literal product fact 0.</p>"
+        "<p>Seller materials state Literal product fact 1.</p>"
+        "<p>Seller materials state Literal product fact 2.</p>"
+        + "".join(
+            f"<p>Buyer context {index} explains the recorded offer, "
+            "decision criteria, practical limitations, and what readers "
+            "should verify with the seller before ordering.</p>"
+            for index in range(115)
+        )
+    )
+    engine.import_manual_article(pid, article)
+    engine._set_stage(pid, "admin_review")
+    engine._event(
+        pid,
+        "pre_signoff_blocked",
+        "admin_review",
+        engine.get(pid)["article_hash"],
+        {
+            "blockers": [{
+                "id": "D18",
+                "issue": "Historical depth blocker already repaired.",
+            }],
+            "final_signoff_call_preserved": True,
+        },
+    )
+    assert engine.can_recover_locked_pre_signoff(pid)
+    assert engine._recover_locked_pre_signoff(pid)
+    assert engine.get(pid)["stage"] == "revised"
+    assert any(
+        event["event_type"] == "clean_canonical_artifact_recovered"
+        for event in engine.events(pid)
+    )
+
+
+def test_continuous_runner_finishes_clean_admin_artifact_without_rebuild(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    article = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<p>Seller materials state Literal product fact 0.</p>"
+        "<p>Seller materials state Literal product fact 1.</p>"
+        "<p>Seller materials state Literal product fact 2.</p>"
+        + "".join(
+            f"<p>Decision guide {index} explains the recorded offer, "
+            "reader fit, practical limitations, and details to verify "
+            "directly with the seller before ordering.</p>"
+            for index in range(115)
+        )
+    )
+    engine.import_manual_article(pid, article)
+    engine._set_stage(pid, "admin_review")
+    engine._event(
+        pid,
+        "pre_signoff_blocked",
+        "admin_review",
+        engine.get(pid)["article_hash"],
+        {"blockers": [{"id": "D18", "issue": "Stale blocker."}]},
+    )
+    approved = {
+        "verdict": "approved",
+        "mandatory_count": 0,
+        "mandatory_edits": [],
+        "recommended_edits": [],
+        "approved_elements": [],
+        "notes": [],
+        "reviewed_article_hash": engine.get(pid)["article_hash"],
+        "approval_purpose": "final_signoff",
+    }
+    with patch.object(
+        engine, "_openai_review", return_value=approved
+    ) as reviewer:
+        result = engine._run_to_completion_unlocked(pid, "")
+    assert reviewer.call_count == 1
+    assert result["stage"] == "package_ready"
 
 
 def test_depth_recovery_reads_immutable_paid_output_before_revision_file(

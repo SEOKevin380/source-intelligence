@@ -42,7 +42,7 @@ from .execution_budget import (
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v29-audited-transaction-contract"
+    "serp-differentiation-depth-v30-current-artifact-recovery"
 )
 
 STAGES = (
@@ -758,6 +758,32 @@ class WorkbenchEngine:
         p = self.get(project_id)
         if p["stage"] != "admin_review" or not self._uses_locked_call_path(p):
             return False
+        # The canonical artifact may already be clean even when the event
+        # history records an earlier D18 stop. Recovery decisions must follow
+        # current state, not a stale blocker payload.
+        current_preflight = audit_article(
+            p["article_text"],
+            p["platform"],
+            p["vertical"],
+            _source_affiliate_link(p["source_text"]),
+        )
+        from article_provenance import (
+            build_article_claim_ledger,
+            extract_sealed_pack,
+        )
+        current_provenance = build_article_claim_ledger(
+            extract_sealed_pack(p["source_text"]),
+            p["article_text"],
+        )
+        final_route = route_for("final_signoff", p["vertical"])
+        if (
+            not current_preflight["blockers"]
+            and not current_provenance.get("coverage_violations")
+            and not current_provenance.get("attribution_violations")
+            and self._billable_call_count(project_id, "final_signoff")
+            < self._purpose_call_limit(p, "final_signoff", final_route)
+        ):
+            return True
         relevant = [
             event for event in self.events(project_id)
             if event["event_type"] == "pre_signoff_blocked"
@@ -1129,6 +1155,38 @@ class WorkbenchEngine:
         p = self.get(project_id)
         if not self.can_recover_locked_pre_signoff(project_id):
             return False
+        current_preflight = audit_article(
+            p["article_text"],
+            p["platform"],
+            p["vertical"],
+            _source_affiliate_link(p["source_text"]),
+        )
+        from article_provenance import (
+            build_article_claim_ledger,
+            extract_sealed_pack,
+        )
+        current_provenance = build_article_claim_ledger(
+            extract_sealed_pack(p["source_text"]),
+            p["article_text"],
+        )
+        if (
+            not current_preflight["blockers"]
+            and not current_provenance.get("coverage_violations")
+            and not current_provenance.get("attribution_violations")
+        ):
+            self._set_stage(project_id, "revised")
+            self._event(
+                project_id,
+                "clean_canonical_artifact_recovered",
+                "revised",
+                p["article_hash"],
+                {
+                    "paid_calls_added": 0,
+                    "next_action": "reserved_final_signoff",
+                    "operator_decision_required": False,
+                },
+            )
+            return True
         relevant = [
             event for event in self.events(project_id)
             if event["event_type"] == "pre_signoff_blocked"
