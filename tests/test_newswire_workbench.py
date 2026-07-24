@@ -963,6 +963,45 @@ def test_rejected_repair_preserves_final_call_and_gets_corrected_owner(
     assert engine._billable_call_count(pid, "final_signoff") == 0
 
 
+def test_failed_zero_cost_candidate_is_not_offered_forever(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    engine._set_stage(pid, "admin_review")
+    engine._record_llm_call(
+        pid,
+        "compliance_repair",
+        route_for("compliance_repair", "device"),
+        100,
+        100,
+        raw_output="<p>Rejected repair candidate.</p>",
+        lifecycle="candidate_rejected",
+    )
+    engine._event(
+        pid,
+        "candidate_rejected",
+        "admin_review",
+        "",
+        {
+            "purpose": "manual",
+            "blockers": [{"id": "D21", "issue": "Audit prose."}],
+        },
+    )
+    assert engine.can_recover_locked_pre_signoff(pid) is False
+    assert engine.run_action(pid)["action"] == "rebuild_corrected_transaction"
+
+
 def test_sparse_long_form_pack_is_reconciled_before_paid_generation(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     pack = seal_source_pack({

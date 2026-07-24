@@ -821,6 +821,21 @@ class WorkbenchEngine:
             final_capacity
             or self._latest_pending_call(project_id, "final_signoff")
         )
+        zero_cost_candidate_failed = any(
+            event["event_type"] in {
+                "depth_reconciliation_incomplete",
+                "candidate_rejected",
+            }
+            and (
+                event["event_type"] == "depth_reconciliation_incomplete"
+                or (
+                    json.loads(event.get("payload") or "{}")
+                    if isinstance(event.get("payload"), str)
+                    else event.get("payload") or {}
+                ).get("purpose") == "manual"
+            )
+            for event in self.events(project_id)
+        )
         if (
             not p["article_hash"]
             and self.usage_summary(project_id)["calls"] == 1
@@ -846,6 +861,7 @@ class WorkbenchEngine:
         # safer repair and stranding a worse canonical article.
         if (
             final_available
+            and not zero_cost_candidate_failed
             and self._latest_rejected_candidate_output(
                 project_id, "compliance_repair"
             )
