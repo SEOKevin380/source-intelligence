@@ -128,20 +128,30 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
             mappings.append({"article_sentence": sentence, "claims": matches})
             sentence_lower = sentence.casefold()
             seller_attributed = bool(re.search(
-                r"\b(?:seller|offer|vendor|manufacturer|product page|"
+                r"\b(?:seller|brand|offer|vendor|manufacturer|product page|"
                 r"sales page|source materials?|materials?)\b.{0,50}"
                 r"\b(?:states?|says?|describes?|lists?|reports?|claims?|"
-                r"calls?|presents?|identifies?)\b",
+                r"calls?|presents?|identif(?:y|ies)|connects?|uses?|includes?|"
+                r"provides?|positions?)\b",
                 sentence_lower,
             ))
             # A seller/source noun phrase can govern a later reporting verb in
             # a long but single semantic block ("Seller headings such as ...
             # describe ..."). Do not impose an arbitrary 50-character window.
             seller_attributed = seller_attributed or bool(re.search(
-                r"^\s*(?:the\s+)?(?:seller|offer|vendor|manufacturer|"
+                r"^\s*(?:the\s+)?(?:seller|brand|offer|vendor|manufacturer|"
                 r"product page|sales page|source materials?|materials?)\b"
                 r".*\b(?:states?|says?|describes?|lists?|reports?|claims?|"
-                r"calls?|presents?|identifies?)\b",
+                r"calls?|presents?|identif(?:y|ies)|connects?|uses?|includes?|"
+                r"provides?|positions?)\b",
+                sentence_lower,
+            ))
+            seller_attributed = seller_attributed or bool(re.search(
+                r"\b(?:seller|vendor|manufacturer|brand|offer|product-page)"
+                r"[- ](?:described|reported|stated|presented|listed|claimed)\b|"
+                r"\b(?:seller|vendor|manufacturer|brand|offer)(?:'s|’s)\s+"
+                r"(?:description|language|message|instructions?|stated|"
+                r"reported|claimed|listed|presented)\b",
                 sentence_lower,
             ))
             seller_attributed = seller_attributed or bool(re.search(

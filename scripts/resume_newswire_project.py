@@ -40,7 +40,9 @@ def main() -> None:
     parser.add_argument("--project-id", required=True)
     parser.add_argument(
         "--action",
-        choices=("inspect", "recover", "continue", "rebuild", "deliver"),
+        choices=(
+            "inspect", "recover", "continue", "rebuild", "import", "deliver"
+        ),
         default="inspect",
     )
     parser.add_argument(
@@ -49,6 +51,14 @@ def main() -> None:
             "Operator-approved JSON correction to merge into the new sealed "
             "pack. Valid only with --action rebuild; never mutates the rejected "
             "project."
+        ),
+    )
+    parser.add_argument(
+        "--article-file",
+        help=(
+            "Publication-ready HTML to import at zero model cost. Valid only "
+            "with --action import; all deterministic and provenance gates "
+            "still run before final sign-off."
         ),
     )
     args = parser.parse_args()
@@ -150,6 +160,16 @@ def main() -> None:
         print(json.dumps({
             "rebuild_action": action,
             "new_project": snapshot(engine, new_id),
+        }, indent=2))
+    elif args.action == "import":
+        if not args.article_file:
+            raise RuntimeError("--action import requires --article-file")
+        article_path = Path(args.article_file).resolve()
+        article = article_path.read_text(encoding="utf-8")
+        engine.import_manual_article(args.project_id, article)
+        print(json.dumps({
+            "imported_from": str(article_path),
+            "after": snapshot(engine, args.project_id),
         }, indent=2))
     elif args.action == "deliver":
         result = engine.send_to_wordpress_draft(args.project_id)

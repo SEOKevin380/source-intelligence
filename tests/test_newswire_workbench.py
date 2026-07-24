@@ -3846,6 +3846,26 @@ def test_rejected_mixed_html_draft_recovers_before_reserved_review(tmp_path):
     assert engine.usage_summary(pid)["calls"] == 1
 
 
+def test_provenance_accepts_natural_local_seller_attribution():
+    pack = {
+        "publication_claims": {
+            "feature": [{
+                "claim_id": "feature-1",
+                "text": "Voltage stabilization",
+                "publication_treatment": "seller_attribution_required",
+            }]
+        }
+    }
+    variants = (
+        "<p>The seller connects EcoWatt with voltage stabilization.</p>",
+        "<p>The seller-described feature set includes voltage stabilization.</p>",
+        "<p>The brand’s stated features include voltage stabilization.</p>",
+    )
+    for article in variants:
+        ledger = build_article_claim_ledger(pack, article)
+        assert ledger["attribution_violations"] == []
+
+
 def test_depth_recovery_drops_mixed_unattributed_claim_blocks():
     article = (
         "<h2><strong>Operation</strong></h2>"
