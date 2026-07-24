@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
@@ -86,9 +87,15 @@ class RunJobRepository:
         return conn
 
     def _initialize(self) -> None:
-        with self._connect() as conn:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.executescript(
+        # Multiple web processes may construct the repository at the same
+        # instant during a deployment. SQLite does not consistently honor the
+        # connection timeout while changing journal mode, so retry this one
+        # idempotent schema transaction instead of failing app startup.
+        for attempt in range(20):
+            try:
+                with self._connect() as conn:
+                    conn.execute("PRAGMA journal_mode=WAL")
+                    conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS run_jobs (
                     id TEXT PRIMARY KEY,
@@ -125,7 +132,12 @@ class RunJobRepository:
                     ON run_jobs(project_id, source_hash, workflow_version, desired_action)
                     WHERE status IN ('pending','running');
                 """
-            )
+                    )
+                return
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc).casefold() or attempt == 19:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
 
     @staticmethod
     def _decode(row: sqlite3.Row | None) -> RunJob | None:
