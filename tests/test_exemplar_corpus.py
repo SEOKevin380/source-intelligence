@@ -76,3 +76,22 @@ def test_blueprint_uses_actual_publisher_and_intent_specific_spine():
     assert "AccessNewsWire formatting" in blueprint
     assert "Barchart advertorial formatting" not in blueprint
     assert "Required H2 spine:" in blueprint
+
+
+def test_energy_device_blueprint_is_product_first_not_audit_first():
+    pack = {
+        "product": {
+            "product_name": "EcoWatt Power Saver",
+            "product_type": "device",
+            "category": "energy device",
+        },
+        "intake_manifest": {"publishing_channel": "Barchart Advertorial"},
+        "contextual_source_profiles": [],
+    }
+    blueprint = build_generation_blueprint(pack, [])
+    assert "Why the Simple Plug-In Format Stands Out" in blueprint
+    assert "Current Pricing and Bundle Value" in blueprint
+    assert "The Case for EcoWatt Power Saver" in blueprint
+    assert "Source Record" not in blueprint
+    assert "Questions to Verify" not in blueprint
+    assert "Evidence" not in blueprint

@@ -572,8 +572,9 @@ compliance report below.
   treatment, FAQs, and a confident sourced close. Put at least
   two product-value sections before limitations. Explain sourced features,
   operation, setup, price, and best-fit readers affirmatively. Use exactly one
-  consolidated Material Limitations section. State each missing proof point
-  once. Keep alternatives to one short neutral paragraph without prices,
+  one compact Important Offer Details section. State each unavailable term
+  once without turning it into an investigation checklist. Keep alternatives
+  to one short neutral paragraph without prices,
   brands, or a shopping list. Never use headings such as “critical issue,”
   “claims versus,” “missing or unverified,” or “verified alternatives.”
 

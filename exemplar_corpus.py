@@ -410,88 +410,95 @@ def build_generation_blueprint(pack: dict, exemplars: list[dict]) -> str:
         "buyer_fit",
     )
     promises = {
-        "features": "seller-described features, evidence limits, and buyer fit",
-        "how_it_works": "how the seller describes operation and what remains unverified",
-        "pricing": "current package pricing, offer gaps, and purchase fit",
-        "trust": "source verification, seller transparency, and buyer checks",
-        "review": "a source-grounded evaluation for prospective buyers",
-        "buyer_fit": "who may find the offer relevant and what to verify first",
+        "features": "seller-described features, simple setup, and current pricing",
+        "how_it_works": "how the seller describes operation, setup, and timing",
+        "pricing": "current package pricing, per-unit value, and product features",
+        "trust": "the documented product offer, package identity, and current terms",
+        "review": "a clear product overview for prospective buyers",
+        "buyer_fit": "the product's simple format, stated features, and current offer",
     }
     headline_patterns = {
         "features": (
-            f"{product_name} Features and Pricing 2026: "
-            "What Seller Materials Say Before You Buy"
+            f"{product_name} Review 2026: Plug-In Setup, Features, and Pricing"
         ),
         "how_it_works": (
-            f"How {product_name} Works: Seller Claims, Evidence, and Buyer Fit"
+            f"How {product_name} Is Designed to Work: Features, Setup, and Pricing"
         ),
         "pricing": (
-            f"{product_name} Pricing 2026: Packages, Offer Gaps, and Buyer Fit"
+            f"{product_name} Pricing 2026: Packages, Features, and Current Value"
         ),
         "trust": (
-            f"{product_name} Buyer Guide 2026: Sources, Terms, and Trust Checks"
+            f"{product_name} Buyer Guide 2026: Product Details, Pricing, and Ordering"
         ),
         "review": (
-            f"{product_name} Review 2026: A Source-Grounded Buyer Assessment"
+            f"{product_name} Review 2026: Features, Setup, Pricing, and Key Details"
         ),
         "buyer_fit": (
-            f"{product_name} 2026: Who It May Fit and What to Verify First"
+            f"{product_name} 2026: Simple Setup, Stated Features, and Current Offer"
         ),
     }
     h2_spines = {
         "features": (
-            f"What {product_name} Is Designed to Offer",
-            "Seller-Described Features in Plain English",
-            "What the Source Record Does and Does Not Establish",
-            "Current Pricing and Package Information",
-            "Who May Find the Offer Worth Evaluating",
-            "Material Limitations and Questions to Verify",
-            "How to Review the Current Offer",
+            f"What {product_name} Is",
+            "Why the Simple Plug-In Format Stands Out",
+            "How the Seller Describes the Power-Management Features",
+            "Setup, Active Operation, and the Stated Optimization Period",
+            "Stated Specifications at a Glance",
+            "Current Pricing and Bundle Value",
+            "What the Documented Order Covers",
+            "Important Offer Details",
+            f"The Case for {product_name}",
         ),
         "how_it_works": (
-            f"How the Seller Describes {product_name}",
-            "The Claimed Operating Approach",
-            "What Evidence Is Available",
-            "Setup and Use Claims From Seller Materials",
-            "Current Pricing and Buyer Fit",
-            "Material Limitations and Questions to Verify",
-            "The Source-Grounded Takeaway",
+            f"What {product_name} Is",
+            "The Seller-Described Operating Approach",
+            "How Setup and Active Operation Are Described",
+            "The Stated Six-to-Eight-Week Period",
+            "Features and Specifications at a Glance",
+            "Current Pricing and Bundle Value",
+            "What the Documented Order Covers",
+            "Important Offer Details",
+            f"The Case for {product_name}",
         ),
         "pricing": (
-            f"Current {product_name} Package Information",
-            "What Each Available Offer Includes",
-            "Seller-Described Features That Shape Value",
-            "What Pricing Does Not Establish",
-            "Who May Find the Current Offer Relevant",
-            "Terms and Material Details to Verify",
-            "How to Review the Current Offer",
+            f"What {product_name} Is",
+            "The Features Behind the Offer",
+            "Simple Setup and Everyday Operation",
+            f"Current {product_name} Package Pricing",
+            "How the Four-Unit Bundle Changes the Per-Unit Price",
+            "What the Documented Order Covers",
+            "Important Offer Details",
+            f"The Case for {product_name}",
         ),
         "trust": (
-            f"What the Current Sources Establish About {product_name}",
-            "Seller Identity and Available Contact Information",
-            "Product Claims and Their Evidence Status",
-            "Current Pricing and Offer Transparency",
-            "Who May Find the Product Worth Evaluating",
-            "Material Limitations and Buyer Checks",
-            "The Source-Grounded Assessment",
+            f"What {product_name} Is",
+            "The Physical Product and Plug-In Setup",
+            "How the Seller Describes Its Features",
+            "Stated Specifications and Active Operation",
+            "Current Pricing and Package Identity",
+            "What the Documented Order Covers",
+            "Important Offer Details",
+            f"The Case for {product_name}",
         ),
         "review": (
             f"What {product_name} Is",
-            "The Strongest Seller-Described Features",
-            "How the Available Evidence Should Be Read",
-            "Current Pricing and Package Information",
-            "Best-Fit and Poor-Fit Buyers",
-            "Material Limitations and Questions to Verify",
-            "The Source-Grounded Takeaway",
+            "Why the Simple Plug-In Format Stands Out",
+            "The Seller-Described Power-Management Features",
+            "Setup, Operation, Timing, and Stated Specifications",
+            "Current Pricing and Bundle Value",
+            "What the Documented Order Covers",
+            "Important Offer Details",
+            f"The Case for {product_name}",
         ),
         "buyer_fit": (
-            f"Who {product_name} Is Designed For",
-            "Seller-Described Features That May Matter",
-            "How the Product Is Positioned to Work",
-            "Current Pricing and Offer Details",
-            "Who May Want a Different Approach",
-            "Material Limitations and Questions to Verify",
-            "How to Evaluate the Current Offer",
+            f"What {product_name} Is",
+            "Why the Low-Maintenance Format May Appeal",
+            "How the Product Is Positioned to Operate",
+            "Setup, Timing, and Stated Specifications",
+            "Current Pricing and Bundle Value",
+            "What the Documented Order Covers",
+            "Important Offer Details",
+            f"The Case for {product_name}",
         ),
     }
     spine = h2_spines.get(selected_intent, h2_spines["features"])

@@ -731,7 +731,7 @@ def test_publication_repair_neutralizes_prosecutorial_device_headings():
     assert "Missing or Unverified" not in repaired
     assert "Verified Alternatives" not in repaired
     assert "What Buyers Should Understand" in repaired
-    assert "Material Limitations and Questions to Verify" in repaired
+    assert "Important Offer Details" in repaired
     assert "How This Product Fits a Broader Buying Decision" in repaired
 
 
@@ -916,6 +916,51 @@ def test_exhausted_package_revoked_by_new_gate_gets_corrected_owner(tmp_path):
     assert action["action"] == "rebuild_corrected_transaction"
     assert action["label"] == "Start Corrected Transaction"
     assert action["may_start_paid_call"] is True
+
+
+def test_rejected_repair_preserves_final_call_and_gets_corrected_owner(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    engine.import_manual_article(
+        pid,
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<h2><strong>Important Offer Details</strong></h2>"
+        "<p>Confirm and verify the offer. Ask for records. Request proof. "
+        "Check every term. Confirm the model. Verify the seller. Ask about "
+        "testing. Request certification. Check delivery. Confirm returns. "
+        "Verify support. Ask about warranty. Request specifications. "
+        "Check the price.</p>",
+    )
+    engine._set_stage(pid, "admin_review")
+    engine._record_llm_call(
+        pid,
+        "compliance_repair",
+        route_for("compliance_repair", "device"),
+        100,
+        100,
+        raw_output="<p>Rejected repair.</p>",
+        lifecycle="candidate_rejected",
+    )
+    with patch.object(
+        engine, "can_recover_locked_pre_signoff", return_value=False
+    ):
+        action = engine.run_action(pid)
+    assert action["action"] == "rebuild_corrected_transaction"
+    assert engine._billable_call_count(pid, "final_signoff") == 0
 
 
 def test_sparse_long_form_pack_is_reconciled_before_paid_generation(tmp_path):

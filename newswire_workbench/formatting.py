@@ -472,11 +472,11 @@ def repair_publication_gates(html, platform, vertical, affiliate_href=""):
         (r"\bthe critical issue\b", "What Buyers Should Understand"),
         (
             r"\bwhat (?:information )?(?:is|remains) missing or unverified\b",
-            "Material Limitations and Questions to Verify",
+            "Important Offer Details",
         ),
         (
             r"\bwhat (?:information )?(?:is|remains) missing\b",
-            "Material Limitations and Questions to Verify",
+            "Important Offer Details",
         ),
         (
             r"\bverified alternatives?(?: with clear documentation)?\b",

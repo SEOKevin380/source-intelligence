@@ -44,7 +44,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v34-closed-loop-action-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "exemplar-first-human-advertorial-20260724-r19"
+WORKBENCH_RUNTIME_REVISION = "product-first-blueprint-owner-20260724-r20"
 
 STAGES = (
     "source_ready",
@@ -1172,6 +1172,27 @@ class WorkbenchEngine:
                 ),
             }
         semantic = preflight["semantic_review"]
+        repair_route = route_for("compliance_repair", project["vertical"])
+        repair_exhausted = (
+            self._billable_call_count(
+                project_id, "compliance_repair"
+            ) >= self._purpose_call_limit(
+                project, "compliance_repair", repair_route
+            )
+        )
+        if preflight["blockers"] and repair_exhausted:
+            return {
+                **action,
+                "action": "rebuild_corrected_transaction",
+                "label": "Start Corrected Transaction",
+                "reason": (
+                    "The paid repair candidate failed the deterministic "
+                    "editorial contract and no zero-cost recovery is safe. The "
+                    "remaining final-signoff call cannot be repurposed as a "
+                    "writer, so a new zero-usage transaction owns recovery."
+                ),
+                "may_start_paid_call": True,
+            }
         if (
             semantic["last_verdict"] == "not_approved"
             and semantic["remaining_calls"] == 0
