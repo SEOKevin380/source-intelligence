@@ -42,9 +42,9 @@ from .execution_budget import (
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v32-artifact-integrity"
+    "serp-differentiation-depth-v33-recovery-convergence"
 )
-WORKBENCH_RUNTIME_REVISION = "artifact-integrity-20260723-r2"
+WORKBENCH_RUNTIME_REVISION = "recovery-convergence-20260723-r3"
 
 STAGES = (
     "source_ready",
@@ -68,6 +68,12 @@ PAID_CALL_STAGES = frozenset({
     "seo_repair_needed",
     "seo_repaired",
 })
+LOCKED_STAGE_PURPOSE = {
+    "source_ready": "draft",
+    "drafted": "compliance",
+    "compliance_reviewed": "compliance_repair",
+    "revised": "final_signoff",
+}
 
 
 def _now():
@@ -586,6 +592,41 @@ class WorkbenchEngine:
             extract_sealed_pack(p["source_text"]),
             p.get("article_text") or "",
         )
+        provenance_findings = []
+        for item in result["claim_provenance"].get(
+            "coverage_violations"
+        ) or []:
+            provenance_findings.append({
+                "id": item.get("id", "P-COVERAGE"),
+                "category": "Claim provenance coverage",
+                "issue": item.get("issue", "Claim coverage is incomplete."),
+                "exact_text": "",
+                "replacement": (
+                    "Use distinct permitted claims from the sealed ledger."
+                ),
+            })
+        for index, item in enumerate(
+            result["claim_provenance"].get("attribution_violations") or [], 1
+        ):
+            provenance_findings.append({
+                "id": f"P-ATTR-{index}",
+                "category": "Claim provenance attribution",
+                "issue": (
+                    "A mapped sealed claim is missing its required "
+                    "seller/source attribution."
+                ),
+                "exact_text": item.get("article_sentence", ""),
+                "replacement": "Add the required claim-local attribution.",
+            })
+        existing_blocker_keys = {
+            (item.get("id"), item.get("exact_text", ""))
+            for item in result["blockers"]
+        }
+        for item in provenance_findings:
+            key = (item["id"], item.get("exact_text", ""))
+            if key not in existing_blocker_keys:
+                result["blockers"].append(item)
+        result["passed"] = not result["blockers"]
         result["ready_for_packaging"] = bool(
             result["ready_for_packaging"]
             and result["claim_provenance"]["passed"]
@@ -741,8 +782,7 @@ class WorkbenchEngine:
                 (
                     project["fact_source_hash"],
                     project["platform"],
-                    "%AUTOMATION CONTEXT VERSION: "
-                    + WORKBENCH_SOURCE_CONTEXT_VERSION + "%",
+                    "%═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══%",
                 ),
             ).fetchone()
         return bool(row and row["id"] == project["id"])
@@ -777,12 +817,32 @@ class WorkbenchEngine:
             p["article_text"],
         )
         final_route = route_for("final_signoff", p["vertical"])
+        current_blocker_ids = {
+            item.get("id") for item in current_preflight["blockers"]
+        }
+        final_capacity = (
+            self._billable_call_count(project_id, "final_signoff")
+            < self._purpose_call_limit(p, "final_signoff", final_route)
+        )
         if (
             not current_preflight["blockers"]
             and not current_provenance.get("coverage_violations")
             and not current_provenance.get("attribution_violations")
-            and self._billable_call_count(project_id, "final_signoff")
-            < self._purpose_call_limit(p, "final_signoff", final_route)
+            and final_capacity
+        ):
+            return True
+        # Recovery follows the current canonical artifact, never the rejected
+        # candidate's blocker list. A D18-only canonical can be safely expanded
+        # from already-paid immutable writer outputs while preserving the final
+        # review call.
+        if (
+            current_blocker_ids == {"D18"}
+            and not current_provenance.get("coverage_violations")
+            and final_capacity
+            and self._latest_successful_call_output(project_id, "draft")
+            and self._latest_successful_call_output(
+                project_id, "compliance_repair"
+            )
         ):
             return True
         relevant = [
@@ -820,10 +880,10 @@ class WorkbenchEngine:
             blocker_ids == {"D18"}
             and self.usage_summary(project_id)["calls"] == 3
             and self._billable_call_count(project_id, "final_signoff") == 0
-            and (self.projects_dir / project_id / "01-claude-draft.html").exists()
-            and (
-                self.projects_dir / project_id / "03-claude-revision.html"
-            ).exists()
+            and self._latest_successful_call_output(project_id, "draft")
+            and self._latest_successful_call_output(
+                project_id, "compliance_repair"
+            )
         )
         if depth_recoverable:
             return True
@@ -1070,7 +1130,18 @@ class WorkbenchEngine:
                 project["stage"] in PAID_CALL_STAGES
                 and run_calls >= call_limit
             ):
-                limit_reason = "paid_calls"
+                pending_purpose = LOCKED_STAGE_PURPOSE.get(project["stage"])
+                # A provider response already recorded in the durable ledger is
+                # not a new paid call. Replay it before applying the ceiling so
+                # a process crash cannot strand a completed final sign-off.
+                has_replay = bool(
+                    pending_purpose
+                    and self._latest_pending_call(
+                        project_id, pending_purpose
+                    )
+                )
+                if not has_replay:
+                    limit_reason = "paid_calls"
             if limit_reason:
                 self._event(
                     project_id, "workflow_run_limit", project["stage"],
@@ -1208,6 +1279,20 @@ class WorkbenchEngine:
                 },
             )
             return True
+        current_blocker_ids = {
+            item.get("id") for item in current_preflight["blockers"]
+        }
+        if (
+            current_blocker_ids == {"D18"}
+            and not current_provenance.get("coverage_violations")
+        ):
+            recovered = self._recover_depth_from_paid_artifacts(project_id)
+            if recovered and self.get(project_id)["stage"] == "admin_review":
+                # The recovery implementation normally advances the stage
+                # atomically with the accepted artifact. Keep the orchestration
+                # contract explicit for injected/custom recovery handlers too.
+                self._set_stage(project_id, "revised")
+            return recovered
         rejected = [
             event for event in self.events(project_id)
             if event["event_type"] == "candidate_rejected"
@@ -1247,6 +1332,8 @@ class WorkbenchEngine:
             event for event in self.events(project_id)
             if event["event_type"] == "pre_signoff_blocked"
         ]
+        if not relevant:
+            return False
         payload = relevant[-1].get("payload") or "{}"
         if isinstance(payload, str):
             payload = json.loads(payload)
@@ -1283,15 +1370,62 @@ class WorkbenchEngine:
         """Reconcile source-mapped blocks from immutable paid writer outputs."""
         p = self.get(project_id)
         project_dir = self.projects_dir / project_id
-        draft_path = project_dir / "01-claude-draft.html"
-        repair_path = project_dir / "03-claude-revision.html"
-        if not draft_path.exists() or not repair_path.exists():
+        draft_raw = self._latest_successful_call_output(project_id, "draft")
+        repair_raw = self._latest_successful_call_output(
+            project_id, "compliance_repair"
+        )
+        if not draft_raw or not repair_raw:
             return False
         from article_provenance import (
             build_article_claim_ledger,
             extract_sealed_pack,
         )
         sealed_pack = extract_sealed_pack(p["source_text"])
+        # Fix claim-local attribution in memory. The canonical artifact is not
+        # mutated unless the complete reconstructed candidate passes every
+        # deterministic and provenance gate below.
+        base_html = p["article_text"]
+        current_ledger = build_article_claim_ledger(sealed_pack, base_html)
+        if current_ledger.get("attribution_violations"):
+            attribution_soup = BeautifulSoup(base_html, "html.parser")
+            for violation in current_ledger["attribution_violations"]:
+                sentence = re.sub(
+                    r"\s+", " ",
+                    str(violation.get("article_sentence") or ""),
+                ).strip()
+                if not sentence:
+                    continue
+                treatment = violation.get("required_treatment")
+                prefix = (
+                    "Seller materials state that "
+                    if treatment == "seller_attribution_required"
+                    else "According to the recorded source, "
+                )
+                for node in attribution_soup.find_all(
+                    ["p", "li", "td", "th", "figcaption"]
+                ):
+                    node_text = re.sub(
+                        r"\s+", " ", node.get_text(" ", strip=True)
+                    ).strip()
+                    if sentence not in node_text:
+                        continue
+                    for text_node in node.find_all(string=True):
+                        raw = str(text_node)
+                        if sentence in raw:
+                            text_node.replace_with(
+                                raw.replace(
+                                    sentence,
+                                    prefix + sentence[:1].lower() + sentence[1:],
+                                    1,
+                                )
+                            )
+                            break
+                    else:
+                        node.insert(
+                            0, prefix + sentence[:1].lower() + sentence[1:] + " "
+                        )
+                    break
+            base_html = str(attribution_soup)
         missing_fact_tokens = {
             token
             for item in (
@@ -1312,7 +1446,7 @@ class WorkbenchEngine:
             if str(item.get("exact_text") or "").strip()
         ]
 
-        base = BeautifulSoup(p["article_text"], "html.parser")
+        base = BeautifulSoup(base_html, "html.parser")
         existing_blocks = [
             re.sub(r"\s+", " ", node.get_text(" ", strip=True)).casefold()
             for node in base.find_all(["p", "li"])
@@ -1322,17 +1456,13 @@ class WorkbenchEngine:
             for value in existing_blocks if value
         ]
         additions = []
-        assembled_words = self._article_word_count(p["article_text"])
+        assembled_words = self._article_word_count(base_html)
         target_words = publication_profile(
             p["platform"], p["vertical"]
         )["recovery_target"]
-        repair_raw = self._latest_successful_call_output(
-            project_id, "compliance_repair"
-        )
         sources = (
-            repair_raw or repair_path.read_text(),
-            self._latest_successful_call_output(project_id, "draft")
-            or draft_path.read_text(),
+            repair_raw,
+            draft_raw,
         )
         for source_html in sources:
             source = BeautifulSoup(source_html, "html.parser")
@@ -1380,7 +1510,24 @@ class WorkbenchEngine:
                         lowered,
                     )
                 )
-                if not maps_permitted_claim and not explains_recorded_gap:
+                neutral_buyer_guidance = bool(
+                    re.search(
+                        r"\b(?:buyer|reader|shopper|before ordering|before "
+                        r"buying|verify|confirm|compare|check the current|"
+                        r"decision|fit|priorit)\b",
+                        lowered,
+                    )
+                    and re.search(
+                        r"\b(?:verify|confirm|compare|check|consider|review|"
+                        r"ask|decide|look for|weigh)\b",
+                        lowered,
+                    )
+                )
+                if (
+                    not maps_permitted_claim
+                    and not explains_recorded_gap
+                    and not neutral_buyer_guidance
+                ):
                     continue
                 block_findings = deterministic_findings(
                     str(node), p["platform"], p["vertical"]
@@ -1411,40 +1558,46 @@ class WorkbenchEngine:
         merged = repair_source_grounding(
             str(base), p["source_text"], p["vertical"]
         )
-        self._set_article(
-            p, merged, "revised", "03c-depth-reconciled.html", bump=False
-        )
-        recovered = self.get(project_id)
         preflight = audit_article(
-            recovered["article_text"],
-            recovered["platform"],
-            recovered["vertical"],
-            _source_affiliate_link(recovered["source_text"]),
+            merged,
+            p["platform"],
+            p["vertical"],
+            _source_affiliate_link(p["source_text"]),
         )
-        self._persist_preflight_article(recovered, preflight, "revised")
-        recovered = self.get(project_id)
-        remaining = audit_article(
-            recovered["article_text"],
-            recovered["platform"],
-            recovered["vertical"],
-            _source_affiliate_link(recovered["source_text"]),
-        )["blockers"]
+        candidate = preflight["article"]
+        candidate_provenance = build_article_claim_ledger(
+            sealed_pack, candidate
+        )
+        remaining = list(preflight["blockers"])
+        remaining.extend(candidate_provenance.get("coverage_violations") or [])
+        remaining.extend(
+            candidate_provenance.get("attribution_violations") or []
+        )
         if remaining:
-            self._set_stage(project_id, "admin_review")
             self._event(
                 project_id, "depth_reconciliation_incomplete", "admin_review",
-                recovered["article_hash"], {
+                p["article_hash"], {
                     "remaining_blockers": remaining,
                     "paid_calls_added": 0,
                     "operator_decision_required": False,
+                    "canonical_hash_preserved": p["article_hash"],
                 },
             )
             return False
+        if not self._set_article(
+            p,
+            candidate,
+            "revised",
+            "03c-depth-reconciled.html",
+            bump=False,
+        ):
+            return False
+        recovered = self.get(project_id)
         self._event(
             project_id, "depth_reconciled_from_paid_artifacts", "revised",
             recovered["article_hash"], {
                 "source_artifacts": [
-                    draft_path.name, repair_path.name
+                    "llm_calls:draft", "llm_calls:compliance_repair"
                 ],
                 "added_blocks": len(additions),
                 "final_words": self._article_word_count(

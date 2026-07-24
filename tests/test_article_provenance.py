@@ -90,3 +90,41 @@ def test_seller_calls_phrase_satisfies_required_attribution():
     assert ledger["used_claim_count"] == 1
     assert ledger["mapped_sentence_count"] == 1
     assert not ledger["attribution_violations"]
+
+
+def test_long_seller_subject_governs_later_reporting_verb():
+    pack = {
+        "publication_claims": {
+            "feature": [{
+                "claim_id": "long-seller-subject",
+                "text": "Voltage stabilization and surge reduction",
+                "publication_treatment": "seller_attribution_required",
+            }]
+        }
+    }
+    ledger = build_article_claim_ledger(
+        pack,
+        "<p>Seller headings such as “Stabilizes the Power” and “Reduces "
+        "Surges,” which appear beside other promotional descriptions on the "
+        "offer page, describe voltage stabilization and surge reduction.</p>",
+    )
+    assert ledger["used_claim_count"] == 1
+    assert not ledger["attribution_violations"]
+
+
+def test_heading_is_not_joined_to_unattributed_pricing_paragraph():
+    pack = {
+        "publication_claims": {
+            "pricing": [{
+                "claim_id": "price",
+                "text": "Single Unit $49.99",
+                "publication_treatment": "seller_attribution_required",
+            }]
+        }
+    }
+    ledger = build_article_claim_ledger(
+        pack,
+        "<h2>Seller Pricing</h2><p>Single Unit: $49.99.</p>",
+    )
+    assert ledger["used_claim_count"] == 1
+    assert ledger["attribution_violations"]

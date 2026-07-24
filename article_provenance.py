@@ -7,6 +7,8 @@ import html
 import json
 import re
 
+from bs4 import BeautifulSoup
+
 
 def extract_sealed_pack(source_text: str) -> dict:
     marker = "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══"
@@ -31,12 +33,25 @@ def _tokens(value: str) -> set[str]:
 
 
 def _sentences(article: str) -> list[str]:
-    plain = html.unescape(re.sub(r"<[^>]+>", " ", article))
-    plain = re.sub(r"\s+", " ", plain).strip()
-    return [
-        item.strip() for item in re.split(r"(?<=[.!?])\s+", plain)
-        if len(item.strip()) >= 20
-    ]
+    """Split within semantic blocks so headings cannot contaminate claims.
+
+    Flattening the entire document joined an H2 to its following paragraph.
+    That changed the apparent subject of pricing and feature sentences and
+    produced both false mappings and hidden attribution failures.
+    """
+    soup = BeautifulSoup(html.unescape(article or ""), "html.parser")
+    blocks = soup.find_all(["p", "li", "td", "th", "figcaption"])
+    if not blocks:
+        blocks = [soup]
+    sentences = []
+    for block in blocks:
+        plain = re.sub(r"\s+", " ", block.get_text(" ", strip=True)).strip()
+        sentences.extend(
+            item.strip()
+            for item in re.split(r"(?<=[.!?])\s+", plain)
+            if len(item.strip()) >= 20
+        )
+    return sentences
 
 
 def build_article_claim_ledger(pack: dict, article: str) -> dict:
@@ -90,6 +105,16 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
                 r"\b(?:states?|says?|describes?|lists?|reports?|claims?|"
                 r"calls?|presents?|identifies?)\b|"
                 r"\baccording to\b",
+                sentence_lower,
+            ))
+            # A seller/source noun phrase can govern a later reporting verb in
+            # a long but single semantic block ("Seller headings such as ...
+            # describe ..."). Do not impose an arbitrary 50-character window.
+            seller_attributed = seller_attributed or bool(re.search(
+                r"^\s*(?:the\s+)?(?:seller|offer|vendor|manufacturer|"
+                r"product page|sales page|source materials?|materials?)\b"
+                r".*\b(?:states?|says?|describes?|lists?|reports?|claims?|"
+                r"calls?|presents?|identifies?)\b",
                 sentence_lower,
             ))
             source_attributed = seller_attributed or bool(re.search(

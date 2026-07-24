@@ -1944,8 +1944,7 @@ else:
             _is_rebuild = bool(
                 _prior_project
                 and (
-                    _prior_project["stage"] == "package_ready"
-                    or (
+                    (
                         _prior_project["stage"] == "admin_review"
                         and not _mechanical_resume
                     )
@@ -1953,6 +1952,7 @@ else:
                         _prior_diagnostics
                         and _prior_diagnostics.get("workflow_version")
                         != WORKBENCH_SOURCE_CONTEXT_VERSION
+                        and not _mechanical_resume
                     )
                 )
             )
@@ -1960,6 +1960,10 @@ else:
                 _prior_project
                 and (not _is_rebuild or _mechanical_resume)
                 and _prior_project["stage"] != "package_ready"
+            )
+            _is_complete = bool(
+                _prior_project
+                and _prior_project["stage"] == "package_ready"
             )
             if _prior_project:
                 _prior_usage = _workbench.usage_summary(_prior_project_id)
@@ -2168,11 +2172,15 @@ else:
                 _pending_project_id = None
             if st.button(
                 (
-                    "Rebuild With Latest Workflow"
-                    if _is_rebuild
+                    "Package Ready — No Rebuild Needed"
+                    if _is_complete
                     else (
-                        "Resume Current Workflow"
-                        if _is_resume else "Build Draft Automatically"
+                        "Rebuild With Latest Workflow"
+                        if _is_rebuild
+                        else (
+                            "Resume Current Workflow"
+                            if _is_resume else "Build Draft Automatically"
+                        )
                     )
                 ),
                 type="primary",
@@ -2180,6 +2188,7 @@ else:
                 disabled=(
                     not _ready_to_run
                     or bool(_pending_project_id)
+                    or _is_complete
                     or bool(
                         _prior_preflight
                         and not _prior_preflight["system_contract"]["passed"]

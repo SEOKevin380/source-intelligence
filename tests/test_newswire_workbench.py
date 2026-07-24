@@ -1663,7 +1663,8 @@ def test_three_call_d18_stop_is_resumable_from_paid_artifacts(tmp_path):
     engine._write(pid, "01-claude-draft.html", article)
     for purpose in ("draft", "compliance", "compliance_repair"):
         engine._record_llm_call(
-            pid, purpose, route_for(purpose, "device"), 100, 100
+            pid, purpose, route_for(purpose, "device"), 100, 100,
+            raw_output=article,
         )
     engine._set_stage(pid, "admin_review")
     engine._event(
@@ -1696,7 +1697,8 @@ def test_depth_only_preflight_recovers_inline_without_operator_resume(tmp_path):
     engine._write(pid, "01-claude-draft.html", article)
     for purpose in ("draft", "compliance", "compliance_repair"):
         engine._record_llm_call(
-            pid, purpose, route_for(purpose, "device"), 100, 100
+            pid, purpose, route_for(purpose, "device"), 100, 100,
+            raw_output=article,
         )
 
     preflight = {
@@ -2011,6 +2013,83 @@ def test_clean_admin_artifact_ignores_stale_depth_event_and_reaches_signoff(
     assert engine.get(pid)["stage"] == "revised"
     assert any(
         event["event_type"] == "clean_canonical_artifact_recovered"
+        for event in engine.events(pid)
+    )
+
+
+def test_offline_preflight_surfaces_provenance_with_deterministic_blockers(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    engine.import_manual_article(
+        pid,
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<p>Literal product fact 0.</p>",
+    )
+    result = engine.offline_preflight(pid)
+    assert any(item["id"].startswith("P-ATTR-") for item in result["blockers"])
+    assert result["passed"] is False
+
+
+def test_recorded_final_signoff_replays_before_global_call_ceiling(
+    tmp_path, monkeypatch,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    article = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<p>Seller materials state Literal product fact 0.</p>"
+        "<p>Seller materials state Literal product fact 1.</p>"
+        "<p>Seller materials state Literal product fact 2.</p>"
+    )
+    engine._set_article(engine.get(pid), article, "revised", "article.html")
+    for purpose in ("draft", "compliance", "compliance_repair"):
+        engine._record_llm_call(
+            pid, purpose, route_for(purpose, "device"), 100, 100,
+            raw_output="applied", lifecycle="applied",
+        )
+    engine._record_llm_call(
+        pid, "final_signoff", route_for("final_signoff", "device"), 100, 100,
+        raw_output='{"verdict":"approved"}',
+        lifecycle="provider_succeeded",
+    )
+
+    def apply_recorded_response(project_id, _instructions):
+        assert engine._latest_pending_call(project_id, "final_signoff")
+        engine._mark_latest_pending_call_applied(project_id, "final_signoff")
+        engine._set_stage(project_id, "admin_review")
+
+    monkeypatch.setattr(engine, "_run_next_unlocked", apply_recorded_response)
+    result = engine.run_to_completion(pid, "", max_steps=2)
+    assert result["stage"] == "admin_review"
+    assert engine._latest_pending_call(pid, "final_signoff") is None
+    assert not any(
+        event["event_type"] == "workflow_run_limit"
         for event in engine.events(pid)
     )
 
