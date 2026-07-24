@@ -587,6 +587,9 @@ def repair_source_grounding(html, source_text, vertical):
     )
     for node in list(soup.find_all(["p", "li"])):
         lowered = node.get_text(" ", strip=True).casefold()
+        if lowered == "sealed-depth-recovery-v2":
+            node.decompose()
+            continue
         normalized_node = re.sub(r"[^a-z0-9]+", " ", lowered).strip()
         words = set(re.findall(r"[a-z0-9]+", normalized_node))
         excluded_echo = False

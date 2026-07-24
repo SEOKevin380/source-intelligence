@@ -44,7 +44,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v34-closed-loop-action-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "sealed-depth-recovery-20260724-r11"
+WORKBENCH_RUNTIME_REVISION = "sealed-depth-recovery-20260724-r12"
 
 STAGES = (
     "source_ready",
@@ -1829,8 +1829,8 @@ class WorkbenchEngine:
             return ""
 
         parts = [
-            "<!-- sealed-depth-recovery-v2 -->",
-            "<h2><strong>How to Use the Available Source Record</strong></h2>",
+            '<h2 data-sealed-depth-recovery="v3"><strong>'
+            "How to Use the Available Source Record</strong></h2>",
             (
                 f"<p>The sealed record gives readers a defined but limited "
                 f"basis for evaluating {name}. Seller materials describe the "
@@ -2321,7 +2321,7 @@ class WorkbenchEngine:
         elif stage == "revised":
             if (
                 self._uses_locked_call_path(p)
-                and "<!-- sealed-depth-recovery-v2 -->"
+                and 'data-sealed-depth-recovery="v3"'
                 not in p["article_text"]
                 and any(
                     event["event_type"]
