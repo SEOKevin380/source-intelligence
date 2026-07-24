@@ -126,10 +126,10 @@ def _source_affiliate_link(source_text):
 
 class WorkbenchEngine:
     def __init__(self, root=None):
-        self.root = Path(root or os.environ.get(
-            "NEWSWIRE_WORKBENCH_HOME",
-            Path.home() / ".source-intelligence" / "newswire-workbench",
-        )).expanduser()
+        if root is None:
+            from config import NEWSWIRE_WORKBENCH_PATH
+            root = NEWSWIRE_WORKBENCH_PATH
+        self.root = Path(root).expanduser()
         self.projects_dir = self.root / "projects"
         self.exports_dir = self.root / "exports"
         self.projects_dir.mkdir(parents=True, exist_ok=True)

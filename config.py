@@ -14,10 +14,24 @@ import re
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Database lives OUTSIDE iCloud to prevent SQLite WAL corruption from sync.
-# On first run, if DB exists at old iCloud path but not at new path, it's copied.
-_LOCAL_DATA_DIR = os.path.expanduser("~/.source-intelligence/data")
+# Production may point this at a mounted Railway volume (for example
+# /data/source-intelligence).  Keeping every authoritative SQLite artifact
+# below one explicit root prevents the CRM and newswire ledger from silently
+# landing on a disposable container filesystem.
+_LOCAL_DATA_DIR = os.path.abspath(os.path.expanduser(
+    os.environ.get(
+        "SOURCE_INTELLIGENCE_DATA_DIR",
+        "~/.source-intelligence/data",
+    )
+))
 os.makedirs(_LOCAL_DATA_DIR, exist_ok=True)
 DB_PATH = os.path.join(_LOCAL_DATA_DIR, "source_intelligence.db")
+NEWSWIRE_WORKBENCH_PATH = os.path.abspath(os.path.expanduser(
+    os.environ.get(
+        "NEWSWIRE_WORKBENCH_HOME",
+        os.path.join(_LOCAL_DATA_DIR, "newswire-workbench"),
+    )
+))
 
 # One-time migration from old iCloud location
 _OLD_DB_PATH = os.path.join(BASE_DIR, "source_intelligence.db")

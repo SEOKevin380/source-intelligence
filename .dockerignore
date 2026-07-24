@@ -1,0 +1,11 @@
+.git
+.github
+.pytest_cache
+__pycache__
+*.pyc
+.env
+.streamlit/secrets.toml
+output
+source_intelligence.db
+*.db-wal
+*.db-shm
