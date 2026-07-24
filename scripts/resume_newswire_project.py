@@ -40,7 +40,7 @@ def main() -> None:
     parser.add_argument("--project-id", required=True)
     parser.add_argument(
         "--action",
-        choices=("inspect", "recover", "continue", "rebuild"),
+        choices=("inspect", "recover", "continue", "rebuild", "deliver"),
         default="inspect",
     )
     parser.add_argument(
@@ -150,6 +150,12 @@ def main() -> None:
         print(json.dumps({
             "rebuild_action": action,
             "new_project": snapshot(engine, new_id),
+        }, indent=2))
+    elif args.action == "deliver":
+        result = engine.send_to_wordpress_draft(args.project_id)
+        print(json.dumps({
+            "wordpress_draft": result,
+            "after": snapshot(engine, args.project_id),
         }, indent=2))
 
 
