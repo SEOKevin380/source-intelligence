@@ -898,6 +898,26 @@ def test_unapproved_package_ready_project_does_not_retry_wordpress(
     assert action["may_start_paid_call"] is False
 
 
+def test_exhausted_package_revoked_by_new_gate_gets_corrected_owner(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Device", "Barchart Advertorial", "legacy source", "device"
+    )
+    engine._set_stage(pid, "package_ready")
+    preflight = {
+        "blockers": [{"id": "D21", "issue": "Compliance audit prose."}],
+        "semantic_review": {"remaining_calls": 0},
+        "publication_ready": False,
+        "ready_for_packaging": False,
+        "policy_intelligence": {},
+    }
+    with patch.object(engine, "offline_preflight", return_value=preflight):
+        action = engine.run_action(pid)
+    assert action["action"] == "rebuild_corrected_transaction"
+    assert action["label"] == "Start Corrected Transaction"
+    assert action["may_start_paid_call"] is True
+
+
 def test_sparse_long_form_pack_is_reconciled_before_paid_generation(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     pack = seal_source_pack({

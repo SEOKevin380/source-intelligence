@@ -1057,6 +1057,20 @@ class WorkbenchEngine:
             "may_start_paid_call": False,
         }
         if stage == "package_ready":
+            semantic = preflight["semantic_review"]
+            if preflight["blockers"] and semantic["remaining_calls"] == 0:
+                return {
+                    **action,
+                    "action": "rebuild_corrected_transaction",
+                    "label": "Start Corrected Transaction",
+                    "reason": (
+                        "A newer deterministic contract revoked publication "
+                        "readiness for this exhausted package. Preserve the old "
+                        "hash and WordPress draft as immutable evidence, then "
+                        "start one zero-usage corrected transaction."
+                    ),
+                    "may_start_paid_call": True,
+                }
             if preflight["publication_ready"]:
                 return {
                     **action,
