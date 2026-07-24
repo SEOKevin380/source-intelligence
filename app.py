@@ -1947,7 +1947,10 @@ else:
                 }
             )
             _action_name = _run_action["action"]
-            _is_rebuild = _action_name == "rebuild_obsolete_workflow"
+            _is_rebuild = _action_name in {
+                "rebuild_obsolete_workflow",
+                "rebuild_corrected_transaction",
+            }
             _is_resume = _action_name in {
                 "resume", "resume_zero_cost", "resume_paid_reserved"
             }
@@ -1958,6 +1961,7 @@ else:
                 "resume_zero_cost",
                 "resume_paid_reserved",
                 "rebuild_obsolete_workflow",
+                "rebuild_corrected_transaction",
             }
             _action_prerequisite_missing = bool(
                 _action_requires_models and not _ready_to_run

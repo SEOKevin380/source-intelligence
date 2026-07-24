@@ -44,7 +44,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v34-closed-loop-action-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "closed-loop-pricing-repair-20260723-r7"
+WORKBENCH_RUNTIME_REVISION = "corrected-transaction-owner-20260723-r8"
 
 STAGES = (
     "source_ready",
@@ -1146,13 +1146,15 @@ class WorkbenchEngine:
         ):
             return {
                 **action,
-                "action": "system_blocked",
-                "label": "Run Requires a New Corrected Transaction",
+                "action": "rebuild_corrected_transaction",
+                "label": "Start Corrected Transaction",
                 "reason": (
                     "The exact artifact was rejected and its independent "
-                    "review budget is exhausted. Blind resume or rebuild is "
-                    "not authorized until the failure family is corrected."
+                    "review budget is exhausted. The failure family is now "
+                    "enforced by the current deterministic contract, so a new "
+                    "zero-usage transaction is the owned next action."
                 ),
+                "may_start_paid_call": True,
             }
         if semantic["remaining_calls"] > 0 and not preflight["blockers"]:
             return {
