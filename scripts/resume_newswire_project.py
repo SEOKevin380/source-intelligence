@@ -39,7 +39,7 @@ def main() -> None:
     parser.add_argument("--project-id", required=True)
     parser.add_argument(
         "--action",
-        choices=("inspect", "recover", "continue"),
+        choices=("inspect", "recover", "continue", "rebuild"),
         default="inspect",
     )
     args = parser.parse_args()
@@ -63,6 +63,33 @@ def main() -> None:
         print(json.dumps({
             "run_stage": result["stage"],
             "after": snapshot(engine, args.project_id),
+        }, indent=2))
+    elif args.action == "rebuild":
+        from article_provenance import extract_sealed_pack
+        from newswire_workbench.engine import WORKBENCH_SOURCE_CONTEXT_VERSION
+
+        action = engine.run_action(
+            args.project_id, WORKBENCH_SOURCE_CONTEXT_VERSION
+        )
+        if action["action"] != "rebuild_corrected_transaction":
+            raise RuntimeError(
+                "A corrected transaction can only replace an exhausted, "
+                "exact-hash-rejected project."
+            )
+        old = engine.get(args.project_id)
+        new_id = engine.create_project_from_pack(
+            extract_sealed_pack(old["source_text"]),
+            old["platform"],
+            vertical=old["vertical"],
+            force_new=True,
+        )
+        if new_id == args.project_id:
+            raise RuntimeError("Corrected transaction reused the rejected project.")
+        if engine.usage_summary(new_id)["calls"] != 0:
+            raise RuntimeError("Corrected transaction inherited paid-call usage.")
+        print(json.dumps({
+            "rebuild_action": action,
+            "new_project": snapshot(engine, new_id),
         }, indent=2))
 
 
