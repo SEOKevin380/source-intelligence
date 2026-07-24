@@ -267,7 +267,7 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert project["stage"] == "source_ready"
     assert (
         "AUTOMATION CONTEXT VERSION: "
-            "serp-differentiation-depth-v30-current-artifact-recovery"
+            "serp-differentiation-depth-v31-candidate-acceptance"
         in project["source_text"]
     )
     assert "SEALED CURRENT-PRODUCT SOURCE PACK" in project["source_text"]
@@ -326,7 +326,7 @@ def test_explicit_rebuild_reuses_active_project_then_rebuilds_terminal(tmp_path)
     assert engine.latest_project_from_pack(
         pack,
         "AccessNewsWire",
-            "serp-differentiation-depth-v30-current-artifact-recovery",
+            "serp-differentiation-depth-v31-candidate-acceptance",
     ) == rebuilt
     assert engine.latest_project_from_pack(
         pack, "AccessNewsWire", "nonexistent-future-workflow"
@@ -355,7 +355,7 @@ def test_only_latest_durable_project_is_authoritative_run_target(tmp_path):
     newer = engine.create_project_from_pack(
         pack, "Barchart Advertorial", force_new=True
     )
-    version = "serp-differentiation-depth-v30-current-artifact-recovery"
+    version = "serp-differentiation-depth-v31-candidate-acceptance"
     assert not engine.is_authoritative_run_target(
         older, pack, "Barchart Advertorial", version
     )
@@ -789,6 +789,36 @@ def test_current_workflow_reserves_one_call_per_required_purpose(tmp_path):
             pid, "quality_rescue", route_for("quality_rescue", "device")
         )
     assert engine.usage_details(pid)[0]["stage"] == "draft"
+
+
+def test_current_workflow_rejects_out_of_order_paid_calls(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    with pytest.raises(RuntimeError, match="requires exactly one completed draft"):
+        engine._assert_call_budget(
+            pid, "compliance", route_for("compliance", "device")
+        )
+    with pytest.raises(RuntimeError, match="requires the completed draft"):
+        engine._assert_call_budget(
+            pid, "compliance_repair",
+            route_for("compliance_repair", "device"),
+        )
+    with pytest.raises(RuntimeError, match="requires the completed draft"):
+        engine._assert_call_budget(
+            pid, "final_signoff", route_for("final_signoff", "device")
+        )
 
 
 def test_prior_version_sealed_project_remains_locked(tmp_path):
@@ -1666,7 +1696,7 @@ def test_depth_only_preflight_recovers_inline_without_operator_resume(tmp_path):
     )
 
 
-def test_short_first_draft_uses_writer_repair_before_independent_review(
+def test_short_first_draft_reaches_compliance_before_writer_repair(
     tmp_path,
 ):
     engine = WorkbenchEngine(tmp_path)
@@ -1690,33 +1720,31 @@ def test_short_first_draft_uses_writer_repair_before_independent_review(
     )
     with patch.object(engine, "_claude", return_value=short):
         engine._run_next_unlocked(pid, "")
-    assert engine.get(pid)["stage"] == "compliance_reviewed"
-    assert engine.get(pid)["last_report"]["approval_purpose"] == (
-        "pre_review_quality"
-    )
-    assert not [
-        call for call in engine.usage_details(pid)
-        if call["stage"] == "compliance"
-    ]
-
-    repaired = (
-        "<h1>Test Device Review</h1>"
-        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
-        "<p>Seller materials state Literal product fact 0.</p>"
-        "<p>Seller materials state Literal product fact 1.</p>"
-        "<p>Seller materials state Literal product fact 2.</p>"
-        + "".join(
-            f"<p>Reader decision context {index} explains what is recorded "
-            "and what a buyer should verify before ordering this device.</p>"
-            for index in range(100)
-        )
-    )
-    with patch.object(engine, "_claude", return_value=repaired):
-        engine._run_next_unlocked(pid, "")
     assert engine.get(pid)["stage"] == "drafted"
+    reviewed_hash = engine.get(pid)["article_hash"]
+    rejection = {
+        "verdict": "not_approved",
+        "mandatory_count": 1,
+        "source_accuracy": {"verified": 1, "checked": 3},
+        "mandatory_edits": [{
+            "id": "M1",
+            "category": "Editorial depth",
+            "issue": "Expand source-grounded reader coverage.",
+            "exact_text": "",
+            "replacement": "Use all permitted claims and reader questions.",
+        }],
+        "recommended_edits": [],
+        "approved_elements": [],
+        "notes": [],
+        "reviewed_article_hash": reviewed_hash,
+        "approval_purpose": "compliance",
+    }
+    with patch.object(engine, "_openai_review", return_value=rejection):
+        engine._run_next_unlocked(pid, "")
+    assert engine.get(pid)["stage"] == "compliance_reviewed"
 
 
-def test_incomplete_pre_review_repair_preserves_reviewer_call(tmp_path):
+def test_rejected_repair_candidate_preserves_canonical_and_review(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     pack = seal_source_pack({
         "product": {
@@ -1731,21 +1759,52 @@ def test_incomplete_pre_review_repair_preserves_reviewer_call(tmp_path):
     pid = engine.create_project_from_pack(
         pack, "Barchart Advertorial", force_new=True
     )
-    short = (
-        "<h1>Test Device Review</h1>"
+    original = (
         "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
         "<p>Seller materials state Literal product fact 0.</p>"
+        "<p>Seller materials state Literal product fact 1.</p>"
+        "<p>Seller materials state Literal product fact 2.</p>"
+        + "".join(
+            f"<p>Buyer context {index} explains what is recorded and what "
+            "readers should verify with the seller before ordering.</p>"
+            for index in range(100)
+        )
     )
-    with patch.object(engine, "_claude", return_value=short):
+    engine.import_manual_article(pid, original)
+    before = engine.get(pid)
+    report = {
+        "verdict": "not_approved",
+        "mandatory_count": 1,
+        "mandatory_edits": [{
+            "id": "M1", "category": "Source accuracy",
+            "issue": "Remove unsupported claims.", "exact_text": "",
+            "replacement": "Use only sealed facts.",
+        }],
+        "recommended_edits": [], "approved_elements": [], "notes": [],
+        "reviewed_article_hash": before["article_hash"],
+        "approval_purpose": "compliance",
+    }
+    engine._set_report(
+        before, report, "compliance_reviewed", "review.json"
+    )
+    unsafe = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<p>Utilities measure reactive power and utilities charge for it.</p>"
+        "<p>Residential electricity billing cannot reduce reactive power.</p>"
+        + "".join(
+            f"<p>Unsupported general discussion {index} repeats market and "
+            "technical context that is not contained in the sealed record.</p>"
+            for index in range(120)
+        )
+    )
+    with patch.object(engine, "_claude", return_value=unsafe):
         engine._run_next_unlocked(pid, "")
-        engine._run_next_unlocked(pid, "")
-    assert engine.get(pid)["stage"] == "admin_review"
-    assert not [
-        call for call in engine.usage_details(pid)
-        if call["stage"] == "compliance"
-    ]
+    after = engine.get(pid)
+    assert after["stage"] == "admin_review"
+    assert after["article_hash"] == before["article_hash"]
+    assert after["last_report"]["mandatory_edits"] == report["mandatory_edits"]
     assert any(
-        event["event_type"] == "pre_review_repair_incomplete"
+        event["event_type"] == "candidate_rejected"
         for event in engine.events(pid)
     )
 

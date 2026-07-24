@@ -42,7 +42,7 @@ from .execution_budget import (
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v30-current-artifact-recovery"
+    "serp-differentiation-depth-v31-candidate-acceptance"
 )
 
 STAGES = (
@@ -1538,73 +1538,6 @@ class WorkbenchEngine:
                 p, article, "drafted", "01-claude-draft.html",
                 call_purpose="draft",
             )
-            drafted = self.get(project_id)
-            from article_provenance import (
-                build_article_claim_ledger,
-                extract_sealed_pack,
-            )
-            pre_review = audit_article(
-                drafted["article_text"],
-                drafted["platform"],
-                drafted["vertical"],
-                _source_affiliate_link(drafted["source_text"]),
-            )
-            provenance = build_article_claim_ledger(
-                extract_sealed_pack(drafted["source_text"]),
-                drafted["article_text"],
-            )
-            owned = [
-                item for item in pre_review["blockers"]
-                if item.get("id") == "D18"
-            ]
-            for violation in provenance.get("coverage_violations") or []:
-                owned.append({
-                    "id": violation["id"],
-                    "category": "Claim provenance",
-                    "issue": violation["issue"],
-                    "exact_text": "",
-                    "replacement": (
-                        "Use the complete relevant permitted claim ledger with "
-                        "the required attribution while expanding missing "
-                        "reader jobs."
-                    ),
-                })
-            if owned:
-                report = {
-                    "verdict": "not_approved",
-                    "mandatory_count": len(owned),
-                    "source_accuracy": {
-                        "verified": provenance["used_claim_count"],
-                        "checked": provenance["publication_claim_count"],
-                    },
-                    "mandatory_edits": owned,
-                    "recommended_edits": [],
-                    "approved_elements": [],
-                    "notes": [
-                        "Zero-cost pre-review detected deterministic depth or "
-                        "claim-coverage failure before spending the independent "
-                        "review call."
-                    ],
-                    "reviewed_article_hash": drafted["article_hash"],
-                    "approval_purpose": "pre_review_quality",
-                }
-                self._set_report(
-                    drafted,
-                    report,
-                    "compliance_reviewed",
-                    "01b-pre-review-quality.json",
-                )
-                self._event(
-                    project_id,
-                    "pre_review_writer_repair_required",
-                    "compliance_reviewed",
-                    drafted["article_hash"],
-                    {
-                        "blockers": owned,
-                        "independent_review_call_preserved": True,
-                        "operator_decision_required": False,
-                    },
-                )
         elif stage == "drafted":
             report = self._openai_review(p, final=False)
             draft_findings = deterministic_findings(
@@ -1613,7 +1546,14 @@ class WorkbenchEngine:
             draft_blockers, _ = partition_findings(draft_findings)
             if report.get("verdict") == "approved" and not draft_blockers:
                 self._set_report(
-                    p, report, "signed_off", "02-openai-review.json"
+                    p,
+                    report,
+                    (
+                        "revised"
+                        if self._uses_locked_call_path(p)
+                        else "signed_off"
+                    ),
+                    "02-openai-review.json",
                 )
             elif report.get("verdict") == "approved":
                 # Deterministic publication requirements outrank a semantic
@@ -1718,62 +1658,22 @@ class WorkbenchEngine:
                         "current_words": current_words,
                         "candidate_words": candidate_words,
                         "minimum_preserved": minimum_preserved,
-                        "action": "retained_adjudicated_full_length_article",
+                        "action": "candidate_sent_to_acceptance_boundary",
                     },
                 )
-                article = p["article_text"]
-            pre_review_repair = (
-                (p.get("last_report") or {}).get("approval_purpose")
-                == "pre_review_quality"
-            )
-            self._set_article(
-                p, article, "drafted" if pre_review_repair else "revised",
+            accepted = self._set_article(
+                p, article, "revised",
                 (
-                    "01c-pre-review-repair.html"
-                    if pre_review_repair
-                    else "03-claude-revision.html"
+                    "03-claude-revision.html"
                     if repair_purpose == "compliance_repair"
                     else "03-quality-rescue-revision.html"
                 ),
                 bump=True,
                 call_purpose=repair_purpose,
+                require_publishable=self._uses_locked_call_path(p),
             )
-            if pre_review_repair:
-                repaired = self.get(project_id)
-                repaired_preflight = audit_article(
-                    repaired["article_text"],
-                    repaired["platform"],
-                    repaired["vertical"],
-                    _source_affiliate_link(repaired["source_text"]),
-                )
-                from article_provenance import (
-                    build_article_claim_ledger,
-                    extract_sealed_pack,
-                )
-                repaired_provenance = build_article_claim_ledger(
-                    extract_sealed_pack(repaired["source_text"]),
-                    repaired["article_text"],
-                )
-                remaining = [
-                    item for item in repaired_preflight["blockers"]
-                    if item.get("id") == "D18"
-                ]
-                remaining.extend(
-                    repaired_provenance.get("coverage_violations") or []
-                )
-                if remaining:
-                    self._set_stage(project_id, "admin_review")
-                    self._event(
-                        project_id,
-                        "pre_review_repair_incomplete",
-                        "admin_review",
-                        repaired["article_hash"],
-                        {
-                            "blockers": remaining,
-                            "independent_review_call_preserved": True,
-                            "operator_decision_required": False,
-                        },
-                    )
+            if not accepted:
+                return self.get(project_id)
         elif stage == "revised":
             preflight = audit_article(
                 p["article_text"],
@@ -2374,11 +2274,45 @@ class WorkbenchEngine:
                     f"Paid purpose {stage} is outside the locked four-stage "
                     "publication route"
                 )
+            counts = {
+                purpose: self._billable_call_count(project_id, purpose)
+                for purpose in REQUIRED_CALL_PATH
+            }
             purpose_limit = PURPOSE_CALL_LIMITS[stage]
-            if self._billable_call_count(project_id, stage) >= purpose_limit:
+            if counts[stage] >= purpose_limit:
                 raise RuntimeError(
                     f"Reserved {stage} call was already consumed; no other "
                     "purpose may borrow its budget"
+                )
+            if stage == "draft" and any(counts.values()):
+                raise RuntimeError(
+                    "Draft must be the first paid call in the publication "
+                    "transaction"
+                )
+            if stage == "compliance" and (
+                counts["draft"] != 1
+                or counts["compliance_repair"]
+                or counts["final_signoff"]
+            ):
+                raise RuntimeError(
+                    "Compliance review requires exactly one completed draft "
+                    "and must precede repair and final sign-off"
+                )
+            if stage == "compliance_repair" and (
+                counts["draft"] != 1
+                or counts["compliance"] != 1
+                or counts["final_signoff"]
+            ):
+                raise RuntimeError(
+                    "Compliance repair requires the completed draft and "
+                    "compliance review and must precede final sign-off"
+                )
+            if stage == "final_signoff" and (
+                counts["draft"] != 1 or counts["compliance"] != 1
+            ):
+                raise RuntimeError(
+                    "Final sign-off requires the completed draft and "
+                    "compliance review"
                 )
         stage_calls = self._billable_call_count(project_id, stage)
         if stage_calls >= route.max_calls:
@@ -2553,8 +2487,15 @@ class WorkbenchEngine:
         return report
 
     def _set_article(
-        self, p, article, stage, filename, bump=False, call_purpose=None
+        self, p, article, stage, filename, bump=False, call_purpose=None,
+        require_publishable=False,
     ):
+        """Finalize a provider candidate before it can replace canonical state.
+
+        Provider success and canonical acceptance are intentionally separate.
+        A paid response remains an immutable artifact, but a malformed or
+        source-unsafe repair can never overwrite the reviewed article/report.
+        """
         from .human_copy import (
             human_copy_diagnostics,
             normalize_american_english,
@@ -2583,16 +2524,70 @@ class WorkbenchEngine:
         # Canonicalize all mechanically repairable requirements before any
         # paid compliance review. Reviewers should spend judgment on meaning,
         # not Markdown, heading wrappers, CTA distribution, or disclosures.
-        article = repair_publication_gates(
+        candidate_preflight = audit_article(
             article, p["platform"], p["vertical"], affiliate_href
         )
+        article = candidate_preflight["article"]
+        from article_provenance import (
+            build_article_claim_ledger,
+            extract_sealed_pack,
+        )
+        provenance = build_article_claim_ledger(
+            extract_sealed_pack(p["source_text"]), article
+        )
+        provenance_blockers = list(
+            provenance.get("coverage_violations") or []
+        ) + list(provenance.get("attribution_violations") or [])
+        blockers = (
+            list(candidate_preflight["blockers"])
+            if require_publishable
+            else list(candidate_preflight["mechanical_remaining"])
+        )
+        if require_publishable:
+            blockers.extend(provenance_blockers)
+        if blockers:
+            rejected_name = filename.rsplit(".", 1)[0] + "-rejected.html"
+            self._write(p["id"], rejected_name, article)
+            if call_purpose:
+                pending = self._latest_pending_call(p["id"], call_purpose)
+                if pending:
+                    self._mark_llm_call_lifecycle(
+                        pending["id"], "candidate_rejected"
+                    )
+            self._set_stage(p["id"], "admin_review")
+            self._event(
+                p["id"],
+                "candidate_rejected",
+                "admin_review",
+                p["article_hash"],
+                {
+                    "purpose": call_purpose or "manual",
+                    "candidate_hash": _hash(title + "\n" + article),
+                    "canonical_hash_preserved": p["article_hash"],
+                    "review_report_preserved": bool(p.get("last_report")),
+                    "blockers": blockers,
+                    "artifact": rejected_name,
+                    "operator_decision_required": False,
+                },
+            )
+            return False
         digest = _hash(title + "\n" + article)
         round_no = p["revision_round"] + (1 if bump else 0)
         with self._connect() as conn:
-            conn.execute(
-                "UPDATE projects SET release_title=?,article_text=?,article_hash=?,stage=?,last_report='{}',revision_round=?,updated_at=? WHERE id=?",
-                (title, article, digest, stage, round_no, _now(), p["id"]),
+            result = conn.execute(
+                "UPDATE projects SET release_title=?,article_text=?,"
+                "article_hash=?,stage=?,last_report='{}',revision_round=?,"
+                "updated_at=? WHERE id=? AND article_hash=?",
+                (
+                    title, article, digest, stage, round_no, _now(), p["id"],
+                    p["article_hash"],
+                ),
             )
+            if result.rowcount != 1:
+                raise RuntimeError(
+                    "Candidate was not applied because the canonical article "
+                    "changed after generation"
+                )
         self._write(p["id"], filename, article)
         diagnostics = human_copy_diagnostics(article)
         diagnostics["american_english_changes"] = american_english_changes
@@ -2606,6 +2601,7 @@ class WorkbenchEngine:
             self._mark_latest_pending_call_applied(
                 p["id"], call_purpose
             )
+        return True
 
     def _persist_preflight_article(self, p, preflight, stage):
         """Persist a fixed-point mechanical repair without consuming a model call."""
