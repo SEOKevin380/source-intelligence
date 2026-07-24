@@ -44,7 +44,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v34-closed-loop-action-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "rejected-candidate-recovery-20260723-r5"
+WORKBENCH_RUNTIME_REVISION = "semantic-preflight-coverage-20260723-r6"
 
 STAGES = (
     "source_ready",

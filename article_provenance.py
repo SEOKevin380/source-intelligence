@@ -197,6 +197,20 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
             "required": required_mapped_sentences,
             "actual": len(mappings),
         })
+    pricing_claim_ids = {
+        claim["claim_id"] for claim in claims
+        if claim.get("claim_type") == "pricing"
+    }
+    if pricing_claim_ids and not (pricing_claim_ids & used_ids):
+        coverage_violations.append({
+            "id": "P-COVERAGE-PRICING",
+            "issue": (
+                "The sealed record contains publishable pricing, but the "
+                "article does not state any seller-attributed price."
+            ),
+            "required": 1,
+            "actual": 0,
+        })
     return {
         "schema_version": 1,
         "source_pack_hash": (pack.get("source_pack_contract") or {}).get(

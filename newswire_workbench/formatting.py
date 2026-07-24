@@ -559,6 +559,14 @@ def repair_source_grounding(html, source_text, vertical):
         r"entry[- ]level power[- ]conditioning)\b",
         r"\b(?:medical devices?|health[- ]related emf|emf exposure)\b.{0,180}"
         r"\b(?:option|trial|test|concern|equipment)\b",
+        r"\b(?:suitable for any room|bedrooms?|home offices?|"
+        r"spaces? with sensitive electronics)\b",
+        r"\b(?:older homes?|aging electrical systems?|modern electrical codes?|"
+        r"grid instability|brownouts?|rolling blackouts?|"
+        r"transmission challenges?)\b",
+        r"\b(?:surge protectors?|power conditioners?|emf filters?)\b.{0,220}"
+        r"\b(?:standardized|endorsed|electrical industry|"
+        r"regulatory agencies?|engineers?)\b",
     )
     for node in list(soup.find_all(["p", "li"])):
         lowered = node.get_text(" ", strip=True).casefold()

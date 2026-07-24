@@ -2218,6 +2218,59 @@ def test_source_grounding_removes_invented_device_buyer_cohorts():
     assert "Seller materials describe Literal product fact 0." in repaired
 
 
+def test_source_grounding_removes_invented_home_and_grid_fit():
+    article = (
+        "<p>The device is suitable for any room, including bedrooms and "
+        "home offices with sensitive electronics.</p>"
+        "<p>Older homes with aging electrical systems and areas with grid "
+        "instability or rolling blackouts may be a good fit.</p>"
+        "<p>Surge protectors are standardized and endorsed across the "
+        "electrical industry.</p>"
+        "<p>Seller materials describe Literal product fact 0.</p>"
+    )
+    repaired = repair_source_grounding(article, "", "device")
+    assert "suitable for any room" not in repaired
+    assert "Older homes" not in repaired
+    assert "endorsed across the electrical industry" not in repaired
+    assert "Seller materials describe Literal product fact 0." in repaired
+
+
+def test_claim_ledger_requires_available_pricing_coverage():
+    pack = {
+        "publication_claims": {
+            "manufacturer_claim": [
+                {
+                    "text": "Literal product fact 0",
+                    "publication_treatment": "seller_attribution_required",
+                },
+                {
+                    "text": "Literal product fact 1",
+                    "publication_treatment": "seller_attribution_required",
+                },
+                {
+                    "text": "Literal product fact 2",
+                    "publication_treatment": "seller_attribution_required",
+                },
+            ],
+            "pricing": [{
+                "text": "Single Unit: $49.99; $49.99 per unit",
+                "publication_treatment": "seller_attribution_required",
+            }],
+        },
+        "source_pack_contract": {"sha256": "a" * 64},
+    }
+    article = (
+        "<p>Seller materials describe Literal product fact 0.</p>"
+        "<p>Seller materials describe Literal product fact 1.</p>"
+        "<p>Seller materials describe Literal product fact 2.</p>"
+    )
+    ledger = build_article_claim_ledger(pack, article)
+    assert any(
+        item["id"] == "P-COVERAGE-PRICING"
+        for item in ledger["coverage_violations"]
+    )
+
+
 def test_reviewer_exact_edits_after_pre_review_repair_reach_signoff(
     tmp_path,
 ):
