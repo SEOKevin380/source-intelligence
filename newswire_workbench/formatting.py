@@ -584,6 +584,7 @@ def repair_source_grounding(html, source_text, vertical):
         r"\bno configuration required\b",
         r"\breconstruct this sentence from isolated permitted claim text\b",
         r"\bForecasts\s*&\s*Strategies\b",
+        r"\bsimple access to the current offer\b",
     )
     for node in list(soup.find_all(["p", "li"])):
         lowered = node.get_text(" ", strip=True).casefold()

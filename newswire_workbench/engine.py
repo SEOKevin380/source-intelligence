@@ -44,7 +44,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v34-closed-loop-action-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "sealed-depth-recovery-20260724-r12"
+WORKBENCH_RUNTIME_REVISION = "sealed-depth-recovery-20260724-r13"
 
 STAGES = (
     "source_ready",
@@ -1962,8 +1962,8 @@ class WorkbenchEngine:
             "should be resolved before relying on the document.</p>"
             "<h3><strong>The source-bound decision rule</strong></h3>"
             "<p>The strongest accurate case for the offer is the one the sealed "
-            "record can support: clearly attributed seller positioning, simple "
-            "access to the current offer, and exact reported package prices. "
+            "record can support: clearly attributed seller positioning and "
+            "exact reported package prices. "
             "The unresolved items remain questions, not negative conclusions "
             "and not implied promises. A reader can weigh the documented offer "
             "against those open questions, ask the seller for the missing "

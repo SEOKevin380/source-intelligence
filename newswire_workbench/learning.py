@@ -379,6 +379,7 @@ def deterministic_findings(article, platform, vertical, affiliate_href=""):
             r"consumer electronics review organizations?|"
             r"comprehensive surge protection|"
             r"compliance with electrical codes|"
+            r"simple access to the current offer|"
             r"no configuration required)\b",
             plain_lower,
         )
