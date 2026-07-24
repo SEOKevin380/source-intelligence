@@ -505,6 +505,7 @@ def repair_source_grounding(html, source_text, vertical):
     """Remove excluded-claim echoes and unsupported device filler at zero cost."""
     soup = BeautifulSoup(ensure_article_html(html), "html.parser")
     excluded = []
+    pack = {}
     marker = "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══"
     if marker in str(source_text or ""):
         try:
@@ -598,4 +599,40 @@ def repair_source_grounding(html, source_text, vertical):
         )
         if excluded_echo or unsupported_filler:
             node.decompose()
+
+    # When the sealed ledger contains pricing, an empty CTA-only pricing
+    # section is not commercially useful and needlessly consumes semantic
+    # review. Restore each price as its own claim-local, seller-attributed
+    # sentence so numeric provenance remains exact.
+    pricing_claims = (
+        (pack.get("publication_claims") or {}).get("pricing") or []
+    )
+    article_plain = soup.get_text(" ", strip=True)
+    pricing_to_add = []
+    for item in pricing_claims:
+        claim = str(item.get("text") or "").strip()
+        numbers = re.findall(r"\d+(?:\.\d+)?", claim)
+        if claim and numbers and not all(number in article_plain for number in numbers):
+            pricing_to_add.append(claim)
+    if pricing_to_add:
+        heading = next(
+            (
+                node for node in soup.find_all(["h2", "h3"])
+                if "pric" in node.get_text(" ", strip=True).casefold()
+            ),
+            None,
+        )
+        insertion_point = heading
+        if heading is None:
+            heading = soup.new_tag("h2")
+            strong = soup.new_tag("strong")
+            strong.string = "Current Pricing and Package Information"
+            heading.append(strong)
+            soup.append(heading)
+            insertion_point = heading
+        for claim in pricing_to_add:
+            paragraph = soup.new_tag("p")
+            paragraph.string = f"According to the seller, {claim}."
+            insertion_point.insert_after(paragraph)
+            insertion_point = paragraph
     return str(soup)

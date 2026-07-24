@@ -2271,6 +2271,34 @@ def test_claim_ledger_requires_available_pricing_coverage():
     )
 
 
+def test_source_grounding_restores_sealed_pricing_to_empty_section():
+    pack = {
+        "publication_claims": {
+            "pricing": [
+                {"text": "Single Unit: $49.99; $49.99 per unit"},
+                {"text": "4-Unit Bundle: $139.96; $34.99 per unit"},
+            ]
+        },
+        "excluded_publication_claims": [],
+    }
+    source = (
+        "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══\n"
+        + json.dumps(pack)
+    )
+    article = (
+        "<h2><strong>Current Pricing and Package Information</strong></h2>"
+        "<p><a href=\"https://example.com\">See current pricing</a></p>"
+    )
+    repaired = repair_source_grounding(article, source, "device")
+    assert "According to the seller, Single Unit: $49.99" in repaired
+    assert "According to the seller, 4-Unit Bundle: $139.96" in repaired
+    ledger = build_article_claim_ledger(pack, repaired)
+    assert not any(
+        item["id"] == "P-COVERAGE-PRICING"
+        for item in ledger["coverage_violations"]
+    )
+
+
 def test_reviewer_exact_edits_after_pre_review_repair_reach_signoff(
     tmp_path,
 ):
