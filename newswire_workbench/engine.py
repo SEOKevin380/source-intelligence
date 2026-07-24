@@ -788,6 +788,26 @@ class WorkbenchEngine:
             event for event in self.events(project_id)
             if event["event_type"] == "pre_signoff_blocked"
         ]
+        rejected = [
+            event for event in self.events(project_id)
+            if event["event_type"] == "candidate_rejected"
+        ]
+        if rejected:
+            payload = rejected[-1].get("payload") or "{}"
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            rejected_ids = {
+                item.get("id") for item in payload.get("blockers") or []
+            }
+            if (
+                rejected_ids == {"D18"}
+                and self._latest_successful_call_output(
+                    project_id, "compliance_repair"
+                )
+                and self._billable_call_count(project_id, "final_signoff")
+                < self._purpose_call_limit(p, "final_signoff", final_route)
+            ):
+                return True
         if not relevant:
             return False
         payload = relevant[-1].get("payload") or "{}"
@@ -1187,6 +1207,41 @@ class WorkbenchEngine:
                 },
             )
             return True
+        rejected = [
+            event for event in self.events(project_id)
+            if event["event_type"] == "candidate_rejected"
+        ]
+        if rejected:
+            payload = rejected[-1].get("payload") or "{}"
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            rejected_ids = {
+                item.get("id") for item in payload.get("blockers") or []
+            }
+            if rejected_ids == {"D18"}:
+                raw_repair = self._latest_successful_call_output(
+                    project_id, "compliance_repair"
+                )
+                if raw_repair and self._set_article(
+                    p,
+                    raw_repair,
+                    "revised",
+                    "03-claude-revision.html",
+                    bump=True,
+                    require_publishable=False,
+                ):
+                    self._event(
+                        project_id,
+                        "depth_candidate_reopened",
+                        "revised",
+                        self.get(project_id)["article_hash"],
+                        {
+                            "paid_calls_added": 0,
+                            "reason": "D18_only",
+                            "operator_decision_required": False,
+                        },
+                    )
+                    return self._recover_depth_from_paid_artifacts(project_id)
         relevant = [
             event for event in self.events(project_id)
             if event["event_type"] == "pre_signoff_blocked"
@@ -2538,11 +2593,12 @@ class WorkbenchEngine:
         provenance_blockers = list(
             provenance.get("coverage_violations") or []
         ) + list(provenance.get("attribution_violations") or [])
-        blockers = (
-            list(candidate_preflight["blockers"])
-            if require_publishable
-            else list(candidate_preflight["mechanical_remaining"])
-        )
+        blockers = list(candidate_preflight["mechanical_remaining"])
+        if require_publishable:
+            blockers = [
+                item for item in candidate_preflight["blockers"]
+                if item.get("id") != "D18"
+            ]
         if require_publishable:
             blockers.extend(provenance_blockers)
         if blockers:

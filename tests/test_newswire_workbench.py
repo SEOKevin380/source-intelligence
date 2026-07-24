@@ -1809,6 +1809,64 @@ def test_rejected_repair_candidate_preserves_canonical_and_review(tmp_path):
     )
 
 
+def test_existing_d18_only_rejection_reopens_without_another_paid_call(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    candidate = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<h2><strong>What the Seller Describes</strong></h2>"
+        "<p>Seller materials state Literal product fact 0.</p>"
+        "<p>Seller materials state Literal product fact 1.</p>"
+        "<p>Seller materials state Literal product fact 2.</p>"
+        + "".join(
+            f"<p>Seller materials describe Literal product fact "
+            f"{index % 3}. Buyers can compare that recorded description with "
+            "their needs and verify unanswered terms before ordering.</p>"
+            for index in range(55)
+        )
+    )
+    engine.import_manual_article(pid, candidate)
+    engine._set_stage(pid, "admin_review")
+    engine._record_llm_call(
+        pid,
+        "compliance_repair",
+        route_for("compliance_repair", "device"),
+        100,
+        100,
+        raw_output=candidate,
+        lifecycle="candidate_rejected",
+    )
+    engine._event(
+        pid,
+        "candidate_rejected",
+        "admin_review",
+        engine.get(pid)["article_hash"],
+        {"blockers": [{"id": "D18", "issue": "Draft is short."}]},
+    )
+    assert engine.can_recover_locked_pre_signoff(pid)
+    with patch.object(
+        engine, "_recover_depth_from_paid_artifacts", return_value=True
+    ) as recover:
+        assert engine._recover_locked_pre_signoff(pid)
+    recover.assert_called_once_with(pid)
+    assert engine.get(pid)["stage"] == "revised"
+    assert engine.usage_summary(pid)["calls"] == 1
+
+
 def test_reviewer_exact_edits_after_pre_review_repair_reach_signoff(
     tmp_path,
 ):

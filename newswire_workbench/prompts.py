@@ -432,6 +432,21 @@ def revision_prompt(source_text: str, article: str, report: dict,
         if platform == "Barchart Advertorial" and vertical == "device"
         else ""
     )
+    final_depth_check = (
+        f"""- For this {profile['label']}, the saved body must contain at least
+  {profile['hard_floor']:,} useful words; target
+  {profile['target_min']:,}–{profile['target_max']:,}.
+- Count only visible article words. HTML tags, the H1 extraction headline,
+  URLs, and process notes do not count.
+- If the draft is short, preserve compliant paragraphs and expand unanswered
+  buyer questions using only permitted claims, recorded offer facts, and
+  clearly labeled verification gaps.
+- Do not return until the complete HTML passes that word-count check."""
+        if profile["hard_floor"]
+        else
+        "- Use the length needed to answer every material reader question "
+        "without filler."
+    )
     return f"""Revise the {platform} {vertical} advertorial using the independent
 compliance report below.
 
@@ -532,6 +547,10 @@ ARTICLE_END
 
 COMPLIANCE REPORT:
 {json.dumps(report, ensure_ascii=False)}
+
+FINAL OUTPUT ACCEPTANCE CONTRACT:
+- Return one complete revised article, not a summary or patch.
+{final_depth_check}
 """
 
 
