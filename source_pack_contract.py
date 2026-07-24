@@ -2,6 +2,7 @@
 
 import copy
 import hashlib
+import html
 import json
 from datetime import datetime, timezone
 
@@ -46,6 +47,20 @@ STRUCTURED_PRODUCT_CLAIM_TYPES = {
     "cancellation_policy": "refund_policy",
     "trial_period": "pricing",
 }
+
+_CONTEXTUAL_SELLER_HEADING_BLOCKLIST = (
+    "order",
+    "customer review",
+    "what our customers",
+    "money back",
+    "guarantee",
+    "limited time",
+    "off now",
+    "discount",
+    "save up to",
+    "cut your",
+    "slash your",
+)
 
 
 PLATFORM_LABELS = {
@@ -196,6 +211,91 @@ def _merge_structured_claims(source_claims: dict, pack: dict) -> dict:
     return merged
 
 
+def _contextual_seller_claims(pack: dict) -> dict:
+    """Recover literal device claims from a supplied seller/affiliate page.
+
+    A rendered seller page can be captured successfully while the general
+    product extractor returns only pricing (commonly when a page is CSS- or
+    script-heavy). The contextual profile retains literal headings from that
+    captured artifact. For devices, conservative product-function headings are
+    usable as seller statements, never as independently established facts.
+    """
+    product_type = str(
+        (pack.get("product") or {}).get("product_type", "")
+    ).strip().casefold()
+    if product_type != "device":
+        return {}
+
+    recovered = []
+    seen = set()
+    for profile in pack.get("contextual_source_profiles") or []:
+        if not isinstance(profile, dict):
+            continue
+        if str(profile.get("source_type", "")).casefold() != "affiliate_page":
+            continue
+        artifact_id = str(profile.get("artifact_id", "")).strip()
+        if not artifact_id:
+            continue
+        for heading in profile.get("headings") or []:
+            text = html.unescape(
+                " ".join(str(heading or "").split()).strip()
+            )
+            folded = text.casefold()
+            if (
+                len(text) < 12
+                or len(text) > 180
+                or text.isupper()
+                or folded in seen
+                or any(term in folded for term in _CONTEXTUAL_SELLER_HEADING_BLOCKLIST)
+            ):
+                continue
+            # Avoid treating navigation/section furniture as a product claim.
+            if folded in {
+                "benefits of ecowatt",
+                "how it works",
+                "how many ecowatts do i need?",
+                "order summary",
+            }:
+                continue
+            seen.add(folded)
+            recovered.append({
+                "text": text,
+                "artifact_id": artifact_id,
+                "source_class": "authorized_reseller",
+                "review_status": "needs_verification",
+                "publication_treatment": "seller_attribution_required",
+                "metadata": {
+                    "excerpt_is_literal": True,
+                    "contextual_seller_heading": True,
+                    "source_pack_field": "contextual_source_profiles.headings",
+                },
+            })
+            if len(recovered) >= 3:
+                break
+    return {"manufacturer_claim": recovered} if recovered else {}
+
+
+def _merge_contextual_seller_claims(source_claims: dict, pack: dict) -> dict:
+    """Use literal seller headings only when the primary ledger is too thin."""
+    merged = copy.deepcopy(source_claims or {})
+    count = sum(len(items or []) for items in merged.values())
+    if count >= MINIMUM_PUBLICATION_CLAIMS:
+        return merged
+    existing = {
+        str(claim.get("text", "")).strip().casefold()
+        for items in merged.values()
+        for claim in (items or [])
+        if isinstance(claim, dict)
+    }
+    for claim_type, items in _contextual_seller_claims(pack).items():
+        for claim in items:
+            key = str(claim.get("text", "")).strip().casefold()
+            if key and key not in existing:
+                merged.setdefault(claim_type, []).append(claim)
+                existing.add(key)
+    return merged
+
+
 def assess_readiness(full_data: dict) -> tuple:
     """Return (state, reasons). Limited packs remain publishable."""
     product = full_data.get("product", {}) or {}
@@ -265,6 +365,7 @@ def seal_source_pack(full_data: dict) -> dict:
         or pack.get("publication_claims")
         or {}
     )
+    source_claims = _merge_contextual_seller_claims(source_claims, pack)
     source_claims = _merge_structured_claims(source_claims, pack)
     for claim_type, items in source_claims.items():
         for claim in items or []:

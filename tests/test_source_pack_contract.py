@@ -68,6 +68,66 @@ def test_zero_claim_pack_is_blocked_before_paid_generation():
         validate_source_pack(pack)
 
 
+def test_device_pack_recovers_literal_affiliate_seller_headings():
+    raw = _pack()
+    raw["claims_by_type"] = {
+        "pricing": [
+            {
+                "text": "Single Unit: $49.99",
+                "artifact_id": "art-1",
+                "source_class": "official_vendor",
+                "review_status": "needs_verification",
+                "metadata": {
+                    "excerpt_is_literal": False,
+                    "structured_source_record": True,
+                },
+            },
+        ],
+    }
+    raw["all_artifacts"]["affiliate-art"] = {
+        "source_url": "https://partner.example/device",
+        "source_class": "authorized_reseller",
+    }
+    raw["contextual_source_profiles"] = [{
+        "source_type": "affiliate_page",
+        "artifact_id": "affiliate-art",
+        "headings": [
+            "How It Works",
+            "Stabilizes the Power",
+            "Reduces Dirty Electricity",
+            "Easy to Install, No Maintenance Required",
+            "GET UP TO 65% OFF NOW",
+        ],
+    }]
+
+    pack = seal_source_pack(raw)
+
+    assert pack["source_pack_contract"]["readiness"] == "complete"
+    recovered = pack["publication_claims"]["manufacturer_claim"]
+    assert [claim["text"] for claim in recovered] == [
+        "Stabilizes the Power",
+        "Reduces Dirty Electricity",
+        "Easy to Install, No Maintenance Required",
+    ]
+    assert all(
+        claim["publication_treatment"] == "seller_attribution_required"
+        for claim in recovered
+    )
+
+
+def test_contextual_seller_headings_do_not_rescue_non_device_pack():
+    raw = _pack()
+    raw["product"]["product_type"] = "supplement"
+    raw["claims_by_type"] = {}
+    raw["contextual_source_profiles"] = [{
+        "source_type": "affiliate_page",
+        "artifact_id": "affiliate-art",
+        "headings": ["Supports Healthy Blood Sugar"],
+    }]
+    pack = seal_source_pack(raw)
+    assert pack["source_pack_contract"]["readiness"] == "blocked"
+
+
 def test_resealing_legacy_publication_ledger_does_not_erase_claims():
     first = seal_source_pack(_pack())
     legacy = copy.deepcopy(first)

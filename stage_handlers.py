@@ -396,20 +396,29 @@ def handle_acquire(job: Job) -> dict:
         )
         for source_type, source_url in contextual_sources:
             try:
-                aid, contextual_text = acq.fetch_third_party(
-                    source_url, phase="ACQUIRE_CONTEXT",
-                    notes=f"Intake source: {source_type}",
-                )
+                if source_type == "affiliate_page":
+                    aid, contextual_text = acq.fetch_authorized_reseller(
+                        source_url, phase="ACQUIRE_CONTEXT",
+                    )
+                    contextual_source_class = "authorized_reseller"
+                else:
+                    aid, contextual_text = acq.fetch_third_party(
+                        source_url, phase="ACQUIRE_CONTEXT",
+                        notes=f"Intake source: {source_type}",
+                    )
+                    contextual_source_class = "user_generated"
                 profile = _contextual_page_profile(
                     source_type, source_url, contextual_text
                 )
                 profile["artifact_id"] = aid
+                profile["source_class"] = contextual_source_class
                 contextual_source_profiles.append(profile)
                 stored_artifacts.append({"artifact_id": aid, "type": source_type})
                 source_manifest.append({"type": source_type, "url": source_url,
                                         "status": "captured", "artifact_id": aid,
                                         "captured_characters": profile["captured_characters"],
                                         "content_sha256": profile["content_sha256"],
+                                        "source_class": contextual_source_class,
                                         "usable_for_differentiation":
                                             profile["usable_for_differentiation"]})
             except Exception as e:

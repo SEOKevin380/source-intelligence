@@ -226,6 +226,34 @@ class Acquirer:
         aid = self.lake.store(artifact, result.content)
         return aid, result.text
 
+    def fetch_authorized_reseller(self, url: str,
+                                  phase: str = "ACQUIRE") -> Tuple[str, str]:
+        """Capture an operator-supplied commercial destination as seller copy.
+
+        This proves only what the page says. Claims extracted from it remain
+        seller-attributed and do not become independent verification.
+        """
+        from net import safe_fetch
+        result = safe_fetch(url, max_bytes=60_000, allow_tls_fallback=False)
+        artifact = Artifact.from_fetch_result(
+            result, source_url=url,
+            source_class=SourceClass.AUTHORIZED_RESELLER,
+            source_relationship=SourceRelationship.SECOND_PARTY,
+            offering_id=self.offering_id,
+            job_id=self.job_id,
+            acquisition_phase=phase,
+            notes="Operator-supplied affiliate/commercial destination",
+        )
+        try:
+            _validate_fetch_result(result, url)
+        except AcquisitionError as e:
+            artifact.notes = f"FAILED: {e}"
+            self.lake.store(artifact, result.content or b"")
+            e.artifact_id = artifact.artifact_id
+            raise
+        aid = self.lake.store(artifact, result.content)
+        return aid, result.text
+
     def store_search_results(self, query: str, results_text: str,
                              phase: str = "ACQUIRE") -> str:
         """Store search result data as a search_results artifact.
