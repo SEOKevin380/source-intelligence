@@ -607,8 +607,23 @@ def repair_source_grounding(html, source_text, vertical):
         r"\b(?:electricity bills?|appliance lifespan|real home environment)\b",
         r"\b(?:draws? minimal power|heat generation|power source)\b",
         r"\b(?:continuous-operation safety|continuous versus intermittent)\b",
+        r"\b(?:track|compare|monitor)\b.{0,100}\butility bills?\b",
+        r"\breal-world cost savings\b.{0,180}"
+        r"\b(?:utility rate|baseline power factor|home'?s baseline)\b",
+        r"\bprice is low enough to test\b",
+        r"\bmodest cost\b.{0,100}\b(?:simple installation|test|purchase)\b",
+        r"\bwilling to purchase based on seller claims\b",
     )
     for node in list(soup.find_all(["p", "li"])):
+        for text_node in list(node.find_all(string=True)):
+            qualified = re.sub(
+                r"\b(in|from) available materials\b",
+                r"\1 the available source materials reviewed for this article",
+                str(text_node),
+                flags=re.I,
+            )
+            if qualified != str(text_node):
+                text_node.replace_with(qualified)
         lowered = node.get_text(" ", strip=True).casefold()
         if lowered == "sealed-depth-recovery-v2":
             node.decompose()

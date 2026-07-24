@@ -3661,3 +3661,26 @@ def test_depth_recovery_drops_mixed_unattributed_claim_blocks():
     assert "six-to-eight-week" not in repaired
     assert "<ul>" not in repaired
     assert "Seller materials state zero maintenance." in repaired
+
+
+def test_source_grounding_scopes_missing_terms_and_removes_self_testing_advice():
+    article = (
+        "<p>Refund and return policies are not detailed in available "
+        "materials. Contact the seller to confirm the terms.</p>"
+        "<p>Buyers should track utility bills before and after installation.</p>"
+        "<p>Real-world cost savings depend on your utility rate and your "
+        "home's baseline power factor.</p>"
+        "<p>The price is low enough to test if you are willing to purchase "
+        "based on seller claims.</p>"
+        "<p>Seller materials state zero maintenance.</p>"
+    )
+    repaired = repair_source_grounding(article, "", "device")
+    assert (
+        "not detailed in the available source materials reviewed for this "
+        "article"
+    ) in repaired
+    assert "track utility bills" not in repaired
+    assert "utility rate" not in repaired
+    assert "low enough to test" not in repaired
+    assert "willing to purchase" not in repaired
+    assert "Seller materials state zero maintenance." in repaired
