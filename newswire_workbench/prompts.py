@@ -101,10 +101,11 @@ def generation_prompt(source_text: str, platform: str, vertical: str,
         f"{profile['target_min']:,}–{profile['target_max']:,} useful "
         "words when "
         "the supplied official, prior-release, and competitor records support "
-        "it. Answer what it is, how the claimed mechanism works, what evidence "
-        "supports or limits the claims, price, setup, best fit, poor fit, "
-        "warranty/returns/contact availability, trust questions, and neutral "
-        "comparison criteria. Keep alternatives compact; never turn the "
+        "it. Answer what it is, how the seller describes the mechanism, price, "
+        "setup, the documented offer, transaction identity, material terms, "
+        "and the reader's practical questions. Do not adjudicate whether an "
+        "untested product works or repeatedly rebut the seller's positioning. "
+        "Keep alternatives compact; never turn the "
         "advertorial into a sales case for competing products. Do not pad "
         "with generic consumer advice."
         if platform == "Barchart Advertorial" and vertical == "device"
@@ -119,16 +120,15 @@ def generation_prompt(source_text: str, platform: str, vertical: str,
   Before writing, allocate coverage across these reader jobs, varying their
   order and headings to match the locked blueprint and banked niche exemplar:
   opening thesis and quick buyer orientation (140–190 words); product identity
-  and seller-described value proposition (180–240); attributed mechanism,
-  specifications, setup, and intended operation (260–340); evidence status and
-  what the record does or does not establish (180–240); recorded pricing and
-  current offer interpretation (140–200); best-fit and not-fit buyers
-  (180–240); trust, contact, terms, and verification questions (180–240);
-  consolidated material limitations (130–180); decision summary and reader
-  FAQs (260–340). These are coverage budgets, not mandatory section titles.
-  When a fact is unavailable, add reader value by explaining exactly what is
-  known, what remains unestablished, why that distinction matters to a buying
-  decision, and what the buyer should verify—without inventing an answer.
+  and seller-described value proposition (220–280); grouped attributed
+  mechanism, features, specifications, setup, and intended operation (420–520);
+  recorded pricing and bundle value (160–220); what the documented order
+  includes and the concrete offer identity (150–210); one compact treatment
+  of unavailable terms (80–130); decision summary and reader FAQs (300–380).
+  These are coverage budgets, not mandatory section titles. Do not create
+  unsupported buyer cohorts to fill a best-fit section. When a fact is
+  unavailable, omit it or state it once in the compact limitations treatment.
+  Never turn missing evidence into a buyer investigation checklist.
   Complete a silent word-count and coverage check before returning HTML.
 """
         if platform == "Barchart Advertorial" and vertical == "device"
@@ -174,9 +174,20 @@ Operating rules:
   value, and the reader most likely to benefit from evaluating it. Compliance
   protects this case; it must not replace the article with a prosecution brief.
 - State each material limitation clearly once, then provide the strongest
-  accurate buyer takeaway or verification step. Do not repeat the same caveat,
+  accurate buyer takeaway. Do not repeat the same caveat,
   stack disclaimers, speculate against the product, or treat missing evidence
   as evidence that the product is ineffective.
+- This is brand-message delivery, not product testing. Do not announce a
+  verdict on whether the product works, does not work, is proven, or is
+  disproven. Present permitted seller claims naturally with local attribution.
+  Do not rebut each claim with a proof lecture.
+- Answer transaction-trust intent narrowly from documented facts: identify the
+  physical product, selected unit count, stated price, and documented ordering
+  destination. Never promise delivery or results when the record does not.
+- Never expose terms such as “sealed record,” “source pack,” “claim ledger,”
+  “source-bound,” or “publication claim.” Never use a repeated “Seller
+  materials state:” inventory. Group related features into natural prose and
+  use varied local attribution.
 - Never devote more space to alternatives than to the client's verified
   product features, positioning, fit, offer, and buyer questions. Do not
   recommend competing products or turn the article into an argument against
@@ -374,6 +385,12 @@ Review all applicable categories:
     title/section redundancy, or prose that sounds assembled from a template.
     Recommend value-enhancing edits only when they remain inside the sealed
     facts and locked SEO intent.
+18. Advertorial utility is mandatory, not optional. Reject the article when it
+    exposes source-workflow terms, dumps attributed claims as a repetitive
+    inventory, repeats pricing or limitations, tells readers to audit the
+    seller, or spends more space questioning proof than conveying the
+    documented product story. For an untested device, do not require a verdict
+    on whether it works. Treat severe failure here as `mandatory_edits`.
 
 Return JSON only matching this shape:
 {{
@@ -468,6 +485,19 @@ compliance report below.
   adversarial. Lead with verified value, consolidate repeated caveats, preserve
   each material limitation once, identify best-fit readers, and build naturally
   toward a clear CTA.
+- If the article exposes source-workflow language, dumps claims, repeats
+  caveats/pricing, or reads like a seller-audit checklist, reconstruct the full
+  article from the locked publisher exemplar and blueprint. Do not preserve
+  defective structure merely to retain words.
+- Do not adjudicate whether an untested product works or does not work. Present
+  permitted seller claims with natural local attribution, then move on. One
+  compact limitations paragraph is enough.
+- Answer “is this legitimate to order?” as a transaction-identity question:
+  what physical product and unit count the documented offer says the buyer is
+  ordering, at the stated price and destination. Never guarantee fulfillment
+  or performance without source support.
+- Never print “sealed record,” “source pack,” “claim ledger,” “source-bound,”
+  “publication claim,” or a repeated “Seller materials state:” list.
 - Remove scientific, engineering, market, utility-billing, competitor-pricing,
   or industry-statistic assertions absent from the sealed source record.
 - Attribute every device specification, setup direction, placement suggestion,
@@ -516,7 +546,8 @@ compliance report below.
   source-grounded words and fully answer mechanism, evidence, price, setup,
   fit/not-fit, limitations, trust, and current terms. Keep alternatives to one
   compact neutral comparison section and never advocate competing products.
-- The revised Barchart device article must retain at least 80% of the current
+- Unless D19, D20, or D21 requires full reconstruction, the revised Barchart
+  device article must retain at least 80% of the current
   article's word count and must not fall below {profile['hard_floor']:,} useful, source-grounded
   words. If a sentence cannot
   be repaired without adding a fact, delete only that sentence and strengthen
@@ -534,7 +565,11 @@ compliance report below.
   conditional savings logic in those sections. Name only the gap recorded in
   `required_facts.missing` and tell the reader to verify that gap with the
   seller.
-- If D19 is present, reconstruct instead of merely paraphrasing. Put at least
+- If D19, D20, or D21 is present, reconstruct instead of merely paraphrasing.
+  Follow the closest approved device-advertorial exemplar: reader-oriented
+  opening, affirmative attributed product story, grouped features and setup,
+  one pricing section, narrow transaction-trust answer, one compact limitations
+  treatment, FAQs, and a confident sourced close. Put at least
   two product-value sections before limitations. Explain sourced features,
   operation, setup, price, and best-fit readers affirmatively. Use exactly one
   consolidated Material Limitations section. State each missing proof point

@@ -22,6 +22,10 @@ HARD_BLOCKER_RATIONALE = {
     "D18": ("editorial_depth", "Platform-specific reader coverage must be complete."),
     "D19": ("client_advocacy", "The strongest accurate client case must remain primary."),
     "D20": ("source_accuracy", "Material assertions must be grounded in the sealed record."),
+    "D21": (
+        "editorial_utility",
+        "Reader-facing copy must be a natural advertorial, not a compliance audit.",
+    ),
 }
 
 
@@ -252,6 +256,75 @@ def deterministic_findings(article, platform, vertical, affiliate_href=""):
         re.I | re.S,
     ))
     plain_lower = re.sub(r"<[^>]+>", " ", article).casefold()
+    editorial_process_terms = re.findall(
+        r"\b(?:sealed (?:record|source|pack)|source pack|source-bound|"
+        r"publication claims?|claim ledger|this article must|"
+        r"available source record)\b",
+        plain_lower,
+    )
+    recovery_markup = bool(re.search(
+        r"\bdata-(?:sealed|depth|recovery)[\w-]*\s*=",
+        article,
+        re.I,
+    ))
+    seller_dump_count = len(re.findall(
+        r"\b(?:seller materials state|according to the seller)\s*:",
+        plain_lower,
+    ))
+    verification_commands = len(re.findall(
+        r"\b(?:ask|request|confirm|verify|check)\b",
+        plain_lower,
+    ))
+    verification_headings = len(re.findall(
+        r"<h[23]\b[^>]*>.*?\b(?:verify|verification|confirm|source record|"
+        r"source-bound|how to read each seller statement|questions that make "
+        r"an answer useful)\b",
+        article,
+        re.I | re.S,
+    ))
+    repeated_price_options = max(
+        len(re.findall(r"\bsingle unit\s*:\s*\$49\.99\b", plain_lower)),
+        len(re.findall(r"\b4-unit bundle\s*:\s*\$139\.96\b", plain_lower)),
+    )
+    audit_dominance = (
+        verification_commands >= 14
+        or verification_headings >= 3
+        or seller_dump_count >= 5
+    )
+    if (
+        editorial_process_terms
+        or recovery_markup
+        or audit_dominance
+        or repeated_price_options >= 3
+    ):
+        findings.append({
+            "id": "D21",
+            "category": "Human advertorial quality gate",
+            "issue": (
+                "The reader-facing draft exposes editorial process language or "
+                "reads like a repetitive verification/compliance audit instead "
+                "of a natural, client-positive advertorial "
+                f"(process terms: {len(editorial_process_terms)}; seller-label "
+                f"dump: {seller_dump_count}; verification commands/headings: "
+                f"{verification_commands}/{verification_headings}; repeated "
+                f"price options: {repeated_price_options})."
+            ),
+            "exact_text": (
+                editorial_process_terms[0]
+                if editorial_process_terms else
+                "data-recovery attribute" if recovery_markup else ""
+            ),
+            "replacement": (
+                "Reconstruct the article around the approved publisher "
+                "exemplar: a reader-oriented opening, grouped attributed "
+                "product story, setup/features/specifications, one pricing "
+                "section, a narrow transaction-trust answer, one compact "
+                "limitations treatment, FAQs, and a confident sourced close. "
+                "Do not expose source-workflow terminology, dump claims, "
+                "repeatedly instruct readers to investigate the seller, or "
+                "adjudicate whether untested performance claims work."
+            ),
+        })
     negative_case_markers = re.findall(
         r"\b(?:unverified|not verified|not documented|not available|"
         r"does not|cannot|no benefit|inappropriate|conflicts? with|"

@@ -738,7 +738,7 @@ def test_publication_repair_neutralizes_prosecutorial_device_headings():
 def test_offline_system_audit_owns_every_blocker_and_route():
     report = audit_system_contract("device")
     assert report["passed"] is True
-    assert report["blocker_count"] == 10
+    assert report["blocker_count"] == 11
     assert not report["missing_blocker_rationales"]
     assert not report["stale_blocker_rationales"]
     assert report["missing_gate_owners"] == []
@@ -2183,9 +2183,9 @@ def test_safe_rejected_paid_candidate_is_recovered_without_another_paid_call(
         "<p>Seller materials state Literal product fact 1.</p>"
         "<p>Seller materials state Literal product fact 2.</p>"
         + "".join(
-            f"<p>Seller materials describe Literal product fact "
-            f"{index % 3}. Buyers can compare that recorded description with "
-            "their needs and verify unanswered terms before ordering.</p>"
+                f"<p>Seller materials describe Literal product fact "
+                f"{index % 3}. Buyers can compare that recorded description with "
+                "the documented offer before ordering.</p>"
             for index in range(55)
         )
     )
@@ -2396,9 +2396,9 @@ def test_clean_admin_artifact_ignores_stale_depth_event_and_reaches_signoff(
         "<p>Seller materials state Literal product fact 1.</p>"
         "<p>Seller materials state Literal product fact 2.</p>"
         + "".join(
-            f"<p>Buyer context {index} explains the recorded offer, "
-            "decision criteria, practical limitations, and what readers "
-            "should verify with the seller before ordering.</p>"
+                f"<p>Buyer context {index} explains the recorded offer, "
+                "decision criteria, practical limitations, and the stated "
+                "product details available before ordering.</p>"
             for index in range(115)
         )
     )
@@ -2526,9 +2526,9 @@ def test_continuous_runner_finishes_clean_admin_artifact_without_rebuild(
         "<p>Seller materials state Literal product fact 1.</p>"
         "<p>Seller materials state Literal product fact 2.</p>"
         + "".join(
-            f"<p>Decision guide {index} explains the recorded offer, "
-            "reader fit, practical limitations, and details to verify "
-            "directly with the seller before ordering.</p>"
+                f"<p>Decision guide {index} explains the recorded offer, "
+                "reader fit, practical limitations, and the product details "
+                "presented before ordering.</p>"
             for index in range(115)
         )
     )
@@ -3606,7 +3606,7 @@ def test_source_grounding_rebuilds_malformed_sealed_pricing_section():
     assert "Shipping is not established." in repaired
 
 
-def test_sealed_depth_block_uses_all_nonpricing_claim_types():
+def test_sealed_depth_block_cannot_generate_reader_facing_prose():
     pack = {
         "product": {
             "product_name": "Device",
@@ -3625,12 +3625,58 @@ def test_sealed_depth_block_uses_all_nonpricing_claim_types():
     block = WorkbenchEngine._sealed_pack_decision_block(
         None, {"title": "Device"}, pack
     )
-    assert "Voltage stabilization" in block
-    assert "24/7 operation" in block
-    assert "90V–250V" in block
-    assert "30kW" in block
-    assert "Frequently Asked Questions" not in block
-    assert "Additional Source-Grounded Buyer Details" not in block
+    assert block == ""
+
+
+def test_editorial_utility_rejects_source_audit_disguised_as_advertorial():
+    claim_dump = "".join(
+        f"<li>Seller materials state: Feature {number}.</li>"
+        for number in range(8)
+    )
+    article = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<h2 data-sealed-depth-recovery=\"v3\"><strong>"
+        "How to Use the Available Source Record</strong></h2>"
+        "<p>The sealed record gives readers a limited basis for evaluating "
+        "this offer.</p><ul>" + claim_dump + "</ul>"
+        "<h3><strong>Questions That Make an Answer Useful</strong></h3>"
+        "<p>Ask the seller to confirm the model. Request testing. Verify the "
+        "terms. Check the certificate. Confirm the price. Ask about delivery. "
+        "Request the warranty. Verify the return address. Confirm support. "
+        "Ask for proof. Check the checkout. Verify the source. Confirm the "
+        "specification. Request the report.</p>"
+    )
+    ids = {
+        item["id"] for item in deterministic_findings(
+            article, "Barchart Advertorial", "device"
+        )
+    }
+    assert "D21" in ids
+
+
+def test_editorial_utility_allows_natural_attributed_product_story():
+    article = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received "
+        "if a purchase is made through links in this advertorial.</p>"
+        "<h2><strong>What EcoWatt Power Saver Is</strong></h2>"
+        "<p>EcoWatt Power Saver is presented by the seller as a plug-in power "
+        "management device. According to the product page, its feature set "
+        "includes voltage stabilization, power-factor correction, and "
+        "dirty-electricity filtering.</p>"
+        "<h2><strong>Setup and Everyday Operation</strong></h2>"
+        "<p>The seller describes setup as plug-and-play, with a green light "
+        "showing active operation. The offer also describes 24/7 operation "
+        "with zero maintenance.</p>"
+        "<h2><strong>Current Pricing</strong></h2>"
+        "<p>According to the seller, one unit costs $49.99 and the four-unit "
+        "bundle costs $139.96.</p>"
+    )
+    ids = {
+        item["id"] for item in deterministic_findings(
+            article, "Barchart Advertorial", "device"
+        )
+    }
+    assert "D21" not in ids
 
 
 def test_depth_recovery_drops_mixed_unattributed_claim_blocks():

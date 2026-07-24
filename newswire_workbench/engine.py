@@ -44,7 +44,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v34-closed-loop-action-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "sealed-only-semantic-rebuild-20260724-r18"
+WORKBENCH_RUNTIME_REVISION = "exemplar-first-human-advertorial-20260724-r19"
 
 STAGES = (
     "source_ready",
@@ -1442,7 +1442,7 @@ class WorkbenchEngine:
         }
         if (
             current_blocker_ids
-            and current_blocker_ids.issubset({"D17", "D18", "D20"})
+            and current_blocker_ids.issubset({"D17", "D18", "D20", "D21"})
             and "D18" in current_blocker_ids
             and not current_provenance.get("coverage_violations")
         ):
@@ -1469,7 +1469,7 @@ class WorkbenchEngine:
         recorded_ids = {item.get("id") for item in blockers}
         if (
             recorded_ids
-            and recorded_ids.issubset({"D17", "D18", "D20"})
+            and recorded_ids.issubset({"D17", "D18", "D20", "D21"})
             and "D18" in recorded_ids
         ):
             return self._recover_depth_from_paid_artifacts(project_id)
@@ -1667,7 +1667,7 @@ class WorkbenchEngine:
                     str(node), p["platform"], p["vertical"]
                 )
                 if any(
-                    item.get("id") in {"D19", "D20"}
+                    item.get("id") in {"D19", "D20", "D21"}
                     for item in block_findings
                 ):
                     continue
@@ -1677,17 +1677,15 @@ class WorkbenchEngine:
             if assembled_words >= target_words:
                 break
 
+        # Never manufacture depth by appending a deterministic compliance
+        # checklist. If paid, exemplar-grounded prose cannot be safely
+        # reconciled, this transaction must fail cleanly and receive a new
+        # corrected owner. Word count is not recoverable with reader-facing
+        # audit language.
         if assembled_words < target_words:
-            decision_block = self._sealed_pack_decision_block(p, sealed_pack)
-            if decision_block:
-                decision_text = BeautifulSoup(
-                    decision_block, "html.parser"
-                ).get_text(" ", strip=True)
-                assembled_words += len(
-                    re.findall(r"\b[\w’'-]+\b", decision_text)
-                )
+            return False
 
-        if not additions and not decision_block:
+        if not additions:
             return False
         if additions:
             heading = base.new_tag("h2")
@@ -1703,8 +1701,6 @@ class WorkbenchEngine:
         merged = repair_source_grounding(
             str(base), p["source_text"], p["vertical"]
         )
-        if decision_block:
-            merged += decision_block
         preflight = audit_article(
             merged,
             p["platform"],
@@ -1764,7 +1760,8 @@ class WorkbenchEngine:
         return True
 
     def _sealed_pack_decision_block(self, project, sealed_pack):
-        """Build useful zero-cost depth using only sealed claims and known gaps."""
+        """Deprecated: deterministic prose must never become article content."""
+        return ""
         product = sealed_pack.get("product") or {}
         name = str(
             product.get("product_name") or project.get("title") or "the product"
