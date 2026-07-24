@@ -143,9 +143,14 @@ def test_barchart_prompts_target_excellence_above_the_rejection_floor():
         "Barchart Advertorial",
         "device",
     )
-    for prompt in (draft_prompt, repair_prompt, review_prompt):
+    for prompt in (draft_prompt, repair_prompt):
         assert "1,600–1,900 useful words" in prompt
         assert "1,400–2,000" not in prompt
+    assert "1,400 useful words is the binding minimum" in review_prompt
+    assert "1,600–1,900 is a nonbinding drafting target" in review_prompt
+    assert "another platform's length or structure" in review_prompt
+    assert "Contact details do not establish shipping" in review_prompt
+    assert "do not claim a price lacks attribution" in review_prompt
     for prompt in (draft_prompt, repair_prompt):
         assert "hard rejection floor" in prompt
         assert "banked niche" in prompt

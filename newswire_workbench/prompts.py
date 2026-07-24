@@ -309,6 +309,17 @@ def compliance_prompt(source_text: str, article: str, platform: str,
     )
     profile = publication_profile(platform, vertical)
     scope = "final regression review" if final else "comprehensive compliance review"
+    depth_review_contract = (
+        f"For this {profile['label']}, {profile['hard_floor']:,} useful words is "
+        f"the binding minimum and {profile['target_min']:,}–"
+        f"{profile['target_max']:,} is a nonbinding drafting target. A complete "
+        "article at or above the minimum must not be rejected merely for being "
+        "below the target range. Judge missing reader coverage specifically."
+        if profile["hard_floor"]
+        else
+        "Use the length needed for complete reader coverage; word count alone "
+        "is not a publication blocker."
+    )
     return f"""Act as the independent compliance editor for a paid {platform}
 advertorial. Perform a {scope} on this {vertical} article.
 
@@ -355,11 +366,10 @@ Review all applicable categories:
     CTA anchor text is explicitly STRONG, 10–14 non-heading
     STRONG.key-takeaway phrases,
     and 5–6 strategic links in AccessNewsWire long-form copy.
-13. Editorial depth: an AccessNewsWire financial newsletter/research review
-    should ordinarily provide {profile['target_min']:,}–{profile['target_max']:,} useful words when the source record
-    supports that depth. Flag generic padding, but also flag a thin draft that
-    fails to answer who, what, why, how, how much, access, fit, limitations,
-    trust questions, and the advertiser's specific thesis.
+13. Editorial depth: {depth_review_contract}
+    Flag generic padding. If coverage is materially incomplete, identify the
+    exact unanswered reader question and the source-backed material that can
+    answer it; never substitute another platform's length or structure.
 14. Client advocacy and commercial usefulness: make the strongest accurate case
     supported by the pack. Flag repetitive caveats, speculative criticism, an
     adversarial opening, or copy that explains why not to buy without equally
@@ -391,6 +401,15 @@ Review all applicable categories:
     seller, or spends more space questioning proof than conveying the
     documented product story. For an untested device, do not require a verdict
     on whether it works. Treat severe failure here as `mandatory_edits`.
+19. Adjudication accuracy: do not claim a price lacks attribution when
+    “According to the seller,” “seller-reported,” or equivalent attribution
+    appears in the same sentence or immediately controlling paragraph. Do not
+    demand a redundant attribution sentence.
+20. Missing terms remain missing even when the record contains a contact
+    method or return address. Contact details do not establish shipping,
+    warranty, refund-window, return-cost, or complete refund terms. Do not
+    require operator-intake details in the article unless the publication
+    claim ledger marks them for publication.
 
 Return JSON only matching this shape:
 {{
