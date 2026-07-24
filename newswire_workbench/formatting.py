@@ -553,6 +553,10 @@ def repair_source_grounding(html, source_text, vertical):
         # type, or installation environment.
         r"\b(?:appeal(?:s|ing)? to|best for|designed for|ideal for)\b.{0,100}"
         r"\b(?:homeowners?|renters?|landlords?|business owners?)\b",
+        r"\b(?:homeowners?|renters?)\b",
+        r"\bsensitive electronics\b",
+        r"\bqualified electrician\b.{0,240}\b(?:recommend|appropriate|"
+        r"hardwired|panel upgrades?|shielding)\b",
         r"\b(?:tech[- ]forward consumers?|reasonable trial product|"
         r"professional[- ]grade|whole[- ]home systems?|"
         r"residents? of older buildings?|"
@@ -568,6 +572,18 @@ def repair_source_grounding(html, source_text, vertical):
         r"\b(?:surge protectors?|power conditioners?|emf filters?)\b.{0,220}"
         r"\b(?:standardized|endorsed|electrical industry|"
         r"regulatory agencies?|engineers?)\b",
+        r"\bstandard disclosures? for electrical devices?\b",
+        r"\blegitimate electrical devices? typically\b",
+        r"\bstandardized electrical engineering classification\b",
+        r"\bmonitor (?:the )?device'?s performance\b",
+        r"\btrack whether electrical issues\b",
+        r"\bseek independent product testing\b",
+        r"\bconsumer electronics review organizations?\b",
+        r"\bcomprehensive surge protection\b",
+        r"\bcompliance with electrical codes\b",
+        r"\bno configuration required\b",
+        r"\breconstruct this sentence from isolated permitted claim text\b",
+        r"\bForecasts\s*&\s*Strategies\b",
     )
     for node in list(soup.find_all(["p", "li"])):
         lowered = node.get_text(" ", strip=True).casefold()
@@ -598,6 +614,10 @@ def repair_source_grounding(html, source_text, vertical):
             )
         )
         if excluded_echo or unsupported_filler:
+            node.decompose()
+
+    for node in list(soup.find_all(["ul", "ol"])):
+        if not node.get_text(" ", strip=True):
             node.decompose()
 
     # When the sealed ledger contains pricing, an empty CTA-only pricing

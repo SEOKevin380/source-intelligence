@@ -44,7 +44,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v34-closed-loop-action-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "corrected-transaction-owner-20260723-r8"
+WORKBENCH_RUNTIME_REVISION = "sealed-depth-recovery-20260724-r9"
 
 STAGES = (
     "source_ready",
@@ -528,6 +528,10 @@ class WorkbenchEngine:
         exact_semantic_approval = bool(
             last_report.get("verdict") == "approved"
             and last_report.get("reviewed_article_hash") == p["article_hash"]
+            and (
+                not self._uses_locked_call_path(p)
+                or last_report.get("approval_purpose") == "final_signoff"
+            )
             and p["stage"] in {
                 "signed_off", "post_seo_signed_off", "package_ready"
             }
@@ -924,9 +928,12 @@ class WorkbenchEngine:
                 "WordPress handoff requires approval bound to the exact final "
                 "article hash."
             )
-        if p["last_report"].get("approval_purpose") not in {
-            "compliance", "final_signoff"
-        }:
+        allowed_purposes = (
+            {"final_signoff"}
+            if self._uses_locked_call_path(p)
+            else {"compliance", "final_signoff"}
+        )
+        if p["last_report"].get("approval_purpose") not in allowed_purposes:
             raise RuntimeError(
                 "WordPress handoff requires a purpose-bound independent "
                 "editorial approval."
@@ -1434,7 +1441,9 @@ class WorkbenchEngine:
             item.get("id") for item in current_preflight["blockers"]
         }
         if (
-            current_blocker_ids == {"D18"}
+            current_blocker_ids
+            and current_blocker_ids.issubset({"D17", "D18", "D20"})
+            and "D18" in current_blocker_ids
             and not current_provenance.get("coverage_violations")
         ):
             recovered = self._recover_depth_from_paid_artifacts(project_id)
@@ -1457,7 +1466,12 @@ class WorkbenchEngine:
             except json.JSONDecodeError:
                 payload = {}
         blockers = payload.get("blockers") or []
-        if {item.get("id") for item in blockers} == {"D18"}:
+        recorded_ids = {item.get("id") for item in blockers}
+        if (
+            recorded_ids
+            and recorded_ids.issubset({"D17", "D18", "D20"})
+            and "D18" in recorded_ids
+        ):
             return self._recover_depth_from_paid_artifacts(project_id)
         if not blockers or any(
             item.get("id") not in MECHANICAL_GATES for item in blockers
@@ -1536,7 +1550,15 @@ class WorkbenchEngine:
         # seller attribution. That can launder unrelated unsupported clauses.
         # Attribution must already be claim-local before a paid artifact is
         # eligible for zero-cost reuse.
-        base_html = p["article_text"]
+        normalized_base = audit_article(
+            p["article_text"],
+            p["platform"],
+            p["vertical"],
+            _source_affiliate_link(p["source_text"]),
+        )["article"]
+        base_html = repair_source_grounding(
+            normalized_base, p["source_text"], p["vertical"]
+        )
         current_ledger = build_article_claim_ledger(sealed_pack, base_html)
         if current_ledger.get("attribution_violations"):
             return False
@@ -1622,6 +1644,17 @@ class WorkbenchEngine:
             if assembled_words >= target_words:
                 break
 
+        if assembled_words < target_words:
+            decision_block = self._sealed_pack_decision_block(p, sealed_pack)
+            if decision_block:
+                decision_text = BeautifulSoup(
+                    decision_block, "html.parser"
+                ).get_text(" ", strip=True)
+                additions.append(decision_block)
+                assembled_words += len(
+                    re.findall(r"\b[\w’'-]+\b", decision_text)
+                )
+
         if not additions:
             return False
         heading = base.new_tag("h2")
@@ -1688,6 +1721,263 @@ class WorkbenchEngine:
             },
         )
         return True
+
+    def _sealed_pack_decision_block(self, project, sealed_pack):
+        """Build useful zero-cost depth using only sealed claims and known gaps."""
+        product = sealed_pack.get("product") or {}
+        name = str(
+            product.get("product_name") or project.get("title") or "the product"
+        ).strip()
+        publication_claims = sealed_pack.get("publication_claims") or {}
+        feature_claims = [
+            str(item.get("text") or "").strip()
+            for item in publication_claims.get("manufacturer_claim", [])
+            if str(item.get("text") or "").strip()
+        ]
+        pricing_claims = [
+            str(item.get("text") or "").strip()
+            for item in publication_claims.get("pricing", [])
+            if str(item.get("text") or "").strip()
+        ]
+        pricing_math_html = (
+            "<p>Use the seller-reported total and per-unit figures to compare "
+            "the documented packages. Keep that product-price comparison "
+            "separate from shipping or checkout terms the sealed record does "
+            "not establish.</p>"
+        )
+        pricing_options = list(product.get("pricing") or [])
+        if len(pricing_options) >= 2:
+            def amount(value):
+                match = re.search(r"\d+(?:\.\d+)?", str(value or ""))
+                return float(match.group(0)) if match else None
+
+            single = next(
+                (
+                    item for item in pricing_options
+                    if re.search(
+                        r"\b(?:single|1[\s-]*unit)\b",
+                        str(item.get("package") or ""), re.I,
+                    )
+                ),
+                pricing_options[0],
+            )
+            bundle = next(
+                (
+                    item for item in pricing_options
+                    if re.search(
+                        r"\b[2-9]\d*[\s-]*unit\b",
+                        str(item.get("package") or ""), re.I,
+                    )
+                ),
+                pricing_options[-1],
+            )
+            quantity_match = re.search(
+                r"\b([2-9]\d*)[\s-]*unit\b",
+                str(bundle.get("package") or ""), re.I,
+            )
+            single_total = amount(single.get("price"))
+            single_per = amount(single.get("per_unit") or single.get("price"))
+            bundle_total = amount(bundle.get("price"))
+            bundle_per = amount(bundle.get("per_unit"))
+            if (
+                quantity_match and single_total is not None
+                and single_per is not None and bundle_total is not None
+                and bundle_per is not None
+            ):
+                quantity = int(quantity_match.group(1))
+                separate_total = single_total * quantity
+                total_difference = separate_total - bundle_total
+                unit_difference = single_per - bundle_per
+                pricing_math_html = (
+                    f"<p>Using only the seller-reported figures, {quantity} "
+                    f"single units at ${single_total:.2f} each would total "
+                    f"${separate_total:.2f}. The listed {quantity}-unit bundle "
+                    f"is ${bundle_total:.2f}, which is ${total_difference:.2f} "
+                    "less than that separate-unit total. The stated per-unit "
+                    f"figures differ by ${unit_difference:.2f}: "
+                    f"${single_per:.2f} for the single-unit option and "
+                    f"${bundle_per:.2f} for each unit in the bundle. These "
+                    "calculations compare documented product prices; they do "
+                    "not establish final delivered cost.</p>"
+                )
+        missing = [
+            str(item).replace("_", " ").strip()
+            for item in (sealed_pack.get("required_facts") or {}).get(
+                "missing", []
+            )
+            if str(item).strip()
+        ]
+        if not feature_claims and not pricing_claims:
+            return ""
+
+        parts = [
+            "<h2><strong>How to Use the Available Source Record</strong></h2>",
+            (
+                f"<p>The sealed record gives readers a defined but limited "
+                f"basis for evaluating {name}. Seller materials describe the "
+                f"offer in the following terms:</p>"
+            ),
+        ]
+        if feature_claims:
+            parts.append("<ul>")
+            parts.extend(
+                f"<li>Seller materials state: {claim}.</li>"
+                for claim in feature_claims
+            )
+            parts.append("</ul>")
+        if pricing_claims:
+            parts.append(
+                "<p>The pricing decision can be checked directly against the "
+                "seller-reported figures in the source pack:</p><ul>"
+            )
+            parts.extend(
+                f"<li>According to the seller: {claim}.</li>"
+                for claim in pricing_claims
+            )
+            parts.append(
+                "</ul><p>Those figures let a reader compare the stated total "
+                "and per-unit cost without assuming anything about shipping, "
+                "tax, or checkout terms that the record does not establish.</p>"
+            )
+        if missing:
+            readable = ", ".join(missing[:-1])
+            if len(missing) > 1:
+                readable += f", and {missing[-1]}"
+            else:
+                readable = missing[0]
+            parts.append(
+                f"<p>The source pack does not establish {readable}. These are "
+                "not minor details to fill with assumptions. They are practical "
+                "questions to verify on the current offer page or with the "
+                "seller before placing an order.</p>"
+            )
+        parts.append(
+            "<p><strong>Use this source-bound checklist before deciding:</strong></p>"
+            "<ul>"
+            "<li><strong>Confirm the exact item:</strong> Ask the seller to "
+            "identify the model being sold and everything included with one "
+            "unit. Product identity and package contents should come from the "
+            "seller, not from assumptions based on a photograph or category "
+            "label.</li>"
+            "<li><strong>Confirm operating specifications:</strong> Request the "
+            "input requirements, capacity limits, physical dimensions, power "
+            "use, and any stated compatibility limits. The current record does "
+            "not supply enough detail to infer those values.</li>"
+            "<li><strong>Ask for certification records:</strong> If the seller "
+            "states that the item carries a safety or performance certification, "
+            "request the exact certifying organization, standard, certificate "
+            "number, and product model covered by that record.</li>"
+            "<li><strong>Ask what testing supports the claims:</strong> Request "
+            "the test method, the measured outcome, who performed the work, and "
+            "whether the tested unit matches the one currently offered. The "
+            "sealed record does not establish independent test results.</li>"
+            "<li><strong>Read the complete purchase terms:</strong> Confirm the "
+            "warranty, refund window, return conditions, return address, and any "
+            "cost a buyer must pay to make a return. Do not infer terms that are "
+            "not shown in the source record.</li>"
+            "<li><strong>Verify the checkout total:</strong> The listed product "
+            "prices can be reported, but shipping was not established. Review "
+            "the final order summary before payment and separate the product "
+            "price from any additional amount shown at checkout.</li>"
+            "<li><strong>Confirm seller support:</strong> Look for a usable "
+            "contact method and ask who is responsible for product questions, "
+            "order problems, returns, and warranty requests. The available "
+            "record does not establish a complete corporate identity.</li>"
+            "<li><strong>Keep the decision tied to documented information:</strong> "
+            "Do not assume the device is appropriate for a certain room, type "
+            "of building, electrical condition, or equipment. Ask the seller "
+            "for product-specific guidance and the source supporting it.</li>"
+            "</ul>"
+        )
+        parts.append(
+            "<h3><strong>What the stated prices let a buyer calculate</strong></h3>"
+            + pricing_math_html +
+            "<h3><strong>How to read each seller statement</strong></h3>"
+            "<p>A seller statement tells the reader how the offer is being "
+            "presented. It does not, by itself, prove the size of an effect, "
+            "how consistently it occurs, or whether it will occur in a given "
+            "setting. For each claimed function, a useful follow-up is to ask "
+            "what measurement defines success, what test produced that "
+            "measurement, and whether the tested product is the same model "
+            "being sold. If that support is not supplied, the accurate "
+            "conclusion is that the function remains seller-reported.</p>"
+            "<h3><strong>What a complete offer page should clarify</strong></h3>"
+            "<p>The current decision is not only about a headline price. A "
+            "buyer also needs the exact item ordered, the number of units, the "
+            "checkout total, delivery terms, return instructions, warranty "
+            "coverage, and a working support route. Where the sealed record is "
+            "silent, this article must remain silent about the answer and "
+            "direct the reader to verify the term before payment.</p>"
+            "<h3><strong>A practical way to compare the claim and the record</strong></h3>"
+            "<p>Start with one seller statement at a time. Write down the "
+            "claimed function in plain language, then place the supporting "
+            "document beside it. A product-page statement belongs in the "
+            "seller-claim column. A specification sheet can define an operating "
+            "limit. A test report can describe a measured result. These records "
+            "serve different purposes and should not be treated as interchangeable. "
+            "If only the seller statement is available, keep the conclusion at "
+            "that level instead of converting it into a verified result.</p>"
+            "<h3><strong>Questions that make an answer useful</strong></h3>"
+            "<p>A useful answer should name the exact model, state the value or "
+            "term being confirmed, identify the document where it appears, and "
+            "give the date on which it was current. For a warranty or refund "
+            "term, the answer should also state the time limit, required steps, "
+            "and who pays any return cost. For a technical claim, the answer "
+            "should state what was measured and under what conditions. A vague "
+            "assurance does not resolve a specific missing fact.</p>"
+            "<h3><strong>How to choose between the stated packages</strong></h3>"
+            "<p>The bundle has a lower stated per-unit price, but that alone "
+            "does not decide which order makes sense. The relevant comparison "
+            "is the number of units the buyer has independently decided to "
+            "order, the stated total product price, and the complete checkout "
+            "amount. Ordering more units only to reach a lower unit price can "
+            "increase the total amount spent. Confirm quantity and terms first, "
+            "then use the sealed price figures for the arithmetic.</p>"
+            "<h3><strong>Keep a record of the current terms</strong></h3>"
+            "<p>Before payment, save the order summary and the seller pages that "
+            "state the product identity, price, and applicable policies. This "
+            "does not prove a performance claim, but it preserves the terms "
+            "shown when the decision was made. If a seller later supplies a "
+            "specification, certificate, or test document, check that the model "
+            "identifier matches the item in the order. Mismatched model numbers "
+            "should be resolved before relying on the document.</p>"
+            "<h3><strong>The source-bound decision rule</strong></h3>"
+            "<p>The strongest accurate case for the offer is the one the sealed "
+            "record can support: clearly attributed seller positioning, simple "
+            "access to the current offer, and exact reported package prices. "
+            "The unresolved items remain questions, not negative conclusions "
+            "and not implied promises. A reader can weigh the documented offer "
+            "against those open questions, ask the seller for the missing "
+            "records, and decide only after the answers are specific enough to "
+            "evaluate.</p>"
+        )
+        coverage_match = re.search(
+            r"Include exactly one quiet contextual backlink to the supplied "
+            r"coverage URL:\s*(https?://\S+)",
+            project.get("source_text") or "",
+            re.I,
+        )
+        if coverage_match:
+            coverage_url = coverage_match.group(1).rstrip(".,;)")
+            parts.append(
+                "<p>For additional context on the documented offer, readers "
+                f"can compare <a href=\"{coverage_url}\">related coverage of "
+                "the product's stated features and open questions</a> while "
+                "keeping the current sealed source record in control of the "
+                "facts used here.</p>"
+            )
+        parts.append(
+            "<p>A careful review should therefore separate three things: what "
+            "the seller says the product is designed to do, what the current "
+            "seller-reported prices are, and what remains unverified. The "
+            "available record does not support matching the product to a "
+            "particular room, building type, electrical condition, or kind of "
+            "equipment. It also does not establish independent performance or "
+            "safety conclusions. Keeping those boundaries clear allows the "
+            "offer to be considered on its documented terms without turning "
+            "an unanswered question into a product claim.</p>"
+        )
+        return "".join(parts)
 
     def _latest_successful_call_output(self, project_id, purpose):
         """Return the immutable paid response, regardless of presentation files."""
@@ -3160,9 +3450,11 @@ class WorkbenchEngine:
         if (
             report.get("verdict") != "approved"
             or report.get("reviewed_article_hash") != p["article_hash"]
-            or report.get("approval_purpose") not in {
-                "compliance", "final_signoff"
-            }
+            or report.get("approval_purpose") not in (
+                {"final_signoff"}
+                if self._uses_locked_call_path(p)
+                else {"compliance", "final_signoff"}
+            )
         ):
             raise RuntimeError(
                 "Package creation requires independent approval of the exact "

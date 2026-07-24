@@ -1678,6 +1678,21 @@ def test_double_escaped_html_and_anchor_attributes_are_repaired():
     assert 'href="https://partner.example/ecowatt"' in repaired
 
 
+def test_device_source_grounding_removes_unsupported_buyer_cohorts():
+    article = (
+        "<p>EcoWatt is marketed toward homeowners.</p>"
+        "<p>It may help protect sensitive electronics.</p>"
+        "<p>A qualified electrician can recommend hardwired surge protection "
+        "or electrical panel upgrades.</p>"
+        "<p>Seller materials describe voltage stabilization.</p>"
+    )
+    repaired = repair_source_grounding(article, "", "device")
+    assert "homeowners" not in repaired
+    assert "sensitive electronics" not in repaired
+    assert "panel upgrades" not in repaired
+    assert "Seller materials describe voltage stabilization." in repaired
+
+
 def test_barchart_set_article_uses_sealed_pack_affiliate_link(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     source = (
@@ -2693,6 +2708,40 @@ def test_package_builds_downloadable_zip(tmp_path):
     engine._ensure_package_export(engine.get(pid))
     assert engine.export_path(pid).exists()
     assert engine.get(pid)["stage"] == "package_ready"
+
+
+def test_locked_package_requires_final_signoff_purpose(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "AccessNewsWire", force_new=True
+    )
+    engine.import_manual_article(
+        pid,
+        "<p>Seller materials state Literal product fact 0.</p>"
+        "<p>Seller materials state Literal product fact 1.</p>"
+        "<p>Seller materials state Literal product fact 2.</p>"
+        + (
+            "<p>This source-grounded reader section explains the documented "
+            "offer clearly without adding unsupported product facts.</p>"
+        ) * 230,
+    )
+    p = engine.get(pid)
+    report = _independent_approval(engine, pid)
+    report["approval_purpose"] = "compliance"
+    engine._set_report(p, report, "signed_off", "approval.json")
+    assert not engine.offline_preflight(pid)["ready_for_packaging"]
+    with pytest.raises(RuntimeError, match="independent approval"):
+        engine._build_package(engine.get(pid))
 
 
 def test_next_action_includes_admin_queue(tmp_path):

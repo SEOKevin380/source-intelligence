@@ -90,7 +90,8 @@ def deterministic_findings(article, platform, vertical, affiliate_href=""):
     leaked_repair_instruction = re.search(
         r"\b(?:remove unsupported external assertions|"
         r"build depth from sealed product facts|"
-        r"semantic reconstruction required)\b",
+        r"semantic reconstruction required|"
+        r"reconstruct this sentence from isolated permitted claim text)\b",
         re.sub(r"<[^>]+>", " ", article),
         re.I,
     )
@@ -352,9 +353,13 @@ def deterministic_findings(article, platform, vertical, affiliate_href=""):
             r"tech[- ]forward consumers?|"
             r"reasonable trial product|"
             r"professional[- ]grade|whole[- ]home systems?|"
+            r"homeowners?|renters?|"
             r"renters?|residents? of older buildings?|"
             r"cannot install permanent electrical upgrades?|"
             r"entry[- ]level power[- ]conditioning|"
+            r"sensitive electronics|"
+            r"qualified electrician.{0,220}(?:recommend|appropriate|"
+            r"hardwired|panel upgrades?|shielding)|"
             # Missing-fact discussion may identify the recorded gap, but may
             # not invent availability, procedures, environments, or commerce.
             r"allow you to follow up with questions or concerns|"
@@ -364,7 +369,17 @@ def deterministic_findings(article, platform, vertical, affiliate_href=""):
             r"promotional offers? or discounts?|"
             r"most heavily regulated|"
             r"independent certification is often|"
-            r"critical decisions about electrical safety)\b",
+            r"critical decisions about electrical safety|"
+            r"standard disclosures? for electrical devices?|"
+            r"legitimate electrical devices? typically|"
+            r"standardized electrical engineering classification|"
+            r"monitor (?:the )?device'?s performance|"
+            r"track whether electrical issues|"
+            r"seek independent product testing|"
+            r"consumer electronics review organizations?|"
+            r"comprehensive surge protection|"
+            r"compliance with electrical codes|"
+            r"no configuration required)\b",
             plain_lower,
         )
         if vertical == "device" else []
