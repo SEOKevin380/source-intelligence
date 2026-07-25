@@ -41,7 +41,8 @@ def main() -> None:
     parser.add_argument(
         "--action",
         choices=(
-            "inspect", "recover", "continue", "rebuild", "import", "deliver"
+            "inspect", "recover", "continue", "rebuild", "adjudicate",
+            "import", "deliver"
         ),
         default="inspect",
     )
@@ -160,6 +161,36 @@ def main() -> None:
         print(json.dumps({
             "rebuild_action": action,
             "new_project": snapshot(engine, new_id),
+        }, indent=2))
+    elif args.action == "adjudicate":
+        project = engine.get(args.project_id)
+        report = project.get("last_report") or {}
+        if (
+            report.get("verdict") != "not_approved"
+            or report.get("reviewed_article_hash") != project["article_hash"]
+            or not report.get("mandatory_edits")
+        ):
+            raise RuntimeError(
+                "Adjudication requires an exact-hash independent rejection "
+                "with actionable mandatory edits."
+            )
+        changed = engine._adjudicate_current(
+            project, report, target_stage="admin_review"
+        )
+        if not changed:
+            raise RuntimeError(
+                "No safe exact reviewer replacement could be applied."
+            )
+        corrected = engine.get(args.project_id)
+        print(json.dumps({
+            "adjudicated": True,
+            "artifact": str(
+                engine.projects_dir
+                / args.project_id
+                / "07-adjudicated-revision.html"
+            ),
+            "after": snapshot(engine, args.project_id),
+            "corrected_article_hash": corrected["article_hash"],
         }, indent=2))
     elif args.action == "import":
         if not args.article_file:
