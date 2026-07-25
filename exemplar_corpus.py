@@ -365,10 +365,11 @@ def build_generation_blueprint(pack: dict, exemplars: list[dict]) -> str:
     """Convert banked precedents and captured context into one locked SEO plan."""
     product = pack.get("product") or {}
     product_name = str(product.get("product_name") or "Product").strip()
+    product_type = str(product.get("product_type") or "").strip().casefold()
     niche = infer_niche(
         product_name,
         str(product.get("category") or ""),
-        str(product.get("product_type") or ""),
+        product_type,
     )
     channel = pack.get("intake_manifest", {}).get("publishing_channel", "")
     playbook = build_approval_playbook(exemplars, channel, niche)
@@ -501,6 +502,81 @@ def build_generation_blueprint(pack: dict, exemplars: list[dict]) -> str:
             f"The Case for {product_name}",
         ),
     }
+    if product_type == "gaming" or niche == "gaming_gambling":
+        promises = {
+            "features": (
+                "the interactive game, seller-described digital content, "
+                "access, and current offer"
+            ),
+            "how_it_works": (
+                "how the free game works and how the seller describes the "
+                "resulting digital content"
+            ),
+            "pricing": (
+                "what is known about free access, paid options, billing, and "
+                "cancellation"
+            ),
+            "trust": (
+                "the documented entertainment offer, delivery method, support, "
+                "and material limits"
+            ),
+            "review": (
+                "a clear entertainment-product overview for prospective users"
+            ),
+            "buyer_fit": (
+                "the interactive format, seller-described content, and "
+                "entertainment-only reader fit"
+            ),
+        }
+        headline_patterns = {
+            "features": (
+                f"{product_name} Review 2026: Interactive Game, Digital "
+                "Content, and Offer Details"
+            ),
+            "how_it_works": (
+                f"How {product_name} Works: Free Game, Fortune Numbers, "
+                "and Digital Content"
+            ),
+            "pricing": (
+                f"{product_name} Pricing 2026: Free Access, Paid Options, "
+                "and Billing Details"
+            ),
+            "trust": (
+                f"{product_name} Buyer Guide 2026: Access, Delivery, "
+                "Support, and Terms"
+            ),
+            "review": (
+                f"{product_name} Review 2026: How the Interactive "
+                "Entertainment Offer Works"
+            ),
+            "buyer_fit": (
+                f"{product_name} 2026: Interactive Entertainment, "
+                "Digital Readings, and Reader Fit"
+            ),
+        }
+        shared_gaming_spine = (
+            f"What {product_name} Is",
+            "How the Free Interactive Game Works",
+            "How Fortune Numbers Shape the Experience",
+            "What the Seller Says Paid Access Includes",
+            "How Digital Delivery and Support Are Described",
+            "What Is Known About Billing and Cancellation",
+            "Current Pricing Availability and Offer Details",
+            "Entertainment-Only Limits and Reader Fit",
+            f"Questions About {product_name}",
+            f"The Bottom Line on {product_name}",
+        )
+        h2_spines = {
+            intent: shared_gaming_spine
+            for intent in (
+                "features",
+                "how_it_works",
+                "pricing",
+                "trust",
+                "review",
+                "buyer_fit",
+            )
+        }
     spine = h2_spines.get(selected_intent, h2_spines["features"])
     avoid = [
         item.get("title") for item in prior_profiles + competitor_profiles

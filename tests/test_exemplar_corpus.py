@@ -95,3 +95,22 @@ def test_energy_device_blueprint_is_product_first_not_audit_first():
     assert "Source Record" not in blueprint
     assert "Questions to Verify" not in blueprint
     assert "Evidence" not in blueprint
+
+
+def test_gaming_blueprint_never_inherits_electrical_device_structure():
+    pack = {
+        "product": {
+            "product_name": "Scratch Off Fortune",
+            "product_type": "gaming",
+            "category": "gaming",
+        },
+        "intake_manifest": {"publishing_channel": "AccessNewsWire"},
+        "contextual_source_profiles": [],
+    }
+    blueprint = build_generation_blueprint(pack, [])
+    assert "How the Free Interactive Game Works" in blueprint
+    assert "What the Seller Says Paid Access Includes" in blueprint
+    assert "Interactive Game, Digital Content" in blueprint
+    assert "Plug-In" not in blueprint
+    assert "Power-Management" not in blueprint
+    assert "Stated Optimization Period" not in blueprint

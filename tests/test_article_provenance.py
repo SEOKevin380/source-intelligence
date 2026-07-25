@@ -149,6 +149,63 @@ def test_according_to_seller_is_valid_seller_attribution():
     assert not ledger["attribution_violations"]
 
 
+def test_paragraph_opening_attribution_governs_related_following_sentence():
+    pack = {
+        "publication_claims": {
+            "feature": [{
+                "claim_id": "digital-content",
+                "text": "Digital readings and reports delivered after purchase",
+                "publication_treatment": "seller_attribution_required",
+            }]
+        }
+    }
+    ledger = build_article_claim_ledger(
+        pack,
+        "<p>According to the seller, paid access adds digital content. "
+        "Digital readings and reports are delivered after purchase.</p>",
+    )
+    assert ledger["used_claim_count"] == 1
+    assert not ledger["attribution_violations"]
+
+
+def test_later_attribution_does_not_flow_backward_to_earlier_claim():
+    pack = {
+        "publication_claims": {
+            "feature": [{
+                "claim_id": "digital-content",
+                "text": "Digital readings and reports delivered after purchase",
+                "publication_treatment": "seller_attribution_required",
+            }]
+        }
+    }
+    ledger = build_article_claim_ledger(
+        pack,
+        "<p>Digital readings and reports are delivered after purchase. "
+        "The seller describes these as personalized materials.</p>",
+    )
+    assert ledger["used_claim_count"] == 1
+    assert ledger["attribution_violations"]
+
+
+def test_attribution_scope_does_not_cross_html_blocks():
+    pack = {
+        "publication_claims": {
+            "feature": [{
+                "claim_id": "digital-content",
+                "text": "Digital readings and reports delivered after purchase",
+                "publication_treatment": "seller_attribution_required",
+            }]
+        }
+    }
+    ledger = build_article_claim_ledger(
+        pack,
+        "<p>According to the seller, paid access adds digital content.</p>"
+        "<p>Digital readings and reports are delivered after purchase.</p>",
+    )
+    assert ledger["used_claim_count"] == 1
+    assert ledger["attribution_violations"]
+
+
 def test_mapped_claim_cannot_smuggle_an_extra_number():
     pack = {
         "publication_claims": {

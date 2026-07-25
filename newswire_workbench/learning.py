@@ -248,13 +248,20 @@ def deterministic_findings(article, platform, vertical, affiliate_href=""):
         (normalized_caveats.count(item) for item in set(normalized_caveats)),
         default=0,
     )
-    adversarial_headings = len(re.findall(
-        r"<h[23]\b[^>]*>.*?\b(?:claims? versus|claims? vs\.?|"
-        r"why .* (?:fails?|doesn.t work)|marketing fiction|the prosecution|"
-        r"critical issue|missing or unverified|what (?:is|remains) missing)\b",
-        article,
-        re.I | re.S,
-    ))
+    heading_texts = [
+        node.get_text(" ", strip=True).casefold()
+        for node in soup.find_all(["h2", "h3"])
+    ]
+    adversarial_headings = sum(
+        bool(re.search(
+            r"\b(?:claims? versus|claims? vs\.?|"
+            r"why .* (?:fails?|doesn.t work)|marketing fiction|the prosecution|"
+            r"critical issue|missing or unverified|what (?:is|remains) missing)\b",
+            heading,
+            re.I,
+        ))
+        for heading in heading_texts
+    )
     plain_lower = re.sub(r"<[^>]+>", " ", article).casefold()
     editorial_process_terms = re.findall(
         r"\b(?:sealed (?:record|source|pack)|source pack|source-bound|"
@@ -275,13 +282,16 @@ def deterministic_findings(article, platform, vertical, affiliate_href=""):
         r"\b(?:ask|request|confirm|verify|check)\b",
         plain_lower,
     ))
-    verification_headings = len(re.findall(
-        r"<h[23]\b[^>]*>.*?\b(?:verify|verification|confirm|source record|"
-        r"source-bound|how to read each seller statement|questions that make "
-        r"an answer useful)\b",
-        article,
-        re.I | re.S,
-    ))
+    verification_headings = sum(
+        bool(re.search(
+            r"\b(?:verify|verification|confirm|source record|source-bound|"
+            r"how to read each seller statement|questions that make "
+            r"an answer useful)\b",
+            heading,
+            re.I,
+        ))
+        for heading in heading_texts
+    )
     repeated_price_options = max(
         len(re.findall(r"\bsingle unit\s*:\s*\$49\.99\b", plain_lower)),
         len(re.findall(r"\b4-unit bundle\s*:\s*\$139\.96\b", plain_lower)),

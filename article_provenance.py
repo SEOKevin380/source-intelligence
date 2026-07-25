@@ -44,26 +44,87 @@ def _negated(value: str) -> bool:
     ))
 
 
-def _sentences(article: str) -> list[str]:
-    """Split within semantic blocks so headings cannot contaminate claims.
+def _attribution_signals(value: str) -> tuple[bool, bool]:
+    """Return seller/source attribution signals in one semantic scope."""
+    lowered = value.casefold()
+    seller_attributed = bool(re.search(
+        r"\b(?:seller|brand|offer|vendor|manufacturer|product page|"
+        r"sales page|source materials?|materials?)\b.{0,50}"
+        r"\b(?:states?|says?|describes?|lists?|reports?|claims?|"
+        r"calls?|presents?|identif(?:y|ies)|connects?|uses?|includes?|"
+        r"provides?|positions?)\b",
+        lowered,
+    ))
+    # A seller/source noun phrase can govern a later reporting verb in a long
+    # but single sentence ("Seller headings such as ... describe ...").
+    seller_attributed = seller_attributed or bool(re.search(
+        r"^\s*(?:the\s+)?(?:seller|brand|offer|vendor|manufacturer|"
+        r"product page|sales page|source materials?|materials?)\b"
+        r".*\b(?:states?|says?|describes?|lists?|reports?|claims?|"
+        r"calls?|presents?|identif(?:y|ies)|connects?|uses?|includes?|"
+        r"provides?|positions?)\b",
+        lowered,
+    ))
+    seller_attributed = seller_attributed or bool(re.search(
+        r"\b(?:seller|vendor|manufacturer|brand|offer|product-page)"
+        r"[- ](?:described|reported|stated|presented|listed|claimed)\b|"
+        r"\b(?:seller|vendor|manufacturer|brand|offer)(?:'s|’s)\s+"
+        r"(?:description|language|message|instructions?|stated|"
+        r"reported|claimed|listed|presented)\b",
+        lowered,
+    ))
+    seller_attributed = seller_attributed or bool(re.search(
+        r"\baccording to (?:the )?(?:seller|vendor|manufacturer|"
+        r"product page|sales page|offer)\b",
+        lowered,
+    ))
+    source_attributed = seller_attributed or bool(re.search(
+        r"\b(?:according to|the source|the record|the cited|"
+        r"documentation|reported by|published by)\b",
+        lowered,
+    ))
+    return seller_attributed, source_attributed
+
+
+def _sentence_records(article: str) -> list[dict]:
+    """Split within semantic blocks and preserve forward attribution scope.
 
     Flattening the entire document joined an H2 to its following paragraph.
     That changed the apparent subject of pricing and feature sentences and
     produced both false mappings and hidden attribution failures.
+
+    Natural copy often opens a paragraph with "According to the seller" and
+    then gives two or three related sentences. That attribution governs only
+    the remainder of the same paragraph; it never flows backward to a claim
+    stated before the attribution or forward into another HTML block.
     """
     soup = BeautifulSoup(html.unescape(article or ""), "html.parser")
     blocks = soup.find_all(["p", "li", "td", "th", "figcaption"])
     if not blocks:
         blocks = [soup]
-    sentences = []
+    records = []
     for block in blocks:
         plain = re.sub(r"\s+", " ", block.get_text(" ", strip=True)).strip()
-        sentences.extend(
-            item.strip()
-            for item in re.split(r"(?<=[.!?])\s+", plain)
-            if len(item.strip()) >= 20
-        )
-    return sentences
+        seller_scope = False
+        source_scope = False
+        for item in re.split(r"(?<=[.!?])\s+", plain):
+            sentence = item.strip()
+            if len(sentence) < 20:
+                continue
+            local_seller, local_source = _attribution_signals(sentence)
+            seller_scope = seller_scope or local_seller
+            source_scope = source_scope or local_source
+            records.append({
+                "text": sentence,
+                "seller_attributed": seller_scope,
+                "source_attributed": source_scope,
+            })
+    return records
+
+
+def _sentences(article: str) -> list[str]:
+    """Compatibility wrapper returning only sentence text."""
+    return [record["text"] for record in _sentence_records(article)]
 
 
 def build_article_claim_ledger(pack: dict, article: str) -> dict:
@@ -90,7 +151,8 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
 
     mappings = []
     attribution_violations = []
-    for sentence in _sentences(article):
+    for sentence_record in _sentence_records(article):
+        sentence = sentence_record["text"]
         sentence_tokens = _tokens(sentence)
         matches = []
         for claim in claims:
@@ -126,44 +188,8 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
                 })
         if matches:
             mappings.append({"article_sentence": sentence, "claims": matches})
-            sentence_lower = sentence.casefold()
-            seller_attributed = bool(re.search(
-                r"\b(?:seller|brand|offer|vendor|manufacturer|product page|"
-                r"sales page|source materials?|materials?)\b.{0,50}"
-                r"\b(?:states?|says?|describes?|lists?|reports?|claims?|"
-                r"calls?|presents?|identif(?:y|ies)|connects?|uses?|includes?|"
-                r"provides?|positions?)\b",
-                sentence_lower,
-            ))
-            # A seller/source noun phrase can govern a later reporting verb in
-            # a long but single semantic block ("Seller headings such as ...
-            # describe ..."). Do not impose an arbitrary 50-character window.
-            seller_attributed = seller_attributed or bool(re.search(
-                r"^\s*(?:the\s+)?(?:seller|brand|offer|vendor|manufacturer|"
-                r"product page|sales page|source materials?|materials?)\b"
-                r".*\b(?:states?|says?|describes?|lists?|reports?|claims?|"
-                r"calls?|presents?|identif(?:y|ies)|connects?|uses?|includes?|"
-                r"provides?|positions?)\b",
-                sentence_lower,
-            ))
-            seller_attributed = seller_attributed or bool(re.search(
-                r"\b(?:seller|vendor|manufacturer|brand|offer|product-page)"
-                r"[- ](?:described|reported|stated|presented|listed|claimed)\b|"
-                r"\b(?:seller|vendor|manufacturer|brand|offer)(?:'s|’s)\s+"
-                r"(?:description|language|message|instructions?|stated|"
-                r"reported|claimed|listed|presented)\b",
-                sentence_lower,
-            ))
-            seller_attributed = seller_attributed or bool(re.search(
-                r"\baccording to (?:the )?(?:seller|vendor|manufacturer|"
-                r"product page|sales page|offer)\b",
-                sentence_lower,
-            ))
-            source_attributed = seller_attributed or bool(re.search(
-                r"\b(?:according to|the source|the record|the cited|"
-                r"documentation|reported by|published by)\b",
-                sentence_lower,
-            ))
+            seller_attributed = sentence_record["seller_attributed"]
+            source_attributed = sentence_record["source_attributed"]
             for claim in matches:
                 treatment = claim.get("publication_treatment")
                 if (

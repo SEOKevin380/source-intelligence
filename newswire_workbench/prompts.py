@@ -110,8 +110,11 @@ def generation_prompt(source_text: str, platform: str, vertical: str,
         "with generic consumer advice."
         if platform == "Barchart Advertorial" and vertical == "device"
         else
-        "Use the length needed to answer the reader's material questions fully; "
-        "never add filler merely to reach a word count."
+        f"For this {profile['label']}, produce "
+        f"{profile['target_min']:,}–{profile['target_max']:,} useful words "
+        f"when the sealed record supports it. Treat {profile['hard_floor']:,} "
+        "words as a hard rejection floor, not as the target. Answer the "
+        "reader's material questions fully without generic filler."
     )
     barchart_coverage_plan = (
         f"""
@@ -132,6 +135,27 @@ def generation_prompt(source_text: str, platform: str, vertical: str,
   Complete a silent word-count and coverage check before returning HTML.
 """
         if platform == "Barchart Advertorial" and vertical == "device"
+        else ""
+    )
+    accesswire_gaming_plan = (
+        f"""
+- AccessNewsWire gaming/lottery-entertainment execution plan: produce
+  {profile['target_min']:,}–{profile['target_max']:,} useful words on the first
+  attempt. Treat {profile['hard_floor']:,} as a hard rejection floor.
+  Allocate distinct coverage to: opening product identity and entertainment
+  frame (140–190 words); free interactive game mechanics (180–240);
+  seller-described personalized content and paid inclusions (300–380);
+  access, digital delivery, and support (180–240); documented trial, billing,
+  cancellation, and refund terms (220–280); pricing availability and material
+  gaps stated once (100–150); entertainment-only reader fit and limitations
+  (180–240); FAQs and sourced close (260–340). These are coverage budgets, not
+  mandatory headings. Omit unavailable price and jurisdiction facts rather
+  than guessing. Never imply better odds, predictive accuracy, winnings,
+  guaranteed outcomes, or gambling/investment value unless the sealed claim
+  ledger expressly permits that exact statement.
+  Complete a silent word-count and coverage check before returning HTML.
+"""
+        if platform == "AccessNewsWire" and vertical == "gaming"
         else ""
     )
     editorial_context, sealed_facts = split_editorial_context(source_text)
@@ -163,6 +187,11 @@ Operating rules:
   `publication_treatment: source_attribution_required` must name or describe
   their recorded source. Only `direct_fact_allowed` claims may be stated
   directly. Never use `excluded_publication_claims`, even with attribution.
+- Put required attribution before the first governed claim in each paragraph
+  or list item. One natural paragraph-opening phrase such as “According to the
+  seller” may govern the related sentences that follow in that same paragraph.
+  Attribution never flows backward from a later sentence or forward into
+  another paragraph.
 - For device specifications, setup, placement, operation, optimization time,
   and functions taken from seller or third-party descriptions, use explicit
   attribution such as “seller materials state” or “the offer describes.”
@@ -215,6 +244,7 @@ Operating rules:
   accurate, and compelling than supplied ranking titles.
 - Editorial depth contract: {depth_contract}
 {barchart_coverage_plan}
+{accesswire_gaming_plan}
 - Keep the opening disclosure concise: “Paid Advertorial: A commission may be
   earned when a purchase is made through links in this article.” Do not explain
   link routing, intermediary domains, or tracking mechanics to the reader.
@@ -472,6 +502,21 @@ def revision_prompt(source_text: str, article: str, report: dict,
         if platform == "Barchart Advertorial" and vertical == "device"
         else ""
     )
+    accesswire_gaming_repair_plan = (
+        f"""
+- AccessNewsWire gaming/lottery-entertainment repair plan: return
+  {profile['target_min']:,}–{profile['target_max']:,} useful words and never
+  fall below {profile['hard_floor']:,}. Preserve clean product-specific prose,
+  then fill only unanswered reader jobs: product identity, free game mechanics,
+  seller-described digital content, access/delivery, support, documented
+  billing/cancellation/refund terms, pricing availability, entertainment-only
+  limits, reader fit, FAQs, and sourced close. Omit unavailable price and
+  jurisdiction facts rather than guessing. Do not add odds, predictions,
+  winnings, guaranteed outcomes, or gambling/investment value.
+"""
+        if platform == "AccessNewsWire" and vertical == "gaming"
+        else ""
+    )
     final_depth_check = (
         f"""- For this {profile['label']}, the saved body must contain at least
   {profile['hard_floor']:,} useful words; target
@@ -527,6 +572,10 @@ compliance report below.
   seller/offer attribution. Preserve `source_attribution_required` claims only
   with explicit recorded-source attribution. Never restore an
   `excluded_publication_claim`.
+- Put required attribution before the first governed claim in each paragraph
+  or list item. One natural paragraph-opening attribution may govern related
+  sentences that follow in that same paragraph, but it never flows backward
+  or into another HTML block.
 - Return the complete revised article HTML only.
 - Apply reviewer replacements as editorial directions; never paste their
   instructional wording into the article. Every reader-facing sentence must
@@ -573,6 +622,7 @@ compliance report below.
   neighboring sections using permitted claims, recorded prices, recorded
   contact facts, buyer questions, and clearly labeled verification gaps.
 {barchart_repair_plan}
+{accesswire_gaming_repair_plan}
 - Do not invent connective factual claims. In particular, do not infer risks
   to appliances, compatibility with existing electrical systems, available
   customer support, return rights, or comparative value unless those exact

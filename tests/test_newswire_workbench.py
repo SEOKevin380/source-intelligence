@@ -156,6 +156,27 @@ def test_barchart_prompts_target_excellence_above_the_rejection_floor():
         assert "banked niche" in prompt
 
 
+def test_accesswire_gaming_prompts_bind_depth_html_and_local_attribution():
+    draft_prompt = generation_prompt(
+        "sealed source", "AccessNewsWire", "gaming", "rules"
+    )
+    repair_prompt = revision_prompt(
+        "sealed source",
+        "<p>draft</p>",
+        {"mandatory_edits": []},
+        "AccessNewsWire",
+        "gaming",
+    )
+    for prompt in (draft_prompt, repair_prompt):
+        assert "1,600–2,200 useful words" in prompt
+        assert "1,400" in prompt
+        assert "gaming/lottery-entertainment" in prompt
+        assert "attribution before the first governed claim" in prompt
+        assert "complete revised article HTML only" in prompt or (
+            "Output article HTML only" in prompt
+        )
+
+
 def test_review_context_keeps_whole_governed_sections_only():
     context = (
         "═══ LOCKED GENERATION BLUEPRINT ═══\nkeep blueprint\n"
@@ -1490,6 +1511,26 @@ def test_ecowatt_shaped_preflight_exposes_all_semantic_failures_together():
     assert report["passed"] is False
 
 
+def test_verification_text_outside_headings_does_not_trigger_heading_audit():
+    article = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<h2><strong>What the Product Is</strong></h2>"
+        "<p>According to the seller, this is an entertainment product.</p>"
+        "<h2><strong>How the Game Works</strong></h2>"
+        "<p>The offer describes an interactive experience for readers.</p>"
+        "<h2><strong>Offer Details</strong></h2>"
+        "<p>Pricing verification is discussed once in this paragraph.</p>"
+        "<h2><strong>Reader Questions</strong></h2>"
+        + "<p>General reader context explains the available details.</p>" * 180
+    )
+    ids = {
+        item["id"] for item in deterministic_findings(
+            article, "AccessNewsWire", "gaming"
+        )
+    }
+    assert "D21" not in ids
+
+
 def test_offline_preflight_does_not_claim_ready_without_exact_semantic_approval(
     tmp_path,
 ):
@@ -2518,6 +2559,37 @@ def test_reviewer_exact_edits_after_pre_review_repair_reach_signoff(
         engine._run_next_unlocked(pid, "")
     assert engine.get(pid)["stage"] == "revised"
     assert "Repaired exact wording." in engine.get(pid)["article_text"]
+
+
+def test_provenance_reconstruction_instruction_is_never_pasted_into_article(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Test", "AccessNewsWire", "gaming source", "gaming"
+    )
+    article = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<p>Digital readings and reports are delivered after purchase.</p>"
+    )
+    engine.import_manual_article(pid, article)
+    project = engine.get(pid)
+    saved_article = project["article_text"]
+    changed = engine._adjudicate_current(project, {
+        "mandatory_edits": [{
+            "id": "P-ATTR-1",
+            "exact_text": (
+                "Digital readings and reports are delivered after purchase."
+            ),
+            "replacement": (
+                "Reconstruct this sentence from isolated permitted claim text "
+                "and add claim-local attribution."
+            ),
+        }]
+    })
+    assert changed is False
+    assert engine.get(pid)["article_text"] == saved_article
+    assert "Reconstruct this sentence" not in engine.get(pid)["article_text"]
 
 
 def test_clean_admin_artifact_ignores_stale_depth_event_and_reaches_signoff(

@@ -3940,8 +3940,19 @@ class WorkbenchEngine:
         original_title = release_title
         applied, skipped = [], []
         for item in report.get("mandatory_edits", []) or []:
+            finding_id = str(item.get("id") or "")
             exact = str(item.get("exact_text", "") or "")
             replacement = str(item.get("replacement", "") or "")
+            if finding_id.startswith(("P-ATTR-", "P-COVERAGE-")):
+                # Provenance replacements are reconstruction instructions for
+                # the bounded writer, not literal reader-facing copy. Applying
+                # them with str.replace corrupts HTML and exposes workflow
+                # language such as "Reconstruct this sentence."
+                skipped.append({
+                    "id": finding_id,
+                    "reason": "model_reconstruction_required",
+                })
+                continue
             replacement = replacement.replace(
                 "This advertorial may receive compensation if readers click the partner link and subscribe.",
                 "Compensation may be received if a subscription is purchased through the partner link in this advertorial.",
