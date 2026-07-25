@@ -6,8 +6,13 @@ import hashlib
 import html
 import json
 import re
+from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
+from source_pack_contract import (
+    normalize_contact_information,
+    normalized_intake_manifest,
+)
 
 
 def extract_sealed_pack(source_text: str) -> dict:
@@ -204,6 +209,186 @@ def _sentences(article: str) -> list[str]:
     return [record["text"] for record in _sentence_records(article)]
 
 
+def _contact_section(article: str) -> tuple[str, list[str]]:
+    """Return visible contact-section text and its link destinations."""
+    soup = BeautifulSoup(html.unescape(article or ""), "html.parser")
+    heading = None
+    for candidate in reversed(soup.find_all(["h1", "h2", "h3"])):
+        if "contact" in candidate.get_text(" ", strip=True).casefold():
+            heading = candidate
+            break
+    if heading is None:
+        return "", []
+    heading_level = int(heading.name[1])
+    nodes = [heading]
+    for sibling in heading.next_siblings:
+        name = getattr(sibling, "name", None)
+        if (
+            name in {"h1", "h2", "h3"}
+            and int(name[1]) <= heading_level
+        ):
+            break
+        nodes.append(sibling)
+    text = " ".join(
+        node.get_text(" ", strip=True)
+        if hasattr(node, "get_text")
+        else str(node)
+        for node in nodes
+    )
+    fragment = BeautifulSoup(
+        "".join(str(node) for node in nodes), "html.parser"
+    )
+    links = [
+        str(anchor.get("href") or "").strip()
+        for anchor in fragment.find_all("a")
+        if str(anchor.get("href") or "").strip()
+    ]
+    return re.sub(r"\s+", " ", text).strip(), links
+
+
+def _phone_digits(value: str) -> str:
+    return re.sub(r"\D", "", str(value or ""))
+
+
+def _url_host(value: str) -> str:
+    parsed = urlparse(str(value or "").strip())
+    return (parsed.hostname or "").casefold().removeprefix("www.")
+
+
+def _contact_coverage_violations(pack: dict, article: str) -> list[dict]:
+    """Require every submitted public support fact in the final contact block."""
+    manifest = normalized_intake_manifest(pack)
+    contact = normalize_contact_information(
+        manifest.get("contact_information")
+    )
+    refund_terms = str(manifest.get("refund_terms") or "").strip()
+    violations = []
+    section_text, section_links = _contact_section(article)
+    section_folded = section_text.casefold()
+    link_folded = [link.casefold() for link in section_links]
+
+    if contact and not section_text:
+        violations.append({
+            "id": "P-COVERAGE-CONTACT-SECTION",
+            "issue": (
+                "Structured support details were supplied, but the article "
+                "has no final Contact Information section."
+            ),
+            "required": 1,
+            "actual": 0,
+        })
+        return violations
+
+    text_fields = {
+        "media_contact_name": "media contact name",
+        "order_support_provider": "order support provider",
+    }
+    for field, label in text_fields.items():
+        value = str(contact.get(field) or "").strip()
+        if value and value.casefold() not in section_folded:
+            violations.append({
+                "id": f"P-COVERAGE-CONTACT-{field.upper()}",
+                "issue": (
+                    f"The supplied {label} is missing from the final "
+                    "Contact Information section."
+                ),
+                "required": value,
+                "actual": "",
+            })
+
+    email = str(contact.get("support_email") or "").strip().casefold()
+    if email and not (
+        email in section_folded
+        or f"mailto:{email}" in link_folded
+    ):
+        violations.append({
+            "id": "P-COVERAGE-CONTACT-SUPPORT_EMAIL",
+            "issue": (
+                "The supplied product support email is missing from the final "
+                "Contact Information section."
+            ),
+            "required": email,
+            "actual": "",
+        })
+
+    for field, label in (
+        ("support_phone_us", "U.S. support phone"),
+        ("support_phone_international", "international support phone"),
+    ):
+        value = str(contact.get(field) or "").strip()
+        digits = _phone_digits(value)
+        section_digits = _phone_digits(section_text)
+        link_digits = {_phone_digits(link) for link in section_links}
+        if digits and digits not in section_digits and digits not in link_digits:
+            violations.append({
+                "id": f"P-COVERAGE-CONTACT-{field.upper()}",
+                "issue": (
+                    f"The supplied {label} is missing from the final "
+                    "Contact Information section."
+                ),
+                "required": value,
+                "actual": "",
+            })
+
+    order_url = str(contact.get("order_support_url") or "").strip()
+    order_host = _url_host(order_url)
+    section_hosts = {_url_host(link) for link in section_links}
+    if order_host and (
+        order_host not in section_hosts
+        and order_host not in section_folded
+    ):
+        violations.append({
+            "id": "P-COVERAGE-CONTACT-ORDER_SUPPORT_URL",
+            "issue": (
+                "The supplied order-support destination is missing from the "
+                "final Contact Information section."
+            ),
+            "required": order_url,
+            "actual": "",
+        })
+
+    official_url = str(
+        (pack.get("product") or {}).get("official_url") or ""
+    ).strip()
+    official_host = _url_host(official_url)
+    if contact and official_host and (
+        official_host not in section_hosts
+        and official_host not in section_folded
+    ):
+        violations.append({
+            "id": "P-COVERAGE-CONTACT-OFFICIAL_URL",
+            "issue": (
+                "The official product website is missing from the final "
+                "Contact Information section."
+            ),
+            "required": official_url,
+            "actual": "",
+        })
+
+    if refund_terms:
+        article_folded = BeautifulSoup(
+            html.unescape(article or ""), "html.parser"
+        ).get_text(" ", strip=True).casefold()
+        required_numbers = _numbers(refund_terms)
+        has_refund_word = bool(re.search(
+            r"\b(?:refund|money[- ]back|guarantee)\b", article_folded
+        ))
+        if (
+            not required_numbers.issubset(_numbers(article_folded))
+            or not has_refund_word
+        ):
+            violations.append({
+                "id": "P-COVERAGE-REFUND-TERMS",
+                "issue": (
+                    "The structured refund/guarantee terms are missing from "
+                    "the article."
+                ),
+                "required": refund_terms,
+                "actual": "",
+            })
+    return violations
+
+
 def build_article_claim_ledger(pack: dict, article: str) -> dict:
     claims = []
     for claim_type, items in (pack.get("publication_claims") or {}).items():
@@ -350,8 +535,11 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
             "required": 1,
             "actual": 0,
         })
+    coverage_violations.extend(
+        _contact_coverage_violations(pack, article)
+    )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "source_pack_hash": (pack.get("source_pack_contract") or {}).get(
             "sha256", ""
         ),

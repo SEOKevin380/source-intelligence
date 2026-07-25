@@ -4,6 +4,7 @@ import copy
 import hashlib
 import html
 import json
+import re
 from datetime import datetime, timezone
 
 from offering_taxonomy import (
@@ -58,7 +59,151 @@ STRUCTURED_PRODUCT_CLAIM_TYPES = {
     "warnings": "feature",
     "guarantees": "refund_policy",
     "refund_policy": "refund_policy",
+    "company": "company_info",
 }
+
+CONTACT_INFORMATION_FIELDS = (
+    "media_contact_name",
+    "support_email",
+    "support_phone_us",
+    "support_phone_international",
+    "order_support_provider",
+    "order_support_url",
+)
+
+
+def normalize_contact_information(value=None) -> dict:
+    """Return the stable public contact schema used across intake and output."""
+    raw = value if isinstance(value, dict) else {}
+    aliases = {
+        "media_contact": "media_contact_name",
+        "contact_name": "media_contact_name",
+        "email": "support_email",
+        "product_support_email": "support_email",
+        "phone": "support_phone_us",
+        "phone_us": "support_phone_us",
+        "us_phone": "support_phone_us",
+        "phone_intl": "support_phone_international",
+        "international_phone": "support_phone_international",
+        "order_support": "order_support_provider",
+        "order_support_link": "order_support_url",
+    }
+    normalized = {}
+    for key, value_item in raw.items():
+        canonical = aliases.get(str(key).strip(), str(key).strip())
+        if canonical not in CONTACT_INFORMATION_FIELDS:
+            continue
+        clean = " ".join(str(value_item or "").split()).strip()
+        if clean and clean.casefold() not in {
+            "unknown", "not established", "n/a", "none",
+        }:
+            normalized[canonical] = clean
+    return {
+        key: normalized[key]
+        for key in CONTACT_INFORMATION_FIELDS
+        if key in normalized
+    }
+
+
+def extract_legacy_intake_terms(operator_notes: str) -> tuple[dict, str]:
+    """Recover common support/refund fields from historical free-text intake.
+
+    This migration exists so already-researched products do not require another
+    source crawl merely because the old form stored structured facts in Notes.
+    """
+    notes = str(operator_notes or "").strip()
+    if not notes:
+        return {}, ""
+
+    contact = {}
+    email_match = re.search(
+        r"(?im)^\s*(?:product\s+support\s+)?email\s*:\s*"
+        r"([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})\s*$",
+        notes,
+    )
+    if email_match:
+        contact["support_email"] = email_match.group(1)
+
+    media_match = re.search(
+        r"(?im)^\s*(?:media\s+contact|contact\s+name)\s*:\s*(.+?)\s*$",
+        notes,
+    )
+    if media_match:
+        contact["media_contact_name"] = media_match.group(1)
+
+    us_phone = re.search(
+        r"(?im)^\s*(?:U\.?S\.?|USA|United\s+States)\s*:\s*"
+        r"(\+?[\d().\s-]{7,})\s*$",
+        notes,
+    )
+    if us_phone:
+        contact["support_phone_us"] = us_phone.group(1).strip()
+
+    international_phone = re.search(
+        r"(?im)^\s*(?:INTL?|International)\s*:\s*"
+        r"(\+?[\d().\s-]{7,})\s*$",
+        notes,
+    )
+    if international_phone:
+        contact["support_phone_international"] = (
+            international_phone.group(1).strip()
+        )
+
+    order_label = re.search(
+        r"(?im)^\s*([A-Za-z0-9 .&'-]+?)\s+Order\s+Support\s*:"
+        r"\s*(https?://\S+)?\s*$",
+        notes,
+    )
+    if order_label:
+        provider = order_label.group(1).strip()
+        if provider:
+            contact["order_support_provider"] = provider
+        if order_label.group(2):
+            contact["order_support_url"] = order_label.group(2).strip()
+        else:
+            following = notes[order_label.end():]
+            url_match = re.search(r"(?im)^\s*(https?://\S+)\s*$", following)
+            if url_match:
+                contact["order_support_url"] = url_match.group(1).strip()
+
+    refund_match = re.search(
+        r"(?im)^\s*(.*\b\d{1,3}\s*[- ]?\s*day\b.*"
+        r"(?:refund|money[- ]back|guarantee).*)\s*$",
+        notes,
+    )
+    if not refund_match:
+        refund_match = re.search(
+            r"(?im)^\s*(.*(?:refund|money[- ]back|guarantee).*\b"
+            r"\d{1,3}\s*[- ]?\s*day\b.*)\s*$",
+            notes,
+        )
+    refund_terms = " ".join(refund_match.group(1).split()) if refund_match else ""
+    return normalize_contact_information(contact), refund_terms
+
+
+def normalized_intake_manifest(pack: dict) -> dict:
+    """Return a manifest with structured public contact/terms migration."""
+    manifest = copy.deepcopy((pack or {}).get("intake_manifest") or {})
+    structured = normalize_contact_information(
+        manifest.get("contact_information")
+    )
+    legacy_contact, legacy_refund = extract_legacy_intake_terms(
+        manifest.get("operator_notes", "")
+    )
+    for key, value in legacy_contact.items():
+        structured.setdefault(key, value)
+    if structured:
+        manifest["contact_information"] = structured
+    else:
+        manifest.pop("contact_information", None)
+    refund_terms = " ".join(
+        str(manifest.get("refund_terms") or legacy_refund).split()
+    ).strip()
+    if refund_terms:
+        manifest["refund_terms"] = refund_terms
+    else:
+        manifest.pop("refund_terms", None)
+    return manifest
 
 _CONTEXTUAL_SELLER_HEADING_BLOCKLIST = (
     "order",
@@ -104,7 +249,10 @@ def form_values_from_pack(pack: dict) -> dict:
     for legacy packs created before the manifest was introduced.
     """
     product = (pack or {}).get("product", {}) or {}
-    manifest = (pack or {}).get("intake_manifest", {}) or {}
+    manifest = normalized_intake_manifest(pack or {})
+    contact = normalize_contact_information(
+        manifest.get("contact_information")
+    )
     return {
         "product_url": manifest.get("product_url") or product.get("official_url", ""),
         "product_name": manifest.get("product_name") or product.get("product_name", "Unknown"),
@@ -120,6 +268,17 @@ def form_values_from_pack(pack: dict) -> dict:
         "rd_competitor": manifest.get("competitor_releases", ""),
         "rd_client_title": manifest.get("client_locked_title", ""),
         "rd_notes": manifest.get("operator_notes", ""),
+        "rd_media_contact_name": contact.get("media_contact_name", ""),
+        "rd_support_email": contact.get("support_email", ""),
+        "rd_support_phone_us": contact.get("support_phone_us", ""),
+        "rd_support_phone_international": contact.get(
+            "support_phone_international", ""
+        ),
+        "rd_order_support_provider": contact.get(
+            "order_support_provider", ""
+        ),
+        "rd_order_support_url": contact.get("order_support_url", ""),
+        "rd_refund_terms": manifest.get("refund_terms", ""),
     }
 
 
@@ -195,7 +354,7 @@ def _structured_product_claims(pack: dict) -> dict:
         clean = str(text or "").strip()
         if not clean or clean.casefold() in {
             "not established", "unknown", "none", "n/a",
-        }:
+        } or re.search(r"\[[^\]]+\]", clean):
             return
         migrated.setdefault(claim_type, []).append({
             "text": clean,
@@ -257,6 +416,85 @@ def _merge_structured_claims(source_claims: dict, pack: dict) -> dict:
         if isinstance(claim, dict)
     }
     for claim_type, items in _structured_product_claims(pack).items():
+        for claim in items:
+            key = str(claim.get("text", "")).strip().casefold()
+            if key and key not in existing:
+                merged.setdefault(claim_type, []).append(claim)
+                existing.add(key)
+    return merged
+
+
+def _intake_publication_claims(pack: dict) -> dict:
+    """Expose structured operator-submitted support facts to publication."""
+    manifest = normalized_intake_manifest(pack)
+    contact = normalize_contact_information(
+        manifest.get("contact_information")
+    )
+    refund_terms = str(manifest.get("refund_terms") or "").strip()
+    artifact_id = ""
+    for item in pack.get("source_manifest") or []:
+        if (
+            isinstance(item, dict)
+            and str(item.get("type", "")).casefold() == "operator_intake"
+        ):
+            artifact_id = str(item.get("artifact_id") or "").strip()
+            if artifact_id:
+                break
+
+    labels = {
+        "media_contact_name": "Media contact name",
+        "support_email": "Product support email",
+        "support_phone_us": "United States support phone",
+        "support_phone_international": "International support phone",
+        "order_support_provider": "Order support provider",
+        "order_support_url": "Order support URL",
+    }
+    claims = []
+    for key in CONTACT_INFORMATION_FIELDS:
+        value = contact.get(key)
+        if not value:
+            continue
+        claims.append({
+            "text": f"{labels[key]}: {value}",
+            "artifact_id": artifact_id,
+            "source_class": "operator_submitted",
+            "review_status": "accepted",
+            "publication_treatment": "direct_fact_allowed",
+            "metadata": {
+                "excerpt_is_literal": True,
+                "structured_source_record": True,
+                "source_pack_field": (
+                    f"intake_manifest.contact_information.{key}"
+                ),
+            },
+        })
+    migrated = {"company_info": claims} if claims else {}
+    if refund_terms:
+        migrated.setdefault("refund_policy", []).append({
+            "text": refund_terms,
+            "artifact_id": artifact_id,
+            "source_class": "operator_submitted",
+            "review_status": "accepted",
+            "publication_treatment": "seller_attribution_required",
+            "metadata": {
+                "excerpt_is_literal": True,
+                "structured_source_record": True,
+                "source_pack_field": "intake_manifest.refund_terms",
+            },
+        })
+    return migrated
+
+
+def _merge_intake_claims(source_claims: dict, pack: dict) -> dict:
+    """Merge structured intake facts without duplicating extracted records."""
+    merged = copy.deepcopy(source_claims or {})
+    existing = {
+        str(claim.get("text", "")).strip().casefold()
+        for items in merged.values()
+        for claim in (items or [])
+        if isinstance(claim, dict)
+    }
+    for claim_type, items in _intake_publication_claims(pack).items():
         for claim in items:
             key = str(claim.get("text", "")).strip().casefold()
             if key and key not in existing:
@@ -424,6 +662,12 @@ def assess_readiness(full_data: dict) -> tuple:
 def seal_source_pack(full_data: dict) -> dict:
     """Return an immutable-style copy with contract metadata and content hash."""
     pack = copy.deepcopy(full_data)
+    pack["intake_manifest"] = normalized_intake_manifest(pack)
+    pack["intake_manifest_hash"] = hashlib.sha256(
+        json.dumps(
+            pack["intake_manifest"], sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
     product = pack.setdefault("product", {})
     normalized_product_type = normalize_product_type(
         product.get("product_type", "")
@@ -472,6 +716,7 @@ def seal_source_pack(full_data: dict) -> dict:
     )
     source_claims = _merge_contextual_seller_claims(source_claims, pack)
     source_claims = _merge_structured_claims(source_claims, pack)
+    source_claims = _merge_intake_claims(source_claims, pack)
     for claim_type, items in source_claims.items():
         for claim in items or []:
             status = str(claim.get("review_status", "unreviewed")).lower()

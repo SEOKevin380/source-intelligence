@@ -27,6 +27,12 @@ def writer_evidence_view(sealed_facts: str) -> str:
         pack = json.loads(sealed_facts)
     except (TypeError, json.JSONDecodeError):
         return sealed_facts
+    manifest = pack.get("intake_manifest") or {}
+    safe_manifest = {
+        key: manifest.get(key)
+        for key in ("contact_information", "refund_terms")
+        if manifest.get(key)
+    }
     safe = {
         "product": {
             key: value
@@ -43,6 +49,8 @@ def writer_evidence_view(sealed_facts: str) -> str:
         ),
         "source_pack_contract": pack.get("source_pack_contract") or {},
     }
+    if safe_manifest:
+        safe["intake_manifest"] = safe_manifest
     return json.dumps(safe, ensure_ascii=False, sort_keys=True)
 
 
@@ -304,6 +312,14 @@ Operating rules:
   product claim lacks attribution, rewrite the opening before output.
   Invalid: “The free game is the entry point. According to the seller...”
   Valid: “According to the seller, the free game is the entry point...”
+- When `intake_manifest.contact_information` is present, finish with a
+  `<h2><strong>Contact Information</strong></h2>` section. Reproduce every
+  supplied contact value exactly, include the official product website from
+  `product.official_url`, make email/phone/URL values clickable, and distinguish
+  product support from order support. Do not replace, shorten, or omit supplied
+  support details. If `intake_manifest.refund_terms` is present, state it with
+  seller attribution in the terms discussion and contact section without
+  expanding it into an unstated promise.
 - For device specifications, setup, placement, operation, optimization time,
   and functions taken from seller or third-party descriptions, use explicit
   attribution such as “seller materials state” or “the offer describes.”
@@ -554,6 +570,12 @@ Review all applicable categories:
     warranty, refund-window, return-cost, or complete refund terms. Do not
     require operator-intake details in the article unless the publication
     claim ledger marks them for publication.
+21. Structured contact completeness: when the safe intake manifest supplies
+    contact information, require a final Contact Information section containing
+    every supplied value exactly plus the official product website. Product
+    support and order support must remain distinct. When structured refund
+    terms are supplied, require their accurate seller-attributed inclusion
+    without inventing additional conditions.
 
 Return JSON only matching this shape:
 {{
@@ -696,6 +718,11 @@ compliance report below.
   whose first factual product claim is not already governed by attribution.
   Do not place attribution in the second sentence and expect it to cover the
   first.
+- If `intake_manifest.contact_information` is present, preserve or rebuild a
+  final `<h2><strong>Contact Information</strong></h2>` section containing
+  every supplied contact value exactly, clickable email/phone/URL fields, and
+  the official product website. Keep product support and order support
+  separately labeled. Preserve supplied refund terms with seller attribution.
 - Return the complete revised article HTML only.
 - Apply reviewer replacements as editorial directions; never paste their
   instructional wording into the article. Every reader-facing sentence must

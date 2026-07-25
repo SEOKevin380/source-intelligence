@@ -20,6 +20,7 @@ from copy import deepcopy
 from typing import Optional
 from urllib.parse import urlparse
 
+from source_pack_contract import normalize_contact_information
 from workflow import Job, PipelineStage, ReviewBlockError
 
 
@@ -455,6 +456,12 @@ def handle_acquire(job: Job) -> dict:
             "notes": job.metadata.get("operator_notes", ""),
             "client_locked_title": job.metadata.get("client_locked_title", ""),
             "publishing_channel": job.metadata.get("channel", ""),
+            "contact_information": normalize_contact_information(
+                job.metadata.get("contact_information")
+            ),
+            "refund_terms": str(
+                job.metadata.get("refund_terms") or ""
+            ).strip(),
         }
         if any(operator_payload.values()):
             aid = acq.store_structured_data(
@@ -2961,6 +2968,12 @@ def handle_source_pack(job: Job) -> dict:
         "publishing_channel": job.metadata.get("channel", ""),
         "client_locked_title": job.metadata.get("client_locked_title", ""),
         "operator_notes": job.metadata.get("operator_notes", ""),
+        "contact_information": normalize_contact_information(
+            job.metadata.get("contact_information")
+        ),
+        "refund_terms": str(
+            job.metadata.get("refund_terms") or ""
+        ).strip(),
     }
     intake_manifest_hash = hashlib.sha256(
         json.dumps(intake_manifest, sort_keys=True).encode("utf-8")

@@ -11,6 +11,10 @@ import re
 from config import (INGREDIENT_DB_PATH, ACCESSWIRE_BLOCKLIST,
                     R12_SAFE_ALTERNATIVES, CATEGORY_DISPLAY_LABELS,
                     RISK_DISPLAY_LABELS)
+from source_pack_contract import (
+    normalize_contact_information,
+    normalized_intake_manifest,
+)
 
 # Gold Standard Exemplar Library — proven patterns from past approved releases
 _GOLD_STANDARDS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gold_standards.json")
@@ -1024,6 +1028,13 @@ def _build_cvd_source_block(full_data, platform=""):
     claims = claims if isinstance(claims, list) else []
     rp = product.get("refund_policy", {})
     rp = rp if isinstance(rp, dict) else {}
+    intake_manifest = normalized_intake_manifest(full_data)
+    intake_contact = normalize_contact_information(
+        intake_manifest.get("contact_information")
+    )
+    intake_refund_terms = str(
+        intake_manifest.get("refund_terms") or ""
+    ).strip()
     sf = product.get("supplement_facts", {})
     sf = sf if isinstance(sf, dict) else {}
     ingredients = sf.get("ingredients", [])
@@ -1461,16 +1472,33 @@ provided for reader awareness, not as a contraindication for the product itself.
 
     # ── C3: GUARANTEE / REFUND ──
     block += "\n"
-    has_refund = rp.get("duration_days") or rp.get("conditions") or rp.get("verbatim")
+    has_refund = (
+        rp.get("duration_days")
+        or rp.get("conditions")
+        or rp.get("verbatim")
+        or intake_refund_terms
+    )
     if has_refund:
-        block += f"C3 — GUARANTEE / REFUND TERMS {_verification_label(True, source='live_page')}\n"
-        block += f"Source: live page extraction\n"
+        source_label = (
+            "structured operator intake + live page extraction"
+            if intake_refund_terms and any(rp.values())
+            else "structured operator intake"
+            if intake_refund_terms
+            else "live page extraction"
+        )
+        block += (
+            "C3 — GUARANTEE / REFUND TERMS "
+            f"{_verification_label(True, source='live_page')}\n"
+        )
+        block += f"Source: {source_label}\n"
         if rp.get("duration_days"):
             block += f"Duration: {rp['duration_days']}-day money-back guarantee\n"
         if rp.get("conditions"):
             block += f"Conditions: {rp['conditions']}\n"
         if rp.get("verbatim"):
             block += f"Verbatim: \"{rp['verbatim']}\"\n"
+        if intake_refund_terms:
+            block += f"Submitted terms: {intake_refund_terms}\n"
     else:
         block += "C3 — GUARANTEE / REFUND TERMS [NO DATA]\n"
         block += "Not extracted. Omit guarantee claims from draft.\n"
@@ -1478,13 +1506,44 @@ provided for reader awareness, not as a contraindication for the product itself.
     # ── C4: CONTACT INFORMATION ���─
     block += "\n"
     company = product.get("company", {})
-    has_contact = bool(company and any(company.values()))
+    has_contact = bool(
+        intake_contact or (company and any(company.values()))
+    )
     if has_contact:
-        block += f"C4 — CONTACT INFORMATION {_verification_label(True, source='live_page')}\n"
-        block += f"Source: live page extraction\n"
+        source_label = (
+            "structured operator intake + live page extraction"
+            if intake_contact and company and any(company.values())
+            else "structured operator intake"
+            if intake_contact
+            else "live page extraction"
+        )
+        block += (
+            "C4 — CONTACT INFORMATION "
+            f"{_verification_label(True, source='live_page')}\n"
+        )
+        block += f"Source: {source_label}\n"
+        contact_labels = {
+            "media_contact_name": "Media Contact",
+            "support_email": "Product Support Email",
+            "support_phone_us": "U.S. Support Phone",
+            "support_phone_international": "International Support Phone",
+            "order_support_provider": "Order Support Provider",
+            "order_support_url": "Order Support URL",
+        }
+        for key, label in contact_labels.items():
+            if intake_contact.get(key):
+                block += f"  {label}: {intake_contact[key]}\n"
         for k, v in company.items():
-            if v:
+            if v and str(v) not in set(intake_contact.values()):
                 block += f"  {k}: {v}\n"
+        block += (
+            f"  Official Product Website: "
+            f"{product.get('official_url', '')}\n"
+        )
+        block += (
+            "Final-output requirement: reproduce every structured contact "
+            "value exactly inside the Contact Information section.\n"
+        )
     else:
         block += "C4 — CONTACT INFORMATION [PARTIAL]\n"
         block += f"  Brand: {product.get('brand_name', name)}\n"
@@ -2338,6 +2397,18 @@ def build_l6_press_release_prompt(full_data, intake_fields):
     platform = intake_fields.get("platform", "")
     previous = intake_fields.get("previous_releases", "FIRST RELEASE")
     competitor = intake_fields.get("competitor_release", "")
+    manifest = normalized_intake_manifest(full_data)
+    structured_contact = normalize_contact_information(
+        manifest.get("contact_information")
+    )
+    structured_contact.update(normalize_contact_information(
+        intake_fields.get("contact_information")
+    ))
+    structured_refund_terms = str(
+        intake_fields.get("refund_terms")
+        or manifest.get("refund_terms")
+        or ""
+    ).strip()
 
     # Auto-populate PREVIOUS RELEASES from CRM database if not manually set
     if not previous or previous.strip().upper() == "FIRST RELEASE":
@@ -2377,6 +2448,26 @@ PREVIOUS RELEASES: {previous}"""
     notes = intake_fields.get("notes", "").strip()
     if notes:
         prompt += f"\nOPERATOR NOTES: {notes}"
+    if structured_contact:
+        prompt += "\nSTRUCTURED CONTACT INFORMATION:"
+        for key, label in (
+            ("media_contact_name", "Media Contact"),
+            ("support_email", "Product Support Email"),
+            ("support_phone_us", "U.S. Support Phone"),
+            (
+                "support_phone_international",
+                "International Support Phone",
+            ),
+            ("order_support_provider", "Order Support Provider"),
+            ("order_support_url", "Order Support URL"),
+        ):
+            if structured_contact.get(key):
+                prompt += f"\n  {label}: {structured_contact[key]}"
+    if structured_refund_terms:
+        prompt += (
+            "\nSTRUCTURED REFUND / GUARANTEE TERMS: "
+            + structured_refund_terms
+        )
 
     prompt += f"\nSOURCE MATERIALS: Pre-researched source data included below"
 

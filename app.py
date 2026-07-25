@@ -1136,6 +1136,66 @@ elif show_form:
                 key=f"rd_notes_{fk}",
             )
 
+        st.markdown(
+            '<p class="form-section-header">Support, Contact & Terms</p>',
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "Structured values here are preserved in the sealed source pack "
+            "and required in the final contact block."
+        )
+        contact_col1, contact_col2 = st.columns(2)
+        with contact_col1:
+            rd_media_contact_name = st.text_input(
+                "Media Contact Name",
+                value=saved_form.get("rd_media_contact_name", ""),
+                placeholder="Required for Newswire.com; optional for product advertorials",
+                key=f"rd_media_contact_name_{fk}",
+            )
+            rd_support_email = st.text_input(
+                "Product Support Email",
+                value=saved_form.get("rd_support_email", ""),
+                placeholder="support@product.com",
+                key=f"rd_support_email_{fk}",
+            )
+            rd_order_support_provider = st.text_input(
+                "Order Support Provider",
+                value=saved_form.get("rd_order_support_provider", ""),
+                placeholder="ClickBank",
+                key=f"rd_order_support_provider_{fk}",
+            )
+            rd_order_support_url = st.text_input(
+                "Order Support URL",
+                value=saved_form.get("rd_order_support_url", ""),
+                placeholder="https://www.clkbank.com/",
+                key=f"rd_order_support_url_{fk}",
+            )
+        with contact_col2:
+            rd_support_phone_us = st.text_input(
+                "U.S. Support Phone",
+                value=saved_form.get("rd_support_phone_us", ""),
+                placeholder="1-800-390-6035",
+                key=f"rd_support_phone_us_{fk}",
+            )
+            rd_support_phone_international = st.text_input(
+                "International Support Phone",
+                value=saved_form.get(
+                    "rd_support_phone_international", ""
+                ),
+                placeholder="1-208-345-4245",
+                key=f"rd_support_phone_international_{fk}",
+            )
+            rd_refund_terms = st.text_area(
+                "Refund / Guarantee Terms",
+                value=saved_form.get("rd_refund_terms", ""),
+                placeholder=(
+                    "60-day refund guarantee; refunds handled under "
+                    "ClickBank's current return policy"
+                ),
+                height=100,
+                key=f"rd_refund_terms_{fk}",
+            )
+
         # ── Update Mode: Additional Data Fields ──
         if is_update and "result_data" in st.session_state:
             with st.expander("Additional Data (for update)", expanded=True):
@@ -1196,6 +1256,32 @@ elif show_form:
                 not update_label_url.strip().startswith(("http://", "https://"))):
             errors.append("**New Label Image URL** must start with http:// or https://")
 
+        if (
+            rd_support_email
+            and not re.fullmatch(
+                r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}",
+                rd_support_email.strip(),
+            )
+        ):
+            errors.append("**Product Support Email** is not a valid email address.")
+
+        if (
+            rd_order_support_url
+            and not rd_order_support_url.strip().startswith(
+                ("http://", "https://")
+            )
+        ):
+            errors.append(
+                "**Order Support URL** must start with http:// or https://"
+            )
+
+        if rd_platform == "Newswire.com":
+            errors.append(
+                "**Newswire.com** is not supported by the affiliate-advertorial "
+                "generator because that platform may reject affiliate product "
+                "reviews. Select **Accesswire** for this advertorial workflow."
+            )
+
         if not rd_affiliate or not rd_affiliate.strip():
             warnings.append("No **Affiliate Link** provided — prompt will use 'TRAFFIC-FIRST' as default.")
 
@@ -1222,6 +1308,14 @@ elif show_form:
             "rd_platform": rd_platform,
             "rd_client_title": rd_client_title,
             "rd_notes": rd_notes,
+            "rd_media_contact_name": rd_media_contact_name,
+            "rd_support_email": rd_support_email,
+            "rd_support_phone_us": rd_support_phone_us,
+            "rd_support_phone_international":
+                rd_support_phone_international,
+            "rd_order_support_provider": rd_order_support_provider,
+            "rd_order_support_url": rd_order_support_url,
+            "rd_refund_terms": rd_refund_terms,
         }
 
         # In update mode the explicitly supplied replacement label/notes take
@@ -1419,6 +1513,20 @@ elif show_form:
                     channel=rd_platform or "",
                     client_locked_title=rd_client_title or "",
                     operator_notes=(update_notes or rd_notes or ""),
+                    contact_information={
+                        "media_contact_name":
+                            rd_media_contact_name.strip(),
+                        "support_email": rd_support_email.strip(),
+                        "support_phone_us":
+                            rd_support_phone_us.strip(),
+                        "support_phone_international":
+                            rd_support_phone_international.strip(),
+                        "order_support_provider":
+                            rd_order_support_provider.strip(),
+                        "order_support_url":
+                            rd_order_support_url.strip(),
+                    },
+                    refund_terms=rd_refund_terms.strip(),
                     unattended=True,
                 )
                 completed_job = pipeline.run(job)
@@ -1501,6 +1609,20 @@ elif show_form:
                     channel=rd_platform or "",
                     client_locked_title=rd_client_title or "",
                     operator_notes=rd_notes or "",
+                    contact_information={
+                        "media_contact_name":
+                            rd_media_contact_name.strip(),
+                        "support_email": rd_support_email.strip(),
+                        "support_phone_us":
+                            rd_support_phone_us.strip(),
+                        "support_phone_international":
+                            rd_support_phone_international.strip(),
+                        "order_support_provider":
+                            rd_order_support_provider.strip(),
+                        "order_support_url":
+                            rd_order_support_url.strip(),
+                    },
+                    refund_terms=rd_refund_terms.strip(),
                     unattended=True,
                 )
                 completed_job = pipeline.run(job)
@@ -1667,6 +1789,28 @@ else:
     rd_competitor = fv.get("rd_competitor", "")
     rd_client_title = fv.get("rd_client_title", "")
     rd_notes = fv.get("rd_notes", "")
+    rd_media_contact_name = fv.get("rd_media_contact_name", "")
+    rd_support_email = fv.get("rd_support_email", "")
+    rd_support_phone_us = fv.get("rd_support_phone_us", "")
+    rd_support_phone_international = fv.get(
+        "rd_support_phone_international", ""
+    )
+    rd_order_support_provider = fv.get("rd_order_support_provider", "")
+    rd_order_support_url = fv.get("rd_order_support_url", "")
+    rd_refund_terms = fv.get("rd_refund_terms", "")
+    _structured_contact_information = {
+        key: value
+        for key, value in {
+            "media_contact_name": rd_media_contact_name,
+            "support_email": rd_support_email,
+            "support_phone_us": rd_support_phone_us,
+            "support_phone_international":
+                rd_support_phone_international,
+            "order_support_provider": rd_order_support_provider,
+            "order_support_url": rd_order_support_url,
+        }.items()
+        if str(value or "").strip()
+    }
 
     # ── Product Header ──
     st.markdown("")  # Spacer so header isn't clipped by Streamlit chrome
@@ -1791,11 +1935,15 @@ else:
         "competitor_release": rd_competitor or "",
         "editor_title": rd_client_title or "",
         "notes": rd_notes or "",
+        "contact_information": _structured_contact_information,
+        "refund_terms": rd_refund_terms or "",
     }
-    _quick_prompt = build_l6_press_release_prompt(data, _quick_intake)
-    _quick_slug = name.lower().replace(" ", "-")
     from source_pack_contract import seal_source_pack
     _publication_pack = seal_source_pack(data)
+    _quick_prompt = build_l6_press_release_prompt(
+        _publication_pack, _quick_intake
+    )
+    _quick_slug = name.lower().replace(" ", "-")
     _quick_json = json.dumps(_publication_pack, indent=2, default=str)
     _pack_contract = _publication_pack["source_pack_contract"]
     _pack_readiness = _pack_contract["readiness"]
@@ -2560,6 +2708,8 @@ else:
             "competitor_releases": rd_competitor or "",
             "publishing_platform": rd_platform,
             "client_locked_title": rd_client_title or "",
+            "contact_information": _structured_contact_information,
+            "refund_terms": rd_refund_terms or "",
         }
 
         st.markdown("### Generated Prompt")
@@ -2595,6 +2745,8 @@ else:
             "competitor_release": rd_competitor or "",
             "editor_title": rd_client_title or "",
             "notes": rd_notes or "",
+            "contact_information": _structured_contact_information,
+            "refund_terms": rd_refund_terms or "",
         }
 
         # --- Readiness gate: surface data gaps before prompt generation ---
