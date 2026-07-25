@@ -44,7 +44,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v34-closed-loop-action-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "product-first-blueprint-owner-20260724-r20"
+WORKBENCH_RUNTIME_REVISION = "product-first-blueprint-owner-20260725-r21"
 
 STAGES = (
     "source_ready",
@@ -833,6 +833,11 @@ class WorkbenchEngine:
                     if isinstance(event.get("payload"), str)
                     else event.get("payload") or {}
                 ).get("purpose") == "manual"
+                and (
+                    json.loads(event.get("payload") or "{}")
+                    if isinstance(event.get("payload"), str)
+                    else event.get("payload") or {}
+                ).get("runtime_revision") == WORKBENCH_RUNTIME_REVISION
             )
             for event in self.events(project_id)
         )
@@ -3483,6 +3488,37 @@ class WorkbenchEngine:
             article = ensure_affiliate_links(
                 article, affiliate_href, target=target
             )
+        provenance_prune = {
+            "changed": False,
+            "removed_block_count": 0,
+            "removed_sentences": [],
+        }
+        if require_publishable:
+            from article_provenance import (
+                build_article_claim_ledger,
+                extract_sealed_pack,
+                prune_unattributed_claim_blocks,
+            )
+            sealed_pack = extract_sealed_pack(p["source_text"])
+            pruned_article, prune_report = prune_unattributed_claim_blocks(
+                sealed_pack, article
+            )
+            if prune_report["changed"]:
+                pruned_preflight = audit_article(
+                    pruned_article,
+                    p["platform"],
+                    p["vertical"],
+                    affiliate_href,
+                )
+                pruned_provenance = build_article_claim_ledger(
+                    sealed_pack, pruned_preflight["article"]
+                )
+                if (
+                    not pruned_preflight["blockers"]
+                    and pruned_provenance["passed"]
+                ):
+                    article = pruned_preflight["article"]
+                    provenance_prune = prune_report
         # Canonicalize all mechanically repairable requirements before any
         # paid compliance review. Reviewers should spend judgment on meaning,
         # not Markdown, heading wrappers, CTA distribution, or disclosures.
@@ -3530,6 +3566,7 @@ class WorkbenchEngine:
                     "review_report_preserved": bool(p.get("last_report")),
                     "blockers": blockers,
                     "artifact": rejected_name,
+                    "runtime_revision": WORKBENCH_RUNTIME_REVISION,
                     "operator_decision_required": False,
                 },
             )
@@ -3560,6 +3597,23 @@ class WorkbenchEngine:
             json.dumps(diagnostics, indent=2, ensure_ascii=False),
         )
         self._event(p["id"], "article_created", stage, digest, {"filename": filename})
+        if provenance_prune["changed"]:
+            self._event(
+                p["id"],
+                "unattributed_claim_blocks_pruned",
+                stage,
+                digest,
+                {
+                    "removed_block_count": provenance_prune[
+                        "removed_block_count"
+                    ],
+                    "removed_sentences": provenance_prune[
+                        "removed_sentences"
+                    ],
+                    "paid_calls_added": 0,
+                    "runtime_revision": WORKBENCH_RUNTIME_REVISION,
+                },
+            )
         if call_purpose:
             self._mark_latest_pending_call_applied(
                 p["id"], call_purpose

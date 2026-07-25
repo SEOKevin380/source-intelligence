@@ -8,6 +8,7 @@ import pytest
 from bs4 import BeautifulSoup, NavigableString
 
 from newswire_workbench.engine import (
+    WORKBENCH_RUNTIME_REVISION,
     WORKBENCH_SOURCE_CONTEXT_VERSION,
     WorkbenchEngine,
     _source_affiliate_link,
@@ -1059,11 +1060,51 @@ def test_failed_zero_cost_candidate_is_not_offered_forever(tmp_path):
         "",
         {
             "purpose": "manual",
+            "runtime_revision": WORKBENCH_RUNTIME_REVISION,
             "blockers": [{"id": "D21", "issue": "Audit prose."}],
         },
     )
     assert engine.can_recover_locked_pre_signoff(pid) is False
     assert engine.run_action(pid)["action"] == "rebuild_corrected_transaction"
+
+
+def test_failed_candidate_from_prior_runtime_can_be_reconsidered(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    engine._set_stage(pid, "admin_review")
+    engine._record_llm_call(
+        pid,
+        "compliance_repair",
+        route_for("compliance_repair", "device"),
+        100,
+        100,
+        raw_output="<p>Rejected repair candidate.</p>",
+        lifecycle="candidate_rejected",
+    )
+    engine._event(
+        pid,
+        "candidate_rejected",
+        "admin_review",
+        "",
+        {
+            "purpose": "manual",
+            "runtime_revision": "prior-runtime",
+            "blockers": [{"id": "D21", "issue": "Audit prose."}],
+        },
+    )
+    assert engine.can_recover_locked_pre_signoff(pid) is True
 
 
 def test_sparse_long_form_pack_is_reconciled_before_paid_generation(tmp_path):
@@ -2402,6 +2443,55 @@ def test_safe_rejected_paid_candidate_is_recovered_without_another_paid_call(
     assert engine.usage_summary(pid)["calls"] == 1
     assert any(
         event["event_type"] == "rejected_candidate_recovered"
+        for event in engine.events(pid)
+    )
+
+
+def test_publishable_repair_prunes_unsafe_unattributed_block_at_zero_cost(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    candidate = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<h2><strong>What the Available Record Shows</strong></h2>"
+        "<p>Seller materials state Literal product fact 0.</p>"
+        "<p>Seller materials state Literal product fact 1.</p>"
+        "<p>Seller materials state Literal product fact 2.</p>"
+        "<p>Literal product fact 0 guarantees exceptional results.</p>"
+        + "".join(
+            "<p>The article gives readers a plain-language look at the "
+            "product story, the purchase decision, and the practical details "
+            "that can help them decide whether the offer suits their needs.</p>"
+            for _ in range(80)
+        )
+    )
+    assert engine._set_article(
+        engine.get(pid),
+        candidate,
+        "revised",
+        "03-claude-revision.html",
+        require_publishable=True,
+    )
+    current = engine.get(pid)
+    assert "guarantees exceptional results" not in current["article_text"]
+    assert build_article_claim_ledger(
+        pack, current["article_text"]
+    )["passed"]
+    assert any(
+        event["event_type"] == "unattributed_claim_blocks_pruned"
         for event in engine.events(pid)
     )
 

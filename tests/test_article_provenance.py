@@ -1,4 +1,8 @@
-from article_provenance import build_article_claim_ledger, extract_sealed_pack
+from article_provenance import (
+    build_article_claim_ledger,
+    extract_sealed_pack,
+    prune_unattributed_claim_blocks,
+)
 
 
 def test_extract_pack_and_map_attributed_claim():
@@ -204,6 +208,70 @@ def test_attribution_scope_does_not_cross_html_blocks():
     )
     assert ledger["used_claim_count"] == 1
     assert ledger["attribution_violations"]
+
+
+def test_seller_attributed_colon_introduction_governs_direct_list_items():
+    pack = {
+        "publication_claims": {
+            "feature": [{
+                "claim_id": "audio-content",
+                "text": "Audio content",
+                "publication_treatment": "seller_attribution_required",
+            }]
+        }
+    }
+    ledger = build_article_claim_ledger(
+        pack,
+        "<p>According to the seller, paid access includes:</p>"
+        "<ul><li>Audio content — recordings included with paid access</li></ul>",
+    )
+    assert ledger["used_claim_count"] == 1
+    assert not ledger["attribution_violations"]
+
+
+def test_list_attribution_does_not_flow_from_unattributed_introduction():
+    pack = {
+        "publication_claims": {
+            "feature": [{
+                "claim_id": "audio-content",
+                "text": "Audio content",
+                "publication_treatment": "seller_attribution_required",
+            }]
+        }
+    }
+    ledger = build_article_claim_ledger(
+        pack,
+        "<p>Paid access includes:</p>"
+        "<ul><li>Audio content — recordings included with paid access</li></ul>",
+    )
+    assert ledger["used_claim_count"] == 1
+    assert ledger["attribution_violations"]
+
+
+def test_prune_unattributed_claim_blocks_removes_whole_unsafe_paragraph():
+    pack = {
+        "publication_claims": {
+            "feature": [{
+                "claim_id": "digital-content",
+                "text": "Digital readings delivered after purchase",
+                "publication_treatment": "seller_attribution_required",
+            }]
+        }
+    }
+    article = (
+        "<p>According to the seller, digital readings are delivered after "
+        "purchase.</p>"
+        "<p>Digital readings are delivered after purchase and guarantee "
+        "accurate predictions.</p>"
+        "<p>Independent review is still required.</p>"
+    )
+    pruned, report = prune_unattributed_claim_blocks(pack, article)
+    assert report["changed"] is True
+    assert report["removed_block_count"] == 1
+    assert "guarantee accurate predictions" not in pruned
+    assert "According to the seller" in pruned
+    assert "Independent review is still required." in pruned
+    assert build_article_claim_ledger(pack, pruned)["passed"] is True
 
 
 def test_seller_offers_and_confirms_are_valid_reporting_verbs():

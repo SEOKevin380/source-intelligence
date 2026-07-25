@@ -106,6 +106,11 @@ def _sentence_records(article: str) -> list[dict]:
     then gives two or three related sentences. That attribution governs only
     the remainder of the same paragraph; it never flows backward to a claim
     stated before the attribution or forward into another HTML block.
+
+    A seller-attributed paragraph ending in a colon may also introduce the
+    immediately following list. In that narrow case, the introduction governs
+    each direct list item. It does not govern a later paragraph or another
+    list, which keeps attribution bounded to the visible editorial structure.
     """
     soup = BeautifulSoup(html.unescape(article or ""), "html.parser")
     blocks = soup.find_all(["p", "li", "td", "th", "figcaption"])
@@ -116,6 +121,19 @@ def _sentence_records(article: str) -> list[dict]:
         plain = re.sub(r"\s+", " ", block.get_text(" ", strip=True)).strip()
         seller_scope = False
         source_scope = False
+        if block.name == "li" and block.parent is not None:
+            list_node = block.parent
+            previous = list_node.find_previous_sibling()
+            if previous is not None and previous.name == "p":
+                introduction = re.sub(
+                    r"\s+",
+                    " ",
+                    previous.get_text(" ", strip=True),
+                ).strip()
+                if introduction.endswith(":"):
+                    seller_scope, source_scope = _attribution_signals(
+                        introduction
+                    )
         for item in re.split(r"(?<=[.!?])\s+", plain):
             sentence = item.strip()
             if len(sentence) < 20:
@@ -129,6 +147,56 @@ def _sentence_records(article: str) -> list[dict]:
                 "source_attributed": source_scope,
             })
     return records
+
+
+def prune_unattributed_claim_blocks(pack: dict, article: str) -> tuple[str, dict]:
+    """Conservatively remove unsafe semantic blocks from a paid repair.
+
+    This is a zero-cost recovery primitive, not a way to manufacture
+    attribution. It deletes an entire paragraph or list item when that block
+    contains a mapped sealed claim that still lacks its required attribution.
+    Callers must re-run the complete depth, format, coverage, and provenance
+    gates before accepting the result.
+    """
+    ledger = build_article_claim_ledger(pack, article)
+    violation_sentences = {
+        str(item.get("article_sentence") or "").strip()
+        for item in ledger.get("attribution_violations") or []
+        if str(item.get("article_sentence") or "").strip()
+    }
+    if not violation_sentences:
+        return article, {
+            "changed": False,
+            "removed_block_count": 0,
+            "removed_sentences": [],
+        }
+
+    soup = BeautifulSoup(html.unescape(article or ""), "html.parser")
+    removed_sentences = []
+    removed_block_count = 0
+    for block in list(soup.find_all(["p", "li", "figcaption"])):
+        plain = re.sub(
+            r"\s+", " ", block.get_text(" ", strip=True)
+        ).strip()
+        matching = [
+            sentence for sentence in violation_sentences
+            if sentence in plain
+        ]
+        if not matching:
+            continue
+        removed_block_count += 1
+        removed_sentences.extend(matching)
+        block.decompose()
+
+    for list_node in list(soup.find_all(["ul", "ol"])):
+        if not list_node.get_text(" ", strip=True):
+            list_node.decompose()
+
+    return str(soup), {
+        "changed": bool(removed_sentences),
+        "removed_block_count": removed_block_count,
+        "removed_sentences": sorted(set(removed_sentences)),
+    }
 
 
 def _sentences(article: str) -> list[str]:
