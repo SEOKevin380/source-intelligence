@@ -197,6 +197,45 @@ def test_structured_device_record_migrates_to_attributed_claim_ledger():
     )
 
 
+def test_structured_buyer_protection_fields_enter_publication_ledger():
+    raw = _pack()
+    raw["claims_by_type"] = {}
+    raw["product"].update({
+        "eligibility": "Must be 18+",
+        "odds_or_randomness_disclosure": (
+            "Fortune Numbers are not a prediction of any lottery result"
+        ),
+        "warnings": ["For entertainment and reflection purposes only"],
+        "guarantees": ["60-day refund guarantee"],
+        "refund_policy": {
+            "duration_days": 60,
+            "conditions": "If not satisfied with purchase",
+        },
+    })
+
+    pack = seal_source_pack(raw)
+    claims = [
+        claim
+        for items in pack["publication_claims"].values()
+        for claim in items
+    ]
+    claim_text = {claim["text"] for claim in claims}
+
+    assert "Must be 18+" in claim_text
+    assert (
+        "Fortune Numbers are not a prediction of any lottery result"
+        in claim_text
+    )
+    assert "For entertainment and reflection purposes only" in claim_text
+    assert "60-day refund guarantee" in claim_text
+    assert "duration days: 60" in claim_text
+    assert "conditions: If not satisfied with purchase" in claim_text
+    assert all(
+        claim["publication_treatment"] == "seller_attribution_required"
+        for claim in claims
+    )
+
+
 def test_structured_facts_reconcile_when_raw_claims_all_fail():
     raw = _pack()
     raw["claims_by_type"] = {

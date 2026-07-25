@@ -1850,6 +1850,71 @@ def test_source_aware_repair_removes_complete_ecowatt_objection_family():
     assert "Seller materials state" in repaired
 
 
+def test_source_grounding_preserves_corroborated_structured_disclosure():
+    pack = {
+        "product": {
+            "odds_or_randomness_disclosure": (
+                "Fortune Numbers are not a prediction of any lottery result. "
+                "Products are for entertainment and reflection purposes only."
+            ),
+            "warnings": [
+                "Fortune Numbers are not a prediction of any lottery result",
+                "For entertainment and reflection purposes only",
+            ],
+        },
+        "publication_claims": {},
+        "excluded_publication_claims": [
+            {
+                "text": (
+                    "Fortune Numbers are not a prediction of any lottery result"
+                ),
+                "reason": "not_accepted_or_literal_artifact_backed",
+            },
+            {
+                "text": "For entertainment and reflection purposes only",
+                "reason": "not_accepted_or_literal_artifact_backed",
+            },
+        ],
+    }
+    source = (
+        "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══\n"
+        + json.dumps(pack)
+    )
+    article = (
+        "<p>According to the seller, Fortune Numbers are not a prediction "
+        "of any lottery result and are for entertainment and reflection "
+        "purposes only.</p>"
+    )
+
+    repaired = repair_source_grounding(article, source, "gaming")
+
+    assert "not a prediction of any lottery result" in repaired
+    assert "entertainment and reflection purposes only" in repaired
+
+
+def test_source_grounding_never_rescues_compliance_blocked_duplicate():
+    pack = {
+        "product": {"warnings": ["Guaranteed lottery result"]},
+        "publication_claims": {},
+        "excluded_publication_claims": [{
+            "text": "Guaranteed lottery result",
+            "reason": "blocked_by_compliance",
+        }],
+    }
+    source = (
+        "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══\n"
+        + json.dumps(pack)
+    )
+
+    repaired = repair_source_grounding(
+        "<p>The seller promises a guaranteed lottery result.</p>",
+        source,
+        "gaming",
+    )
+
+    assert "guaranteed lottery result" not in repaired
+
+
 @pytest.mark.parametrize(
     ("claim_text", "article_sentence"),
     [

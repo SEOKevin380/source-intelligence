@@ -44,8 +44,16 @@ STRUCTURED_PRODUCT_CLAIM_TYPES = {
     "duration": "specification",
     "included_items": "feature",
     "billing_frequency": "pricing",
+    "billing_terms": "pricing",
     "cancellation_policy": "refund_policy",
+    "cancellation_terms": "refund_policy",
+    "renewal_terms": "pricing",
     "trial_period": "pricing",
+    "eligibility": "specification",
+    "odds_or_randomness_disclosure": "feature",
+    "warnings": "feature",
+    "guarantees": "refund_policy",
+    "refund_policy": "refund_policy",
 }
 
 _CONTEXTUAL_SELLER_HEADING_BLOCKLIST = (

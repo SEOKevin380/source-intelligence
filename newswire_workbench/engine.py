@@ -44,7 +44,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v34-closed-loop-action-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "product-first-blueprint-owner-20260725-r21"
+WORKBENCH_RUNTIME_REVISION = "product-first-blueprint-owner-20260725-r22"
 
 STAGES = (
     "source_ready",

@@ -6,6 +6,8 @@ import re
 
 from bs4 import BeautifulSoup, NavigableString
 
+from source_pack_contract import STRUCTURED_PRODUCT_CLAIM_TYPES
+
 
 def _even_indices(total, wanted):
     if wanted <= 0 or total <= 0:
@@ -519,22 +521,90 @@ def repair_publication_gates(html, platform, vertical, affiliate_href=""):
 def repair_source_grounding(html, source_text, vertical):
     """Remove excluded-claim echoes and unsupported device filler at zero cost."""
     soup = BeautifulSoup(ensure_article_html(html), "html.parser")
-    excluded = []
     pack = {}
     marker = "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══"
     if marker in str(source_text or ""):
         try:
             pack = json.loads(str(source_text).split(marker, 1)[1].strip())
-            excluded = [
-                str(item.get("text") or "").strip()
-                for item in pack.get("excluded_publication_claims", [])
-                if str(item.get("text") or "").strip()
-            ]
         except (TypeError, ValueError, json.JSONDecodeError):
-            excluded = []
+            pack = {}
+
+    def flatten_text(value):
+        if isinstance(value, dict):
+            for nested in value.values():
+                yield from flatten_text(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                yield from flatten_text(nested)
+        elif value not in (None, ""):
+            yield str(value).strip()
+
+    def normalized_claim(value):
+        clean = str(value or "").strip()
+        prefix, separator, remainder = clean.partition(":")
+        if (
+            separator
+            and prefix.strip().casefold() in STRUCTURED_PRODUCT_CLAIM_TYPES
+        ):
+            clean = remainder.strip()
+        return re.sub(r"[^a-z0-9]+", " ", clean.casefold()).strip()
+
+    # A legacy sealed pack can contain the same operator-captured structured
+    # fact in both the trusted product record and the excluded raw-extraction
+    # ledger. Treating the raw duplicate as an absolute deletion signature
+    # removes valid disclosures such as age limits, refund terms, and
+    # entertainment/no-outcome boundaries. Only the explicitly mapped
+    # structured fields may corroborate an excluded duplicate; arbitrary
+    # product prose cannot rescue a rejected claim.
+    corroborating_text = [
+        str(item.get("text") or "").strip()
+        for items in (pack.get("publication_claims") or {}).values()
+        for item in (items or [])
+        if isinstance(item, dict) and str(item.get("text") or "").strip()
+    ]
+    product = pack.get("product") or {}
+    for field in STRUCTURED_PRODUCT_CLAIM_TYPES:
+        corroborating_text.extend(flatten_text(product.get(field)))
+    corroborating_normalized = {
+        normalized_claim(item)
+        for item in corroborating_text
+        if normalized_claim(item)
+    }
+
+    def is_corroborated(claim):
+        candidate = normalized_claim(claim)
+        candidate_tokens = set(candidate.split())
+        if not candidate or len(candidate_tokens) < 2:
+            return False
+        for trusted in corroborating_normalized:
+            trusted_tokens = set(trusted.split())
+            if candidate == trusted:
+                return True
+            if (
+                len(candidate_tokens) >= 3
+                and (
+                    candidate in trusted
+                    or (
+                        len(candidate_tokens & trusted_tokens) >= 3
+                        and len(candidate_tokens & trusted_tokens)
+                        / len(candidate_tokens) >= 0.8
+                    )
+                )
+            ):
+                return True
+        return False
 
     excluded_signatures = []
-    for claim in excluded:
+    for item in pack.get("excluded_publication_claims", []):
+        claim = str(item.get("text") or "").strip()
+        if (
+            not claim
+            or (
+                str(item.get("reason") or "") != "blocked_by_compliance"
+                and is_corroborated(claim)
+            )
+        ):
+            continue
         normalized = re.sub(
             r"[^a-z0-9]+", " ", claim.casefold()
         ).strip()
