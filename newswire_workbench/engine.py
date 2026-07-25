@@ -1230,6 +1230,23 @@ class WorkbenchEngine:
                 ),
                 "may_start_paid_call": True,
             }
+        if (
+            semantic["remaining_calls"] == 0
+            and not semantic["passed"]
+            and self._adjudication_count(project_id) > 0
+        ):
+            return {
+                **action,
+                "action": "rebuild_corrected_transaction",
+                "label": "Start Corrected Transaction",
+                "reason": (
+                    "Exact reviewer edits changed the rejected artifact after "
+                    "this transaction exhausted its independent sign-off. "
+                    "Preserve both hashes and hand the corrected artifact to a "
+                    "new zero-usage transaction for exact-hash review."
+                ),
+                "may_start_paid_call": True,
+            }
         if semantic["remaining_calls"] > 0 and not preflight["blockers"]:
             return {
                 **action,

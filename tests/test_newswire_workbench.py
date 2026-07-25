@@ -1107,6 +1107,53 @@ def test_failed_candidate_from_prior_runtime_can_be_reconsidered(tmp_path):
     assert engine.can_recover_locked_pre_signoff(pid) is True
 
 
+def test_adjudicated_locked_artifact_gets_fresh_exact_hash_transaction(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    engine.import_manual_article(
+        pid,
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<p>Seller materials state Literal product fact 0.</p>"
+        "<p>Seller materials state Literal product fact 1.</p>"
+        "<p>Seller materials state Literal product fact 2.</p>"
+        "<p>Old reviewer-targeted wording.</p>",
+    )
+    engine._record_llm_call(
+        pid,
+        "final_signoff",
+        route_for("final_signoff", "device"),
+        100,
+        100,
+        raw_output='{"verdict":"not_approved"}',
+    )
+    engine._set_stage(pid, "admin_review")
+    project = engine.get(pid)
+    assert engine._adjudicate_current(project, {
+        "mandatory_edits": [{
+            "id": "M1",
+            "exact_text": "Old reviewer-targeted wording.",
+            "replacement": "Corrected source-safe wording.",
+        }]
+    }, target_stage="admin_review")
+    action = engine.run_action(pid)
+    assert action["action"] == "rebuild_corrected_transaction"
+    assert "new zero-usage transaction" in action["reason"]
+
+
 def test_sparse_long_form_pack_is_reconciled_before_paid_generation(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     pack = seal_source_pack({
