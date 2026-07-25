@@ -27,8 +27,17 @@ it is not an instruction to write a watchdog or prosecution brief.
   duplicate, independent of a retryable WordPress delivery.
 - Invalid, truncated, stale, rejected, or ambiguous paid responses own a fresh
   corrected transaction instead of offering an impossible resume.
+- Provider request intent is committed to the ledger before network I/O. An
+  ambiguous or stranded request is quarantined and is never silently replayed.
 - Queue leases fence expired workers, and cancelled jobs are finalized after a
   dead worker's lease expires.
+- Both research/update pipelines and newswire provider workflows are owned by
+  durable background workers. Browser tabs submit and observe; they do not own
+  long-running research or paid calls.
+- Platform rules are executable contracts. AccessNewsWire, Barchart, and Globe
+  each own their CTA, disclosure, FAQ, link, voice, and formatting rules.
+  Newswire.com is rejected before project creation because it has no approved
+  automated contract.
 
 ## Zero-cost printer self-test
 
@@ -38,26 +47,32 @@ Run:
 python3 scripts/audit_pipeline_contract.py
 ```
 
-The audit performs no model calls. It currently checks 16 exact product types
-and 32 product-type/platform contracts. Any new taxonomy entry must make this
-test pass before deployment.
+The audit performs no model calls. It currently checks 16 exact product types,
+64 declared product-type/platform outcomes, 48 automated platform contracts,
+and 192 complete prompt builds. Any new taxonomy or platform entry must make
+this test pass before deployment.
 
 ## Verification
 
-- Full automated suite: `625 passed`
-- Pipeline contract audit: `passed`, `model_calls=0`
-- Runtime revision: `product-first-blueprint-owner-20260725-r24`
+- Full automated suite: `701 passed`
+- Pipeline contract audit: `passed`, `prompt_contracts_checked=192`,
+  `model_calls=0`
+- Runtime revision: `publisher-contract-durability-audit-20260725-r34`
+- Production editorial-truth inventory before this deployment: 25 stored
+  article artifacts, 9 deterministic passes, and 16 historical failures. Every
+  failure is already isolated in `admin_review`; the only `package_ready`
+  project passed the exact stored-artifact audit.
 
 External provider, network, credential, and publisher outages cannot be made
 impossible. The reliability contract is therefore: no silent jam, no hidden
 approved artifact, no blind retry, and one typed recovery owner for every
 failure family.
 
-## Remaining architectural upgrade
+## Remaining external boundaries
 
-The durable `RunJobRepository` now has safe lease/cancellation primitives, but
-the production Streamlit request still executes the research and workbench
-loops synchronously. A dedicated worker service should become the sole owner of
-provider calls so a browser disconnect or deployment restart resumes without
-an operator click. This is the next infrastructure milestone; the current
-engine still uses persisted stage checkpoints and stale-lease recovery.
+No software can guarantee that a model provider, source website, network,
+credential, WordPress destination, or newswire publisher will never fail. The
+system contract is that those failures cannot become silent duplicate spend,
+an invisible approved artifact, or an unowned browser jam. Each failure stops
+at a typed boundary with a preserved ledger, saved checkpoints, and one safe
+recovery path.

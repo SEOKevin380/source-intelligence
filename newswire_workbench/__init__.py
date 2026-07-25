@@ -1,4 +1,4 @@
-"""Local two-model compliance workbench for Barchart and AccessNewsWire."""
+"""Local two-model workbench for Barchart, AccessNewsWire, and Globe."""
 
 from .engine import (
     WORKBENCH_RUNTIME_REVISION,

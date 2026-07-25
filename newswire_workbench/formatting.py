@@ -342,6 +342,7 @@ def repair_publication_gates(html, platform, vertical, affiliate_href=""):
     html = _repair_escaped_article_tags(html)
     html = ensure_article_html(html)
     soup = BeautifulSoup(html, "html.parser")
+    is_globe = platform == "Globe Newswire"
 
     # Models sometimes mix valid HTML with top-level prose or production
     # notes. Preserve ordinary prose by wrapping it, but remove separators and
@@ -408,20 +409,21 @@ def repair_publication_gates(html, platform, vertical, affiliate_href=""):
             for node in soup.find_all("a", href=True)
         )
     )
-    disclosure_html = (
-        "<p><strong>Paid Advertorial:</strong> Compensation may be received "
-        "if a purchase is made through links in this advertorial.</p>"
-        if (
-            has_material_affiliate_link
+    if not is_globe:
+        disclosure_html = (
+            "<p><strong>Paid Advertorial:</strong> Compensation may be received "
+            "if a purchase is made through links in this advertorial.</p>"
+            if (
+                has_material_affiliate_link
+            )
+            else "<p><strong>Paid Advertorial</strong></p>"
         )
-        else "<p><strong>Paid Advertorial</strong></p>"
-    )
-    disclosure = BeautifulSoup(disclosure_html, "html.parser").p
-    first = soup.find()
-    if first:
-        first.insert_before(disclosure)
-    else:
-        soup.append(disclosure)
+        disclosure = BeautifulSoup(disclosure_html, "html.parser").p
+        first = soup.find()
+        if first:
+            first.insert_before(disclosure)
+        else:
+            soup.append(disclosure)
     if vertical == "financial" and not re.search(
         r"(?:loss of principal|investments? (?:involve|carry|includes?) risk)",
         soup.get_text(" ", strip=True), re.I,
@@ -533,9 +535,69 @@ def repair_publication_gates(html, platform, vertical, affiliate_href=""):
             strong.string = "Review the current offer details"
             anchor.append(strong)
 
+    if is_globe:
+        # Remove FAQ/Q&A sections as complete semantic blocks. Any depth loss
+        # remains visible to D18 and must be rebuilt as narrative, not hidden.
+        for heading in list(soup.find_all(["h2", "h3"])):
+            if not re.search(
+                r"\b(?:faq|frequently asked|questions? (?:about|readers)|"
+                r"related links?)\b",
+                heading.get_text(" ", strip=True),
+                re.I,
+            ):
+                continue
+            level = int(heading.name[1])
+            sibling = heading.find_next_sibling()
+            while sibling is not None:
+                next_sibling = sibling.find_next_sibling()
+                if (
+                    sibling.name in {"h2", "h3"}
+                    and int(sibling.name[1]) <= level
+                ):
+                    break
+                sibling.decompose()
+                sibling = next_sibling
+            heading.decompose()
+
+        # Format C owns one Related Links URL. Unwrap other web links so
+        # contact values remain visible without creating additional outbound
+        # destinations, and remove standalone CTA furniture entirely.
+        for anchor in list(soup.find_all("a", href=True)):
+            href = str(anchor.get("href") or "").strip()
+            if not href.casefold().startswith(("http://", "https://")):
+                continue
+            parent = anchor.parent
+            anchor_text = anchor.get_text(" ", strip=True)
+            if (
+                parent is not None
+                and parent.name in {"p", "li", "div"}
+                and parent.get_text(" ", strip=True) == anchor_text
+            ):
+                parent.decompose()
+            else:
+                anchor.unwrap()
+
+        if affiliate_href and affiliate_href.upper() != "TRAFFIC-FIRST":
+            related_heading = soup.new_tag("h2")
+            related_strong = soup.new_tag("strong")
+            related_strong.string = "Related Links"
+            related_heading.append(related_strong)
+            related_paragraph = soup.new_tag("p")
+            related_anchor = soup.new_tag("a", href=affiliate_href)
+            related_anchor.string = "Product information"
+            related_paragraph.append(related_anchor)
+            soup.append(related_heading)
+            soup.append(related_paragraph)
+
+        from .platform_contracts import GLOBE_DISCLOSURE_TEXT
+        disclosure = soup.new_tag("p")
+        disclosure.string = GLOBE_DISCLOSURE_TEXT
+        soup.append(disclosure)
+
     normalized = normalize_master_html(str(soup), word_count)
     if affiliate_href and affiliate_href.upper() != "TRAFFIC-FIRST":
-        target = 4 if platform == "AccessNewsWire" else 3
+        from .platform_contracts import platform_contract
+        target = platform_contract(platform).affiliate_cta_target
         normalized = ensure_affiliate_links(
             normalized, affiliate_href, target=target
         )

@@ -46,7 +46,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v34-closed-loop-action-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "source-conflict-contact-reconciliation-20260725-r33"
+WORKBENCH_RUNTIME_REVISION = "publisher-contract-durability-audit-20260725-r34"
 
 STAGES = (
     "source_ready",
@@ -243,6 +243,40 @@ def _source_affiliate_link(source_text):
     )
     if sealed:
         return sealed.group(1).replace("\\/", "/")
+    return ""
+
+
+def _source_official_link(source_text):
+    """Read the official product destination without trusting prompt prose."""
+    source_text = str(source_text or "")
+    legacy = re.search(
+        r"(?im)^OFFICIAL (?:WEBSITE )?URL:\s*(https?://\S+)",
+        source_text,
+    )
+    if legacy:
+        return legacy.group(1).rstrip(".,;)")
+    sealed = re.search(
+        r'"official_url"\s*:\s*"(https?://[^"]+)"',
+        source_text,
+        re.I,
+    )
+    if sealed:
+        return sealed.group(1).replace("\\/", "/")
+    return ""
+
+
+def _source_platform_link(source_text, platform):
+    """Return the publisher-permitted primary product destination.
+
+    Affiliate routes remain primary where supplied. Globe Format C still
+    requires one Related Links destination when an affiliate redirect is not
+    available, so it safely falls back to the source-of-record official URL.
+    """
+    affiliate = _source_affiliate_link(source_text)
+    if affiliate:
+        return affiliate
+    if platform == "Globe Newswire":
+        return _source_official_link(source_text)
     return ""
 
 
@@ -448,6 +482,8 @@ class WorkbenchEngine:
         self._backfill_issue_memory()
 
     def create_project(self, title, platform, source_text, vertical="auto"):
+        from .platform_contracts import require_automated_platform
+        require_automated_platform(platform)
         source_text = source_text.strip()
         if not title.strip() or not source_text:
             raise ValueError("Project name and source record are required")
@@ -480,6 +516,8 @@ class WorkbenchEngine:
         self, pack, platform, vertical="auto", force_new=False
     ):
         """Create or reuse a workbench job from a sealed Source Intelligence pack."""
+        from .platform_contracts import require_automated_platform
+        require_automated_platform(platform)
         from exemplar_corpus import (
             build_approval_playbook,
             build_generation_blueprint,
@@ -619,7 +657,7 @@ class WorkbenchEngine:
         plain = re.sub(r"<[^>]+>", " ", article)
         findings = deterministic_findings(
             article, p["platform"], p["vertical"],
-            _source_affiliate_link(p["source_text"]),
+            _source_platform_link(p["source_text"], p["platform"]),
         )
         blockers, recommendations = partition_findings(findings)
         version_match = re.search(
@@ -645,7 +683,7 @@ class WorkbenchEngine:
             p.get("article_text") or "",
             p["platform"],
             p["vertical"],
-            _source_affiliate_link(p["source_text"]),
+            _source_platform_link(p["source_text"], p["platform"]),
         )
         last_report = p.get("last_report") or {}
         exact_semantic_approval = bool(
@@ -927,7 +965,7 @@ class WorkbenchEngine:
             p["article_text"],
             p["platform"],
             p["vertical"],
-            _source_affiliate_link(p["source_text"]),
+            _source_platform_link(p["source_text"], p["platform"]),
         )
         from article_provenance import (
             build_article_claim_ledger,
@@ -1049,7 +1087,7 @@ class WorkbenchEngine:
             p["article_text"],
             p["platform"],
             p["vertical"],
-            _source_affiliate_link(p["source_text"]),
+            _source_platform_link(p["source_text"], p["platform"]),
         )
         return not any(
             item.get("id") not in MECHANICAL_GATES
@@ -1077,7 +1115,7 @@ class WorkbenchEngine:
             p["article_text"],
             p["platform"],
             p["vertical"],
-            _source_affiliate_link(p["source_text"]),
+            _source_platform_link(p["source_text"], p["platform"]),
         )
         if repaired != p["article_text"]:
             raise RuntimeError(
@@ -1101,7 +1139,7 @@ class WorkbenchEngine:
             )
         findings = deterministic_findings(
             p["article_text"], p["platform"], p["vertical"],
-            _source_affiliate_link(p["source_text"]),
+            _source_platform_link(p["source_text"], p["platform"]),
         )
         blockers, _ = partition_findings(findings)
         if blockers:
@@ -1659,7 +1697,7 @@ class WorkbenchEngine:
             p["article_text"],
             p["platform"],
             p["vertical"],
-            _source_affiliate_link(p["source_text"]),
+            _source_platform_link(p["source_text"], p["platform"]),
         )
         from article_provenance import (
             build_article_claim_ledger,
@@ -1734,7 +1772,7 @@ class WorkbenchEngine:
             p["article_text"],
             p["platform"],
             p["vertical"],
-            _source_affiliate_link(p["source_text"]),
+            _source_platform_link(p["source_text"], p["platform"]),
         )
         if preflight["mechanical_remaining"]:
             return False
@@ -1966,7 +2004,9 @@ class WorkbenchEngine:
             current["article_text"],
             current["platform"],
             current["vertical"],
-            _source_affiliate_link(current["source_text"]),
+            _source_platform_link(
+                current["source_text"], current["platform"]
+            ),
         )
         if preflight["article"] != current["article_text"]:
             self._persist_preflight_article(
@@ -1977,7 +2017,9 @@ class WorkbenchEngine:
                 current["article_text"],
                 current["platform"],
                 current["vertical"],
-                _source_affiliate_link(current["source_text"]),
+                _source_platform_link(
+                    current["source_text"], current["platform"]
+                ),
             )
         from article_provenance import (
             build_article_claim_ledger,
@@ -2134,7 +2176,7 @@ class WorkbenchEngine:
             p["article_text"],
             p["platform"],
             p["vertical"],
-            _source_affiliate_link(p["source_text"]),
+            _source_platform_link(p["source_text"], p["platform"]),
         )["article"]
         base_html = repair_source_grounding(
             normalized_base, p["source_text"], p["vertical"]
@@ -2295,7 +2337,7 @@ class WorkbenchEngine:
             merged,
             p["platform"],
             p["vertical"],
-            _source_affiliate_link(p["source_text"]),
+            _source_platform_link(p["source_text"], p["platform"]),
         )
         candidate = preflight["article"]
         candidate_provenance = build_article_claim_ledger(
@@ -2744,6 +2786,85 @@ class WorkbenchEngine:
                     (project_id, token),
                 )
 
+    def prepare_queue_execution(
+        self,
+        project_id,
+        *,
+        queue_job_id,
+        reclaim_attempt=1,
+    ):
+        """Fence browser-independent execution and recover a dead worker.
+
+        A reclaimed queue lease proves the prior queue worker no longer owns
+        the job. Its project lock may therefore be cleared without waiting for
+        the browser-oriented stale timeout. A durable provider request with no
+        stored response is quarantined instead of being charged twice.
+        """
+        if reclaim_attempt > 1:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT run_token FROM projects WHERE id=?",
+                    (project_id,),
+                ).fetchone()
+                if row and row["run_token"]:
+                    conn.execute(
+                        """UPDATE projects
+                        SET run_token='',run_started_at=''
+                        WHERE id=? AND run_token=?""",
+                        (project_id, row["run_token"]),
+                    )
+            project = self.get(project_id)
+            self._event(
+                project_id,
+                "queue_lease_reclaimed",
+                project["stage"],
+                project["article_hash"],
+                {
+                    "queue_job_id": queue_job_id,
+                    "attempt": reclaim_attempt,
+                },
+            )
+        stranded = self._stranded_required_calls(project_id)
+        if any(
+            item.endswith(":request_started") for item in stranded
+        ):
+            self._set_stage(project_id, "admin_review")
+            project = self.get(project_id)
+            self._event(
+                project_id,
+                "ambiguous_provider_request_quarantined",
+                "admin_review",
+                project["article_hash"],
+                {
+                    "queue_job_id": queue_job_id,
+                    "stranded_calls": stranded,
+                    "paid_call_replay_blocked": True,
+                    "operator_decision_required": False,
+                },
+            )
+            return False
+        return True
+
+    def quarantine_queue_failure(
+        self, project_id, *, queue_job_id, error
+    ):
+        project = self.get(project_id)
+        if self._uses_locked_call_path(project):
+            self._set_stage(project_id, "admin_review")
+            project = self.get(project_id)
+        self._event(
+            project_id,
+            "durable_queue_failure",
+            project["stage"],
+            project["article_hash"],
+            {
+                "queue_job_id": queue_job_id,
+                "error_type": type(error).__name__,
+                "message": str(error)[:2000],
+                "operator_decision_required": False,
+            },
+        )
+
     def _release_stale_run(self, project_id):
         """Recover a project lock left behind by a killed app or sleeping Mac."""
         recovered_age = None
@@ -2823,7 +2944,9 @@ class WorkbenchEngine:
             report = self._openai_review(p, final=False)
             draft_findings = deterministic_findings(
                 p["article_text"], p["platform"], p["vertical"],
-                _source_affiliate_link(p["source_text"]),
+                _source_platform_link(
+                    p["source_text"], p["platform"]
+                ),
             )
             draft_blockers, _ = partition_findings(draft_findings)
             if report.get("verdict") == "approved" and not draft_blockers:
@@ -2977,7 +3100,9 @@ class WorkbenchEngine:
                 p["article_text"],
                 p["platform"],
                 p["vertical"],
-                _source_affiliate_link(p["source_text"]),
+                _source_platform_link(
+                    p["source_text"], p["platform"]
+                ),
             )
             self._persist_preflight_article(p, preflight, "revised")
             p = self.get(project_id)
@@ -3259,6 +3384,9 @@ class WorkbenchEngine:
             timeout=float(os.environ.get("NEWSWIRE_PROVIDER_TIMEOUT", "90")),
             max_retries=int(os.environ.get("NEWSWIRE_PROVIDER_RETRIES", "0")),
         )
+        call_id = self._begin_llm_call(
+            project_id, purpose, route, request_hash
+        )
         try:
             msg = client.messages.create(
                 model=route.model,
@@ -3267,10 +3395,9 @@ class WorkbenchEngine:
                 messages=[{"role": "user", "content": prompt}],
             )
         except Exception as exc:
-            self._record_llm_call(
-                project_id, purpose, route, status="failed", error=str(exc),
+            self._complete_llm_call(
+                call_id, route, status="failed", error=str(exc),
                 lifecycle="ambiguous_provider_failure",
-                request_hash=request_hash,
             )
             project = self.get(project_id)
             if self._uses_locked_call_path(project):
@@ -3284,13 +3411,12 @@ class WorkbenchEngine:
             raise
         text = "".join(block.text for block in msg.content if getattr(block, "type", "") == "text").strip()
         usage = getattr(msg, "usage", None)
-        call_id = self._record_llm_call(
-            project_id, purpose, route,
+        self._complete_llm_call(
+            call_id, route,
             input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
             output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
             raw_output=text,
             lifecycle="provider_succeeded",
-            request_hash=request_hash,
         )
         if getattr(msg, "stop_reason", None) == "max_tokens":
             self._mark_llm_call_lifecycle(call_id, "invalid")
@@ -3306,7 +3432,7 @@ class WorkbenchEngine:
         truth_audit = audit_editorial_truth(
             extract_sealed_pack(p["source_text"]),
             p["article_text"],
-            _source_affiliate_link(p["source_text"]),
+            _source_platform_link(p["source_text"], p["platform"]),
         )
         truth_packet = {
             "candidate_set_hash": truth_audit[
@@ -3376,6 +3502,9 @@ class WorkbenchEngine:
             )
             self._assert_call_budget(p["id"], purpose, route)
             self._assert_prompt_budget(p["id"], purpose, prompt)
+            call_id = self._begin_llm_call(
+                p["id"], purpose, route, request_hash
+            )
             try:
                 reviewer_system = (
                     "You are the executive editorial adjudicator. Distinguish "
@@ -3483,10 +3612,9 @@ class WorkbenchEngine:
                     }},
                 )
             except Exception as exc:
-                self._record_llm_call(
-                    p["id"], purpose, route, status="failed", error=str(exc),
+                self._complete_llm_call(
+                    call_id, route, status="failed", error=str(exc),
                     lifecycle="ambiguous_provider_failure",
-                    request_hash=request_hash,
                 )
                 if self._uses_locked_call_path(p):
                     self._set_stage(p["id"], "admin_review")
@@ -3504,8 +3632,8 @@ class WorkbenchEngine:
                 raise
             usage = getattr(response, "usage", None)
             text = response.output_text.strip()
-            call_id = self._record_llm_call(
-                p["id"], purpose, route,
+            self._complete_llm_call(
+                call_id, route,
                 input_tokens=int(
                     getattr(usage, "input_tokens", 0) or 0
                 ),
@@ -3514,7 +3642,6 @@ class WorkbenchEngine:
                 ),
                 raw_output=text,
                 lifecycle="provider_succeeded",
-                request_hash=request_hash,
             )
         if text.startswith("```"):
             text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.S)
@@ -3695,7 +3822,7 @@ class WorkbenchEngine:
         report = self._remove_house_rule_conflicts(report, p["article_text"])
         deterministic = deterministic_findings(
             p["article_text"], p["platform"], p["vertical"],
-            _source_affiliate_link(p["source_text"]),
+            _source_platform_link(p["source_text"], p["platform"]),
         )
         if deterministic:
             existing = report.setdefault("mandatory_edits", [])
@@ -3817,6 +3944,61 @@ class WorkbenchEngine:
                  project.get("source_hash") or ""),
             )
             return cursor.lastrowid
+
+    def _begin_llm_call(
+        self, project_id, stage, route, request_hash
+    ):
+        """Persist provider intent before network I/O.
+
+        A deployment can kill the process after a provider accepted a request
+        but before its response is stored.  Recording intent first makes that
+        state visible and billable-conservative, so recovery never silently
+        repeats a possibly charged call.
+        """
+        return self._record_llm_call(
+            project_id,
+            stage,
+            route,
+            status="started",
+            lifecycle="request_started",
+            request_hash=request_hash,
+        )
+
+    def _complete_llm_call(
+        self,
+        call_id,
+        route,
+        *,
+        input_tokens=0,
+        output_tokens=0,
+        status="success",
+        error="",
+        raw_output="",
+        lifecycle="provider_succeeded",
+    ):
+        cost = estimated_cost(route, input_tokens, output_tokens)
+        with self._connect() as conn:
+            changed = conn.execute(
+                """UPDATE llm_calls
+                SET input_tokens=?,output_tokens=?,estimated_cost=?,
+                    status=?,error=?,lifecycle=?,raw_output=?,output_hash=?
+                WHERE id=? AND lifecycle='request_started'""",
+                (
+                    input_tokens,
+                    output_tokens,
+                    cost,
+                    status,
+                    str(error)[:2000],
+                    lifecycle,
+                    raw_output,
+                    _hash(raw_output) if raw_output else "",
+                    call_id,
+                ),
+            )
+        if changed.rowcount != 1:
+            raise RuntimeError(
+                "Provider call ledger lost its durable request-start record."
+            )
 
     def _mark_llm_call_lifecycle(self, call_id, lifecycle):
         with self._connect() as conn:
@@ -3986,10 +4168,10 @@ class WorkbenchEngine:
             rows = conn.execute(
                 """SELECT stage,lifecycle FROM llm_calls
                 WHERE project_id=? AND stage IN (?,?,?,?)
-                AND status='success'
+                AND status IN ('started','success','failed')
                 AND lifecycle IN (
                     'invalid','candidate_rejected','stale_input',
-                    'ambiguous_provider_failure'
+                    'ambiguous_provider_failure','request_started'
                 )
                 ORDER BY id""",
                 (project_id, *REQUIRED_CALL_PATH),
@@ -4037,7 +4219,9 @@ class WorkbenchEngine:
                 WHERE project_id=? AND stage=?
                 AND (
                     status='success' OR estimated_cost>0
-                    OR lifecycle='ambiguous_provider_failure'
+                    OR lifecycle IN (
+                        'ambiguous_provider_failure','request_started'
+                    )
                 )""",
                 (project_id, stage),
             ).fetchone()[0]
@@ -4047,7 +4231,9 @@ class WorkbenchEngine:
             row = conn.execute(
                 """SELECT
                 COALESCE(SUM(CASE WHEN status='success' OR estimated_cost>0
-                    OR lifecycle='ambiguous_provider_failure'
+                    OR lifecycle IN (
+                        'ambiguous_provider_failure','request_started'
+                    )
                     THEN 1 ELSE 0 END),0) calls,
                 COUNT(*) attempts,
                 COALESCE(SUM(input_tokens),0) input_tokens,
@@ -4254,9 +4440,14 @@ class WorkbenchEngine:
         plain = re.sub(r"<[^>]+>", " ", article)
         word_count = len(re.findall(r"\b[\w’'-]+\b", plain))
         article = normalize_master_html(article, word_count)
-        affiliate_href = _source_affiliate_link(p["source_text"])
+        affiliate_href = _source_platform_link(
+            p["source_text"], p["platform"]
+        )
         if word_count >= 1200 and affiliate_href:
-            target = 4 if p["platform"] == "AccessNewsWire" else 3
+            from .platform_contracts import platform_contract
+            target = platform_contract(
+                p["platform"]
+            ).affiliate_cta_target
             article = ensure_affiliate_links(
                 article, affiliate_href, target=target
             )
@@ -4526,7 +4717,7 @@ class WorkbenchEngine:
             p["article_text"],
             p["platform"],
             p["vertical"],
-            _source_affiliate_link(p["source_text"]),
+            _source_platform_link(p["source_text"], p["platform"]),
         )
         if final_preflight["blockers"]:
             raise RuntimeError(
@@ -4940,7 +5131,9 @@ class WorkbenchEngine:
     def _complete_adjudicated_signoff(self, project_id, target_stage, filename):
         """Approve a mechanically corrected article after deterministic gates pass."""
         p = self.get(project_id)
-        affiliate_href = _source_affiliate_link(p["source_text"])
+        affiliate_href = _source_platform_link(
+            p["source_text"], p["platform"]
+        )
         preflight = audit_article(
             p["article_text"], p["platform"], p["vertical"], affiliate_href
         )

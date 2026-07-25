@@ -497,6 +497,15 @@ def _is_contact_anchor(anchor) -> bool:
     )
 
 
+def _is_related_link_anchor(anchor) -> bool:
+    heading = anchor.find_previous(["h1", "h2", "h3"])
+    heading_text = (
+        _normalize(heading.get_text(" ", strip=True)).casefold()
+        if heading is not None else ""
+    )
+    return heading_text == "related links"
+
+
 def _cta_audit(pack: dict, article: str, affiliate_href: str = "") -> dict:
     soup = BeautifulSoup(html.unescape(article or ""), "html.parser")
     official_url = str(
@@ -514,7 +523,9 @@ def _cta_audit(pack: dict, article: str, affiliate_href: str = "") -> dict:
         href = str(anchor.get("href") or "").strip()
         text = _normalize(anchor.get_text(" ", strip=True))
         role = "other"
-        if href.casefold().startswith("mailto:"):
+        if _is_related_link_anchor(anchor):
+            role = "related"
+        elif href.casefold().startswith("mailto:"):
             role = "email"
         elif href.casefold().startswith("tel:"):
             role = "phone"

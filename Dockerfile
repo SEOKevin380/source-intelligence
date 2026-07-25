@@ -16,4 +16,4 @@ COPY . .
 
 RUN mkdir -p /data/source-intelligence/newswire-workbench
 
-CMD ["sh", "-c", "streamlit run app.py --server.headless=true --server.address=0.0.0.0 --server.port=${PORT:-8080} --browser.gatherUsageStats=false"]
+CMD ["sh", "-c", "(while true; do python scripts/run_workbench_worker.py; sleep 2; done) & (while true; do python scripts/run_research_worker.py; sleep 2; done) & exec streamlit run app.py --server.headless=true --server.address=0.0.0.0 --server.port=${PORT:-8080} --browser.gatherUsageStats=false"]

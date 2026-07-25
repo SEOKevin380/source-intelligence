@@ -6,6 +6,7 @@ import re
 from bs4 import BeautifulSoup, NavigableString
 
 from .publication_profiles import publication_profile
+from .platform_contracts import GLOBE_DISCLOSURE_TEXT
 from .gate_registry import PUBLICATION_BLOCKER_IDS
 
 
@@ -25,6 +26,18 @@ HARD_BLOCKER_RATIONALE = {
     "D21": (
         "editorial_utility",
         "Reader-facing copy must be a natural advertorial, not a compliance audit.",
+    ),
+    "D22": (
+        "platform_disclosure",
+        "Globe Format C requires exactly one end-position compensation disclosure.",
+    ),
+    "D23": (
+        "platform_structure",
+        "Globe Format C permits no CTA/FAQ and exactly one Related Links destination.",
+    ),
+    "D24": (
+        "platform_voice",
+        "Globe Format C requires brand-as-subject, mechanism-forward claim language.",
     ),
 }
 
@@ -66,6 +79,7 @@ def deterministic_findings(article, platform, vertical, affiliate_href=""):
     findings = []
     lowered = article.casefold()
     soup = BeautifulSoup(article, "html.parser")
+    is_globe = platform == "Globe Newswire"
     top_level_plaintext = next(
         (
             str(node).strip()
@@ -140,7 +154,7 @@ def deterministic_findings(article, platform, vertical, affiliate_href=""):
         r"\b(?:not|isn't|is not|never)\s+(?:a\s+)?(?:paid\s+)?advertorial\b",
         opening_plain[:1200],
     )
-    if not advertorial_label or negated_advertorial:
+    if not is_globe and (not advertorial_label or negated_advertorial):
         findings.append({
             "id": "D1", "category": "Deterministic disclosure gate",
             "issue": "Paid advertorial label is missing near the top.",
@@ -186,7 +200,11 @@ def deterministic_findings(article, platform, vertical, affiliate_href=""):
         r"\b(?:compensation may be received|a commission may be earned)\b",
         opening_plain[:1600],
     )
-    if has_material_affiliate_link and not passive_compensation:
+    if (
+        not is_globe
+        and has_material_affiliate_link
+        and not passive_compensation
+    ):
         findings.append({
             "id": "D5", "category": "Affiliate disclosure gate",
             "issue": "Passive affiliate compensation disclosure is missing.",
@@ -213,6 +231,123 @@ def deterministic_findings(article, platform, vertical, affiliate_href=""):
             "exact_text": routing_explanation.group(0).strip(),
             "replacement": "Use a concise passive affiliate disclosure and neutral CTA without discussing link routing.",
         })
+    if is_globe:
+        paragraph_texts = [
+            re.sub(r"\s+", " ", node.get_text(" ", strip=True)).strip()
+            for node in soup.find_all("p")
+        ]
+        disclosure_indexes = [
+            index
+            for index, text in enumerate(paragraph_texts)
+            if "compensation may be received" in text.casefold()
+            or "paid advertorial" in text.casefold()
+        ]
+        exact_disclosure = [
+            index
+            for index, text in enumerate(paragraph_texts)
+            if text == GLOBE_DISCLOSURE_TEXT
+        ]
+        if (
+            disclosure_indexes != [len(paragraph_texts) - 1]
+            or exact_disclosure != disclosure_indexes
+        ):
+            findings.append({
+                "id": "D22",
+                "category": "Globe Format C disclosure gate",
+                "issue": (
+                    "Globe Format C requires exactly one exact compensation "
+                    "disclosure as the final paragraph, never in the opening."
+                ),
+                "exact_text": "",
+                "replacement": GLOBE_DISCLOSURE_TEXT,
+            })
+        http_links = [
+            node for node in soup.find_all("a", href=True)
+            if str(node.get("href") or "").strip().casefold().startswith(
+                ("http://", "https://")
+            )
+        ]
+        related_headings = [
+            node for node in soup.find_all(["h2", "h3"])
+            if re.fullmatch(
+                r"related links?",
+                re.sub(
+                    r"\s+", " ", node.get_text(" ", strip=True)
+                ).strip(),
+                re.I,
+            )
+        ]
+        faq_headings = [
+            node for node in soup.find_all(["h2", "h3"])
+            if re.search(
+                r"\b(?:faq|frequently asked|questions? (?:about|readers))\b",
+                node.get_text(" ", strip=True),
+                re.I,
+            )
+        ]
+        linked_hrefs = [
+            str(node.get("href") or "").strip() for node in http_links
+        ]
+        prohibited_cta = next(
+            (
+                node.get_text(" ", strip=True)
+                for node in http_links
+                if re.search(
+                    r"\b(?:buy|order|purchase|checkout|review|see|check|"
+                    r"explore|view|visit|learn more|get started|current offer)\b",
+                    node.get_text(" ", strip=True),
+                    re.I,
+                )
+            ),
+            "",
+        )
+        if (
+            len(http_links) != 1
+            or len(related_headings) != 1
+            or faq_headings
+            or (
+                affiliate_href
+                and affiliate_href.upper() != "TRAFFIC-FIRST"
+                and linked_hrefs != [affiliate_href]
+            )
+            or prohibited_cta
+        ):
+            findings.append({
+                "id": "D23",
+                "category": "Globe Format C structure gate",
+                "issue": (
+                    "Globe Format C requires no CTA or FAQ and exactly one "
+                    "neutral outbound link in the Related Links block."
+                ),
+                "exact_text": prohibited_cta,
+                "replacement": (
+                    "Remove CTA/FAQ furniture and keep one neutral product "
+                    "information link under Related Links at the end."
+                ),
+            })
+        forbidden_attribution = re.search(
+            r"\b(?:according to (?:the )?(?:company|brand|seller|vendor|"
+            r"manufacturer|offer)|(?:the )?(?:company|brand|seller|vendor|"
+            r"manufacturer|offer) (?:states?|says?|claims?|reports?|"
+            r"describes?))\b",
+            re.sub(r"<[^>]+>", " ", article),
+            re.I,
+        )
+        if forbidden_attribution:
+            findings.append({
+                "id": "D24",
+                "category": "Globe Format C voice gate",
+                "issue": (
+                    "Globe rejects observer-style seller/company attribution; "
+                    "the brand must be the grammatical subject and claims must "
+                    "remain mechanism-forward."
+                ),
+                "exact_text": forbidden_attribution.group(0),
+                "replacement": (
+                    "Rewrite with the exact brand as subject and supported "
+                    "mechanism language such as '[Brand] is designed to ...'."
+                ),
+            })
     links = list(re.finditer(r"<a\b[^>]*href=[\"'][^\"']+[\"'][^>]*>", article, re.I))
     word_count = len(re.findall(r"\b[\w’'-]+\b", re.sub(r"<[^>]+>", " ", article)))
     profile = publication_profile(platform, vertical)
@@ -487,13 +622,17 @@ def deterministic_findings(article, platform, vertical, affiliate_href=""):
                 "disclosed gaps, and practical verification steps."
             ),
         })
-    if links and links[0].start() > max(1200, len(article) // 4):
+    if (
+        not is_globe
+        and links
+        and links[0].start() > max(1200, len(article) // 4)
+    ):
         findings.append({
             "id": "D10", "category": "CTA distribution gate",
             "issue": "The first CTA appears too late for a conversion-focused advertorial.",
             "exact_text": "", "replacement": "Add a clean descriptive CTA near the opening without changing factual claims.",
         })
-    if word_count >= 1200 and len(links) < 3:
+    if not is_globe and word_count >= 1200 and len(links) < 3:
         findings.append({
             "id": "D11", "category": "CTA distribution gate",
             "issue": "Long-form copy does not distribute enough clean CTAs through the article.",
@@ -514,7 +653,7 @@ def deterministic_findings(article, platform, vertical, affiliate_href=""):
             "replacement": "Use <h2><strong>Heading text</strong></h2> or the H3 equivalent.",
         })
     unbold_cta = re.search(r"<a\b[^>]*>(?!\s*<strong\b)", article, re.I)
-    if unbold_cta:
+    if unbold_cta and not is_globe:
         findings.append({
             "id": "D14", "category": "MBK HTML format gate",
             "issue": "Every CTA link must explicitly bold its anchor text with STRONG.",

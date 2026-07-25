@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 from article_provenance import extract_sealed_pack
 from newswire_workbench import WorkbenchEngine
 from newswire_workbench.editorial_truth import audit_editorial_truth
+from newswire_workbench.engine import _source_platform_link
 
 
 def audit_rows(
@@ -23,6 +24,7 @@ def audit_rows(
     project_id: str = "",
     limit: int = 0,
     include_clean: bool = False,
+    allow_empty: bool = False,
 ) -> dict:
     if project_id:
         rows = [row for row in rows if row["id"] == project_id]
@@ -35,20 +37,26 @@ def audit_rows(
     cta_issue_counts = Counter()
     failed = 0
     review_candidate_total = 0
+    stage_counts = Counter()
+    failed_stage_counts = Counter()
     for row in rows:
+        stage = str(row.get("stage") or "unknown")
+        stage_counts[stage] += 1
         pack = extract_sealed_pack(row.get("source_text") or "")
         result = audit_editorial_truth(
             pack,
             row.get("article_text") or "",
-            str(
-                (pack.get("intake_manifest") or {}).get("affiliate_link")
-                or ""
+            _source_platform_link(
+                row.get("source_text") or "",
+                row.get("platform") or "",
             ),
         )
         grounding = result["grounding_violations"]
         cta = result["cta_integrity_violations"]
         candidates = result["review_candidates"]
         failed += int(not result["passed"])
+        if not result["passed"]:
+            failed_stage_counts[stage] += 1
         review_candidate_total += len(candidates)
         rule_counts.update(item.get("rule") or "unknown" for item in grounding)
         cta_issue_counts.update(item.get("category") or "unknown" for item in cta)
@@ -70,7 +78,9 @@ def audit_rows(
         })
 
     return {
-        "passed": failed == 0,
+        "passed": (bool(rows) or allow_empty) and failed == 0,
+        "audited": bool(rows),
+        "empty_input": not rows,
         "model_calls": 0,
         "projects_with_articles": len(rows),
         "projects_failed": failed,
@@ -78,6 +88,8 @@ def audit_rows(
         "review_candidate_total": review_candidate_total,
         "grounding_rule_counts": dict(sorted(rule_counts.items())),
         "cta_issue_counts": dict(sorted(cta_issue_counts.items())),
+        "stage_counts": dict(sorted(stage_counts.items())),
+        "failed_stage_counts": dict(sorted(failed_stage_counts.items())),
         "projects": projects,
     }
 
@@ -88,12 +100,14 @@ def audit_projects(
     project_id: str = "",
     limit: int = 0,
     include_clean: bool = False,
+    allow_empty: bool = False,
 ) -> dict:
     return audit_rows(
         engine.list_projects(),
         project_id=project_id,
         limit=limit,
         include_clean=include_clean,
+        allow_empty=allow_empty,
     )
 
 
@@ -123,6 +137,14 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--allow-empty",
+        action="store_true",
+        help=(
+            "Permit an empty dataset to pass. Intended only for explicit "
+            "new-install smoke tests; production audits fail closed by default."
+        ),
+    )
+    parser.add_argument(
         "--fail-on-violations",
         action="store_true",
         help="Exit nonzero when any stored article fails the new controls.",
@@ -137,6 +159,7 @@ def main() -> None:
             project_id=args.project_id,
             limit=args.limit,
             include_clean=args.include_clean,
+            allow_empty=args.allow_empty,
         )
     else:
         engine = WorkbenchEngine(
@@ -147,6 +170,7 @@ def main() -> None:
             project_id=args.project_id,
             limit=args.limit,
             include_clean=args.include_clean,
+            allow_empty=args.allow_empty,
         )
     if args.summary_only:
         result = {

@@ -155,6 +155,18 @@ class RunJobRepository:
                 conn.execute("SELECT * FROM run_jobs WHERE id=?", (job_id,)).fetchone()
             )
 
+    def latest_for_project(self, project_id: str) -> RunJob | None:
+        with self._connect() as conn:
+            return self._decode(
+                conn.execute(
+                    """SELECT * FROM run_jobs
+                    WHERE project_id=?
+                    ORDER BY created_at DESC, rowid DESC
+                    LIMIT 1""",
+                    (project_id,),
+                ).fetchone()
+            )
+
     def submit(
         self,
         *,

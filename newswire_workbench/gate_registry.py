@@ -5,12 +5,13 @@ from __future__ import annotations
 
 _BLOCKERS = {
     "D1", "D2", "D3", "D5", "D6", "D7", "D17", "D18", "D19", "D20", "D21",
+    "D22", "D23", "D24",
 }
 _MECHANICAL = {
     "D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9",
-    "D10", "D11", "D12", "D13", "D14", "D17",
+    "D10", "D11", "D12", "D13", "D14", "D17", "D22", "D23",
 }
-_SEMANTIC = {"D18", "D19", "D20", "D21"}
+_SEMANTIC = {"D18", "D19", "D20", "D21", "D24"}
 
 GATE_REGISTRY = {
     f"D{number}": {
@@ -23,7 +24,7 @@ GATE_REGISTRY = {
             else "advisory"
         ),
     }
-    for number in range(1, 22)
+    for number in range(1, 25)
 }
 
 ALL_GATE_IDS = frozenset(GATE_REGISTRY)

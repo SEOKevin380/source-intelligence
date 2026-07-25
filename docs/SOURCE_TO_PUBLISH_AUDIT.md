@@ -27,28 +27,35 @@ loop. Unsupported or altered facts must not enter publication automation.
 - The publisher receives a compact research representation (maximum five
   studies per ingredient), limiting token cost without losing the full sealed
   source record.
+- Research and update jobs are persisted before entering a lease-fenced worker
+  queue. Closing the browser cannot interrupt acquisition, OCR, research,
+  compliance, or final source-pack persistence.
+- Newswire drafting, independent review, bounded repair, final sign-off, and
+  optional WordPress delivery are also worker-owned. Provider request intent
+  is stored before network I/O, preventing unsafe replay after a crash.
+- Platform behavior is selected from executable contracts for AccessNewsWire,
+  Barchart, and Globe. Unsupported destinations stop before model spend.
 
 ## Remaining high-priority work
 
-1. Move the new in-process sealed-pack handoff to durable shared hosting so
-   every team session sees the same workbench queue and artifacts.
-2. Add PubMed relevance scoring at the study-to-ingredient level. A PubMed hit
+1. Add PubMed relevance scoring at the study-to-ingredient level. A PubMed hit
    proves retrieval, not that the paper supports a product outcome.
-3. Version and provenance-tag the shared ingredient knowledge cache. Cached
+2. Version and provenance-tag the shared ingredient knowledge cache. Cached
    research should never appear indistinguishable from research run for the
    current product and ingredient form.
-4. Replace supplement-weighted CRM completeness scoring with per-offering-type
+3. Replace supplement-weighted CRM completeness scoring with per-offering-type
    scorecards from the intelligence packs.
-5. Add acquisition caching keyed by submitted-source manifest hash so unchanged
+4. Add acquisition caching keyed by submitted-source manifest hash so unchanged
    reports skip browser, OCR, and research calls while still checking freshness
    for price and policy facts.
-6. Add an automation dashboard showing pack hash, source count, freshness,
+5. Add an automation dashboard showing pack hash, source count, freshness,
    readiness, generation status, destination site, and publication URL in plain
    language.
 
 ## Operator workflow
 
-1. Submit URLs/files once in Source Intelligence.
+1. Submit URLs/files once in Source Intelligence. The durable worker owns the
+   run, so the browser can be closed.
 2. Wait for `Ready for automated publishing` or `Ready ... with documented gaps`.
 3. Download the Publication Source Pack, or export it locally with
    `export_source_packs.py`.

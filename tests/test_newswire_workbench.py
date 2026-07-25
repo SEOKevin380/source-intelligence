@@ -912,7 +912,7 @@ def test_publication_repair_neutralizes_prosecutorial_device_headings():
 def test_offline_system_audit_owns_every_blocker_and_route():
     report = audit_system_contract("device")
     assert report["passed"] is True
-    assert report["blocker_count"] == 11
+    assert report["blocker_count"] == 14
     assert not report["missing_blocker_rationales"]
     assert not report["stale_blocker_rationales"]
     assert report["missing_gate_owners"] == []
@@ -3507,6 +3507,38 @@ def test_paid_writer_response_replays_without_api_or_second_call(tmp_path):
             "SELECT lifecycle FROM llm_calls WHERE id=?", (call_id,)
         ).fetchone()["lifecycle"]
     assert lifecycle == "applied"
+
+
+def test_request_started_is_durable_billable_and_never_replayed(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Test",
+        "AccessNewsWire",
+        "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══\n"
+        "device source",
+        "device",
+    )
+    route = route_for("draft", "device")
+    call_id = engine._begin_llm_call(
+        pid, "draft", route, "request-hash"
+    )
+    assert engine.usage_summary(pid)["calls"] == 1
+    assert engine._billable_call_count(pid, "draft") == 1
+    assert engine.prepare_queue_execution(
+        pid,
+        queue_job_id="reclaimed-job",
+        reclaim_attempt=2,
+    ) is False
+    assert engine.get(pid)["stage"] == "admin_review"
+    with engine._connect() as conn:
+        lifecycle = conn.execute(
+            "SELECT lifecycle FROM llm_calls WHERE id=?", (call_id,)
+        ).fetchone()["lifecycle"]
+    assert lifecycle == "request_started"
+    assert any(
+        event["event_type"] == "ambiguous_provider_request_quarantined"
+        for event in engine.events(pid)
+    )
 
 
 def test_paid_review_response_replays_and_applies_without_second_call(

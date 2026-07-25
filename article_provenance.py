@@ -65,7 +65,9 @@ def _negated(value: str) -> bool:
     ))
 
 
-def _attribution_signals(value: str) -> tuple[bool, bool]:
+def _attribution_signals(
+    value: str, seller_subject: str = ""
+) -> tuple[bool, bool]:
     """Return seller/source attribution signals in one semantic scope."""
     lowered = value.casefold()
     seller_attributed = bool(re.search(
@@ -88,6 +90,15 @@ def _attribution_signals(value: str) -> tuple[bool, bool]:
         r"indicates?|specifies?|shows?)\b",
         lowered,
     ))
+    if seller_subject:
+        seller_attributed = seller_attributed or bool(re.match(
+            rf"^\s*(?:{re.escape(seller_subject.casefold())})\b.{{0,100}}"
+            r"\b(?:is|are)\s+(?:designed|intended|positioned|presented|"
+            r"described|listed|offered|built|configured)\b|"
+            rf"^\s*(?:{re.escape(seller_subject.casefold())})\b.{{0,80}}"
+            r"\b(?:features?|includes?|uses?|offers?|provides?)\b",
+            lowered,
+        ))
     seller_attributed = seller_attributed or bool(re.search(
         r"\b(?:seller|vendor|manufacturer|brand|offer|product-page)"
         r"[- ](?:described|reported|stated|presented|listed|claimed)\b|"
@@ -121,7 +132,9 @@ def _attribution_signals(value: str) -> tuple[bool, bool]:
     return seller_attributed, source_attributed
 
 
-def _sentence_records(article: str) -> list[dict]:
+def _sentence_records(
+    article: str, seller_subject: str = ""
+) -> list[dict]:
     """Split within semantic blocks and preserve forward attribution scope.
 
     Flattening the entire document joined an H2 to its following paragraph.
@@ -158,13 +171,15 @@ def _sentence_records(article: str) -> list[dict]:
                 ).strip()
                 if introduction.endswith(":"):
                     seller_scope, source_scope = _attribution_signals(
-                        introduction
+                        introduction, seller_subject
                     )
         for item in re.split(r"(?<=[.!?])\s+", plain):
             sentence = item.strip()
             if len(sentence) < 20:
                 continue
-            local_seller, local_source = _attribution_signals(sentence)
+            local_seller, local_source = _attribution_signals(
+                sentence, seller_subject
+            )
             seller_scope = seller_scope or local_seller
             source_scope = source_scope or local_source
             records.append({
@@ -774,7 +789,19 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
     attribution_violations = []
     attribution_violation_keys = set()
     attribution_violation_index = {}
-    for sentence_record in _sentence_records(article):
+    product = pack.get("product") or {}
+    platform = str(
+        product.get("publishing_platform")
+        or product.get("publishing_channel")
+        or (pack.get("release_details") or {}).get("platform")
+        or ""
+    )
+    seller_subject = (
+        str(product.get("product_name") or "").strip()
+        if "globe" in platform.casefold()
+        else ""
+    )
+    for sentence_record in _sentence_records(article, seller_subject):
         sentence = sentence_record["text"]
         sentence_tokens = _tokens(sentence)
         matches = []

@@ -13,20 +13,13 @@ import json
 import os
 import re
 import secrets
-import subprocess
 import tempfile
 import time
 import streamlit as st
 
-# Auto-install Playwright browsers on first run (needed for Streamlit Cloud)
-_pw_marker = os.path.join(tempfile.gettempdir(), ".playwright_installed")
-if not os.path.exists(_pw_marker):
-    try:
-        subprocess.run(["python3", "-m", "playwright", "install", "chromium"],
-                       capture_output=True, timeout=120)
-        open(_pw_marker, "w").close()
-    except Exception:
-        pass
+# Chromium is installed at image-build time. Runtime acquisition code reports a
+# typed rendering limitation when a local developer has not installed it;
+# importing the web app must never mutate the environment or wait on a download.
 
 # Must be first Streamlit call
 st.set_page_config(
@@ -950,12 +943,37 @@ if st.session_state.get("awaiting_review") and st.session_state.get("review_cont
                 st.session_state.reviewer_name = reviewer_name.strip()
                 job_id = ctx["job_id"]
                 try:
-                    from stage_handlers import create_default_pipeline
-                    from workflow import JobStatus, PipelineStage
-
-                    pipeline = create_default_pipeline(
-                        progress_callback=lambda msg, lvl="info": None
+                    from stage_handlers import (
+                        create_default_pipeline,
+                        create_update_pipeline,
                     )
+                    from workflow import (
+                        JobStatus,
+                        JobStore,
+                        PipelineStage,
+                    )
+
+                    _review_job = JobStore().load(job_id)
+                    if (
+                        _review_job
+                        and _review_job.metadata.get("is_update")
+                    ):
+                        _existing_review_data = (
+                            _review_job.metadata.get("existing_data") or {}
+                        )
+                        if not _existing_review_data:
+                            raise RuntimeError(
+                                "Update approval is missing its sealed "
+                                "existing source pack."
+                            )
+                        pipeline = create_update_pipeline(
+                            _existing_review_data,
+                            progress_callback=lambda msg, lvl="info": None,
+                        )
+                    else:
+                        pipeline = create_default_pipeline(
+                            progress_callback=lambda msg, lvl="info": None
+                        )
 
                     resolutions = dict(st.session_state.rule_resolutions)
                     result_job = pipeline.approve_review(
@@ -978,6 +996,7 @@ if st.session_state.get("awaiting_review") and st.session_state.get("review_cont
                         st.session_state.pop("review_context", None)
                         st.session_state.pop("update_mode", None)
                         st.session_state.pop("rule_resolutions", None)
+                        st.session_state.pop("research_queue_job_id", None)
                         st.session_state.selected_product_key = _completed_key
                         st.success("Approved! Generating source pack...")
                         st.rerun()
@@ -993,6 +1012,7 @@ if st.session_state.get("awaiting_review") and st.session_state.get("review_cont
             st.session_state.pop("awaiting_review", None)
             st.session_state.pop("review_context", None)
             st.session_state.pop("pipeline_job_id", None)
+            st.session_state.pop("research_queue_job_id", None)
             st.session_state.show_form = True
             st.info("Research cancelled. You can start a new research from scratch.")
             st.rerun()
@@ -1002,7 +1022,7 @@ if st.session_state.get("awaiting_review") and st.session_state.get("review_cont
             for key in ["result_data", "result_report", "result_json_path",
                         "_label_page_text", "form_values", "update_mode",
                         "selected_product_key", "awaiting_review", "review_context",
-                        "pipeline_job_id"]:
+                        "pipeline_job_id", "research_queue_job_id"]:
                 st.session_state.pop(key, None)
             st.session_state.form_key += 1
             st.session_state.show_form = True
@@ -1076,8 +1096,8 @@ elif show_form:
             )
         with req_col4:
             _platform_options = [
-                "Accesswire", "Barchart Advertorial", "Newswire.com",
-                "Globe Newswire", "Domain Site",
+                "Accesswire", "Barchart Advertorial", "Globe Newswire",
+                "Domain Site",
             ]
             _saved_platform = saved_form.get("rd_platform", "Accesswire")
             _platform_index = (
@@ -1249,7 +1269,12 @@ elif show_form:
             resolve_intake_contact_terms,
         )
 
-        inferred_sources = extract_labeled_source_inputs(rd_notes)
+        _intake_notes = "\n\n".join(
+            value.strip()
+            for value in (rd_notes, update_notes if is_update else "")
+            if str(value or "").strip()
+        )
+        inferred_sources = extract_labeled_source_inputs(_intake_notes)
         vsl_url = (
             str(vsl_url or "").strip()
             or inferred_sources.get("vsl_url", "")
@@ -1272,7 +1297,7 @@ elif show_form:
 
         resolved_contact, resolved_refund_terms = (
             resolve_intake_contact_terms(
-                rd_notes,
+                _intake_notes,
                 {
                     "media_contact_name": rd_media_contact_name,
                     "support_email": rd_support_email,
@@ -1548,204 +1573,247 @@ elif show_form:
                         break
             progress_container.write(msg)
 
-        # Run the research engine (update mode vs new pipeline)
+        # Submit the complete intake to a durable worker. Browser sessions
+        # observe progress only; closing a tab cannot interrupt acquisition,
+        # OCR, research, compliance, or source-pack persistence.
         try:
-            if is_update and "result_data" in st.session_state:
-                # UPDATE MODE — incremental pipeline merging new data
-                from stage_handlers import create_update_pipeline
-                from workflow import Job, JobStatus
+            import shutil
+            from config import DB_PATH
+            from research_worker import submit_research_job
+            from workflow import Job
 
-                existing_data = st.session_state.result_data
-                _upd_url = st.session_state.get(f"update_url_{fk}", "") or (product_url if product_url else None)
-
-                pipeline = create_update_pipeline(
-                    existing_data=existing_data,
-                    progress_callback=streamlit_callback,
+            existing_data = (
+                st.session_state.result_data
+                if is_update and "result_data" in st.session_state
+                else {}
+            )
+            _job_url = (
+                st.session_state.get(f"update_url_{fk}", "")
+                or product_url
+                or ""
+            )
+            _job_name = (
+                existing_data.get("product", {}).get("product_name", "")
+                if existing_data
+                else product_name or ""
+            )
+            job = Job.create(
+                url=_job_url,
+                product_name=_job_name,
+                quick=False,
+                budget_seconds=1800,
+                is_update=bool(existing_data),
+                existing_data=existing_data,
+                preferred_product_key=(
+                    st.session_state.get("selected_product_key") or ""
+                ),
+                offering_id=(
+                    existing_data.get("offering_id", "")
+                    if existing_data else ""
+                ),
+                label_image="",
+                label_source_url=submitted_label_url,
+                vsl_url=vsl_url or "",
+                affiliate_link=rd_affiliate or "",
+                previous_releases=rd_previous or "",
+                competitor_releases=rd_competitor or "",
+                channel=rd_platform or "",
+                client_locked_title=rd_client_title or "",
+                operator_notes=(
+                    _intake_notes
+                ),
+                contact_information=resolved_contact,
+                refund_terms=rd_refund_terms.strip(),
+                unattended=True,
+            )
+            if label_path and os.path.isfile(label_path):
+                asset_dir = os.path.join(
+                    os.path.dirname(DB_PATH), "intake-assets"
                 )
-
-                product_name_upd = existing_data.get("product", {}).get("product_name", "")
-                existing_offering_id = existing_data.get("offering_id", "")
-                job = Job.create(
-                    url=_upd_url or "",
-                    product_name=product_name_upd,
-                    quick=False,
-                    budget_seconds=1800,
-                    is_update=True,
-                    offering_id=existing_offering_id,
-                    label_image=label_path or "",
-                    label_source_url=submitted_label_url,
-                    vsl_url=vsl_url or "",
-                    affiliate_link=rd_affiliate or "",
-                    previous_releases=rd_previous or "",
-                    competitor_releases=rd_competitor or "",
-                    channel=rd_platform or "",
-                    client_locked_title=rd_client_title or "",
-                    operator_notes=(update_notes or rd_notes or ""),
-                    contact_information=resolved_contact,
-                    refund_terms=rd_refund_terms.strip(),
-                    unattended=True,
+                os.makedirs(asset_dir, exist_ok=True)
+                suffix = os.path.splitext(label_path)[1] or ".png"
+                durable_label = os.path.join(
+                    asset_dir, f"{job.job_id}{suffix}"
                 )
-                completed_job = pipeline.run(job)
-
-                if completed_job.status == JobStatus.COMPLETED:
-                    from workflow import PipelineStage
-                    sp_result = completed_job.get_stage_result(PipelineStage.SOURCE_PACK)
-                    full_data = sp_result.get("full_data", {})
-                    doc_text = sp_result.get("doc_text", "")
-
-                    _completed_key = persist_completed_pack(
-                        full_data,
-                        st.session_state.get("selected_product_key") or "",
-                    )
-                    st.session_state.result_data = full_data
-                    st.session_state.result_report = doc_text
-                    st.session_state.show_form = False
-                    st.session_state.pop("update_mode", None)
-                    st.session_state.pipeline_job_id = completed_job.job_id
-                    st.session_state.selected_product_key = _completed_key
-                    progress_container.update(label="Update complete!", state="complete")
-                    progress_bar.progress(1.0, text="Update complete!")
-                    st.rerun()
-                elif completed_job.status == JobStatus.AWAITING_REVIEW:
-                    st.session_state.pipeline_job_id = completed_job.job_id
-                    st.session_state.awaiting_review = True
-                    # Build review context for update pipeline too
-                    from workflow import PipelineStage as _PS
-                    _id_r = completed_job.get_stage_result(_PS.IDENTIFY)
-                    _co_r = completed_job.get_stage_result(_PS.COMPLY)
-                    _rc_r = completed_job.get_stage_result(_PS.RECONCILE)
-                    _sp_r = completed_job.get_stage_result(_PS.SOURCE_PACK)
-                    _mm = _sp_r.get("blocked_facts", [])
-                    st.session_state.review_context = {
-                        "job_id": completed_job.job_id,
-                        "error": completed_job.error,
-                        "product_name": _id_r.get("product_name", "Unknown"),
-                        "offering_type": _id_r.get("offering_type", "unknown"),
-                        "risk_level": _co_r.get("risk_level", "unknown"),
-                        "compliance": _co_r.get("compliance", {}),
-                        "conflicts_found": _rc_r.get("conflicts_found", 0),
-                        "conflicts": _rc_r.get("conflicts", []),
-                        "missing_mandatory_facts": _mm,
-                        "offering_id": completed_job.offering_id,
-                        "label_source_url": completed_job.metadata.get(
-                            "label_source_url", ""
-                        ),
-                    }
-                    progress_container.update(label="Awaiting review", state="running")
-                    st.rerun()
-                elif completed_job.status == JobStatus.PAUSED:
-                    st.session_state.pipeline_job_id = completed_job.job_id
-                    progress_container.update(label="Update paused", state="error")
-                    st.warning(
-                        "The update reached its 30-minute safety limit and was paused. "
-                        "Completed stages and checkpoints were saved."
-                    )
-                else:
-                    progress_container.update(label="Update failed", state="error")
-                    st.error(f"Update failed: {completed_job.error}")
-            else:
-                # NEW RESEARCH — use the new resumable pipeline
-                from stage_handlers import create_default_pipeline
-                from workflow import Job, JobStatus
-
-                pipeline = create_default_pipeline(
-                    progress_callback=streamlit_callback
-                )
-                job = Job.create(
-                    url=product_url or "",
-                    product_name=product_name or "",
-                    quick=False,
-                    budget_seconds=1800,
-                    label_image=label_path or "",
-                    label_source_url=submitted_label_url,
-                    vsl_url=vsl_url or "",
-                    affiliate_link=rd_affiliate or "",
-                    previous_releases=rd_previous or "",
-                    competitor_releases=rd_competitor or "",
-                    channel=rd_platform or "",
-                    client_locked_title=rd_client_title or "",
-                    operator_notes=rd_notes or "",
-                    contact_information=resolved_contact,
-                    refund_terms=rd_refund_terms.strip(),
-                    unattended=True,
-                )
-                completed_job = pipeline.run(job)
-
-                if completed_job.status == JobStatus.COMPLETED:
-                    from workflow import PipelineStage
-                    sp_result = completed_job.get_stage_result(PipelineStage.SOURCE_PACK)
-                    full_data = sp_result.get("full_data", {})
-                    doc_text = sp_result.get("doc_text", "")
-                    json_path = sp_result.get("json_path", "")
-
-                    _completed_key = persist_completed_pack(full_data)
-                    st.session_state.result_data = full_data
-                    st.session_state.result_report = doc_text
-                    st.session_state.result_json_path = json_path
-                    st.session_state.show_form = False
-                    st.session_state.pop("update_mode", None)
-                    # Store job_id for pipeline tracking
-                    st.session_state.pipeline_job_id = completed_job.job_id
-                    st.session_state.selected_product_key = _completed_key
-                    progress_container.update(label="Research complete!", state="complete")
-                    progress_bar.progress(1.0, text="Research complete!")
-                    st.rerun()
-                elif completed_job.status == JobStatus.AWAITING_REVIEW:
-                    st.session_state.pipeline_job_id = completed_job.job_id
-                    st.session_state.awaiting_review = True
-                    # Store partial results so VA can review what was researched
-                    from workflow import PipelineStage
-                    id_result = completed_job.get_stage_result(PipelineStage.IDENTIFY)
-                    comply_result = completed_job.get_stage_result(PipelineStage.COMPLY)
-                    reconcile_result = completed_job.get_stage_result(PipelineStage.RECONCILE)
-                    # Check if SOURCE_PACK blocked on missing mandatory facts
-                    source_pack_result = completed_job.get_stage_result(
-                        PipelineStage.SOURCE_PACK
-                    )
-                    missing_mandatory = source_pack_result.get(
-                        "blocked_facts", []
-                    )
-
-                    st.session_state.review_context = {
-                        "job_id": completed_job.job_id,
-                        "error": completed_job.error,
-                        "product_name": id_result.get("product_name", "Unknown"),
-                        "offering_type": id_result.get("offering_type", "unknown"),
-                        "risk_level": comply_result.get("risk_level", "unknown"),
-                        "compliance": comply_result.get("compliance", {}),
-                        "conflicts_found": reconcile_result.get("conflicts_found", 0),
-                        "conflicts": reconcile_result.get("conflicts", []),
-                        "missing_mandatory_facts": missing_mandatory,
-                        "offering_id": completed_job.offering_id,
-                        "label_source_url": completed_job.metadata.get(
-                            "label_source_url", ""
-                        ),
-                    }
-                    progress_container.update(
-                        label="Awaiting human review", state="error"
-                    )
-                    st.rerun()
-                elif completed_job.status == JobStatus.PAUSED:
-                    st.session_state.pipeline_job_id = completed_job.job_id
-                    progress_container.update(label="Research paused", state="error")
-                    st.warning(
-                        "Research reached its 30-minute safety limit and was paused; "
-                        "completed stages were saved. You can safely retry without "
-                        "losing the completed research."
-                    )
-                else:
-                    progress_container.update(label="Research failed", state="error")
-                    st.error(
-                        f"Research failed at stage '{completed_job.current_stage}': "
-                        f"{completed_job.error}"
-                    )
-
+                shutil.copy2(label_path, durable_label)
+                job.metadata["label_image"] = durable_label
+            queue_job, _created = submit_research_job(
+                job, db_path=DB_PATH
+            )
+            st.session_state.pipeline_job_id = job.job_id
+            st.session_state.research_queue_job_id = queue_job.id
+            progress_container.update(
+                label="Research queued for durable execution",
+                state="complete",
+            )
+            progress_bar.progress(0.02, text="Durable worker owns this run")
+            st.rerun()
         except Exception as e:
             progress_container.update(label="Error", state="error")
-            st.error(f"Research failed: {e}")
+            st.error(f"Research could not be queued: {e}")
         finally:
             if label_path and os.path.exists(label_path):
                 os.unlink(label_path)
+
+    _research_queue_job_id = st.session_state.get(
+        "research_queue_job_id", ""
+    )
+    if _research_queue_job_id:
+        from config import DB_PATH
+        from newswire_workbench.run_queue import (
+            ACTIVE_STATUSES,
+            RunJobRepository,
+        )
+        from research_worker import (
+            research_queue_path,
+            submit_research_job,
+        )
+        from workflow import JobStatus, JobStore, PipelineStage, StageStatus
+
+        _research_repo = RunJobRepository(research_queue_path(DB_PATH))
+        _research_run = _research_repo.get(_research_queue_job_id)
+        _research_store = JobStore(DB_PATH)
+        _research_job = (
+            _research_store.load(_research_run.project_id)
+            if _research_run else None
+        )
+        if _research_run and _research_run.status in ACTIVE_STATUSES:
+            _research_total = max(_research_run.progress_total, 1)
+            st.info(
+                _research_run.progress_message
+                or "The durable worker owns this research run."
+            )
+            st.progress(
+                min(_research_run.progress_current, _research_total)
+                / _research_total,
+                text=(
+                    f"Stage: {_research_run.stage} · "
+                    f"attempt {_research_run.attempt}"
+                ),
+            )
+            st.caption(
+                "You can close this page. Completed stage checkpoints and the "
+                "final source pack are persisted independently of the browser."
+            )
+            time.sleep(1.5)
+            st.rerun()
+        elif (
+            _research_run
+            and _research_job
+            and _research_job.status == JobStatus.AWAITING_REVIEW
+        ):
+            _identify_result = _research_job.get_stage_result(
+                PipelineStage.IDENTIFY
+            )
+            _comply_result = _research_job.get_stage_result(
+                PipelineStage.COMPLY
+            )
+            _reconcile_result = _research_job.get_stage_result(
+                PipelineStage.RECONCILE
+            )
+            _source_pack_result = _research_job.get_stage_result(
+                PipelineStage.SOURCE_PACK
+            )
+            st.session_state.pipeline_job_id = _research_job.job_id
+            st.session_state.awaiting_review = True
+            st.session_state.review_context = {
+                "job_id": _research_job.job_id,
+                "error": _research_job.error,
+                "product_name": _identify_result.get(
+                    "product_name", "Unknown"
+                ),
+                "offering_type": _identify_result.get(
+                    "offering_type", "unknown"
+                ),
+                "risk_level": _comply_result.get(
+                    "risk_level", "unknown"
+                ),
+                "compliance": _comply_result.get("compliance", {}),
+                "conflicts_found": _reconcile_result.get(
+                    "conflicts_found", 0
+                ),
+                "conflicts": _reconcile_result.get("conflicts", []),
+                "missing_mandatory_facts": _source_pack_result.get(
+                    "blocked_facts", []
+                ),
+                "offering_id": _research_job.offering_id,
+                "label_source_url": _research_job.metadata.get(
+                    "label_source_url", ""
+                ),
+            }
+            st.rerun()
+        elif (
+            _research_run
+            and _research_run.status == "completed"
+            and _research_job
+            and _research_job.status == JobStatus.COMPLETED
+        ):
+            _source_pack_result = _research_job.get_stage_result(
+                PipelineStage.SOURCE_PACK
+            )
+            st.session_state.result_data = (
+                _source_pack_result.get("full_data") or {}
+            )
+            st.session_state.result_report = (
+                _source_pack_result.get("doc_text") or ""
+            )
+            st.session_state.result_json_path = (
+                _source_pack_result.get("json_path") or ""
+            )
+            st.session_state.selected_product_key = (
+                _research_run.result.get("product_key") or ""
+            )
+            st.session_state.show_form = False
+            st.session_state.pop("update_mode", None)
+            st.session_state.pop("research_queue_job_id", None)
+            st.rerun()
+        elif _research_run and _research_run.status == "failed":
+            _research_error = str(
+                _research_run.error.get("message")
+                or (_research_job.error if _research_job else "")
+                or _research_run.terminal_code
+            )
+            st.error(
+                "Research stopped at a typed source/system boundary: "
+                + _research_error
+            )
+            if _research_job and st.button(
+                "Retry From Saved Checkpoint",
+                type="primary",
+                use_container_width=True,
+                key=f"retry_research_{_research_job.job_id}",
+            ):
+                try:
+                    current_stage = PipelineStage(
+                        _research_job.current_stage
+                    )
+                except ValueError:
+                    current_stage = None
+                if current_stage is not None:
+                    _research_job.set_stage_status(
+                        current_stage, StageStatus.PENDING
+                    )
+                _research_job.status = JobStatus.CREATED
+                _research_job.error = ""
+                # A retry is a fresh bounded execution window over the saved
+                # checkpoints. Keeping the exhausted prior window would make
+                # a budget-paused job pause again before doing any work.
+                if (
+                    _research_run.terminal_code
+                    == "research_budget_paused"
+                ):
+                    _research_job.elapsed_seconds = 0.0
+                _research_store.save(_research_job)
+                _retry_run, _ = submit_research_job(
+                    _research_job, db_path=DB_PATH
+                )
+                st.session_state.research_queue_job_id = _retry_run.id
+                st.rerun()
+        else:
+            st.error(
+                "The durable research queue record is missing. The submitted "
+                "intake was not charged; start the research again."
+            )
 
 
 else:
@@ -2067,6 +2135,8 @@ else:
         _newswire_platform = "AccessNewsWire"
     elif "barchart" in rd_platform.lower():
         _newswire_platform = "Barchart Advertorial"
+    elif "globe" in rd_platform.lower():
+        _newswire_platform = "Globe Newswire"
 
     if _newswire_platform and _pack_readiness != "blocked":
         st.markdown("#### Build Compliant Newswire Draft")
@@ -2083,7 +2153,16 @@ else:
                 WORKBENCH_SOURCE_CONTEXT_VERSION,
                 WorkbenchEngine,
             )
+            from newswire_workbench.run_queue import (
+                ACTIVE_STATUSES,
+                RunJobRepository,
+            )
+            from newswire_workbench.run_worker import (
+                queue_path,
+                submit_project_run,
+            )
             _workbench = WorkbenchEngine()
+            _run_job_repo = RunJobRepository(queue_path(_workbench.root))
             _workbench_caps = _workbench.capabilities()
             _ready_to_run = (
                 _workbench_caps["anthropic"]
@@ -2361,24 +2440,27 @@ else:
                             st.caption(
                                 "• " + str(_edit.get("issue") or _edit)
                             )
-            _pending_key = f"pending_newswire_run:{_workflow_key}"
-            _pending_project_id = st.session_state.get(_pending_key)
-            if (
-                _pending_project_id
-                and _pending_project_id != _prior_project_id
-            ):
-                # A rerun or deployment can discover a newer durable project
-                # while the browser still holds an older pending ID. Never
-                # display one authoritative project and execute another.
-                st.session_state.pop(_pending_key, None)
-                _pending_project_id = None
+            # Browser sessions only submit and observe work. Provider calls
+            # belong to the durable worker so a refresh, closed tab, or app
+            # deployment cannot silently interrupt and replay a paid request.
+            _legacy_pending_key = f"pending_newswire_run:{_workflow_key}"
+            st.session_state.pop(_legacy_pending_key, None)
+            _latest_run_job = (
+                _run_job_repo.latest_for_project(_prior_project_id)
+                if _prior_project_id
+                else None
+            )
+            _queue_active = bool(
+                _latest_run_job
+                and _latest_run_job.status in ACTIVE_STATUSES
+            )
             if st.button(
                 _run_action["label"],
                 type="primary",
                 use_container_width=True,
                 disabled=(
                     _action_prerequisite_missing
-                    or bool(_pending_project_id)
+                    or _queue_active
                     or _is_complete
                     or _action_name in {
                         "human_decision", "system_blocked",
@@ -2416,72 +2498,54 @@ else:
                 _project_map = dict(_project_map)
                 _project_map[_workflow_key] = _project_id
                 st.session_state["source_newswire_project_ids"] = _project_map
-                st.session_state[_pending_key] = _project_id
+                submit_project_run(_workbench, _project_id)
                 st.rerun()
 
-            _pending_project_id = st.session_state.get(_pending_key)
-            if _pending_project_id:
-                _project_id = _pending_project_id
-                if (
-                    not _workbench.is_authoritative_run_target(
-                        _project_id,
-                        _publication_pack,
-                        _newswire_platform,
-                        WORKBENCH_SOURCE_CONTEXT_VERSION,
-                    )
-                    or _project_id != _project_map.get(_workflow_key)
-                ):
-                    st.session_state.pop(_pending_key, None)
-                    raise RuntimeError(
-                        "Stale pending newswire project was discarded before "
-                        "any paid call. Resume the authoritative project shown "
-                        "on this page."
-                    )
-                _master_path = os.path.join(
-                    os.path.dirname(__file__), "MBK_Project_Instructions_All_Platforms.txt"
+            _queued_project_id = _project_map.get(_workflow_key)
+            _latest_run_job = (
+                _run_job_repo.latest_for_project(_queued_project_id)
+                if _queued_project_id
+                else None
+            )
+            if (
+                _latest_run_job
+                and _latest_run_job.status in ACTIVE_STATUSES
+            ):
+                _progress_total = max(
+                    int(_latest_run_job.progress_total or 1), 1
                 )
-                with open(_master_path, encoding="utf-8") as _master_file:
-                    _master_rules = _master_file.read()
-                with st.status(
-                    "Starting the bounded newswire workflow…",
-                    expanded=True,
-                ) as _run_status:
-                    def _show_newswire_progress(message):
-                        _run_status.update(label=str(message))
-
-                    try:
-                        _result = _workbench.run_to_completion(
-                            _project_id,
-                            _master_rules,
-                            progress_callback=_show_newswire_progress,
-                        )
-                    except Exception:
-                        st.session_state.pop(_pending_key, None)
-                        raise
-                    _run_status.update(
-                        label=(
-                            "Newswire package completed."
-                            if _result["stage"] == "package_ready"
-                            else "Newswire run stopped at a typed review state."
-                        ),
-                        state=(
-                            "complete"
-                            if _result["stage"] == "package_ready"
-                            else "error"
-                        ),
-                    )
-                    if _result["stage"] == "package_ready" and _workbench_caps.get("wordpress"):
-                        try:
-                            _workbench.send_to_wordpress_draft(_project_id)
-                        except Exception as _wordpress_error:
-                            # Delivery is downstream of approval. A WordPress
-                            # transport problem must not mislabel a successfully
-                            # approved package as a failed editorial workflow.
-                            st.session_state[
-                                f"wordpress_delivery_error_{_project_id}"
-                            ] = str(_wordpress_error)
-                st.session_state.pop(_pending_key, None)
+                _progress_current = min(
+                    int(_latest_run_job.progress_current or 0),
+                    _progress_total,
+                )
+                st.info(
+                    _latest_run_job.progress_message
+                    or "The durable worker owns this run."
+                )
+                st.progress(
+                    _progress_current / _progress_total,
+                    text=(
+                        f"Stage: {_latest_run_job.stage} · "
+                        f"attempt {_latest_run_job.attempt}"
+                    ),
+                )
+                st.caption(
+                    "This run continues if the browser closes or the page "
+                    "refreshes. Paid provider requests are recorded before "
+                    "network execution and are never silently replayed."
+                )
+                time.sleep(1.5)
                 st.rerun()
+            elif _latest_run_job and _latest_run_job.status == "failed":
+                _queue_error = str(
+                    _latest_run_job.error.get("message")
+                    or _latest_run_job.terminal_code
+                    or "Unknown worker failure"
+                )
+                st.error(
+                    "The durable worker stopped this transaction at a typed "
+                    f"review boundary: {_queue_error}"
+                )
 
             _active_project_id = _project_map.get(_workflow_key)
             if _active_project_id:
@@ -2522,6 +2586,14 @@ else:
                     _wp_error = st.session_state.get(
                         f"wordpress_delivery_error_{_active_project_id}"
                     )
+                    if (
+                        not _wp_error
+                        and _latest_run_job
+                        and _latest_run_job.project_id == _active_project_id
+                    ):
+                        _wp_error = _latest_run_job.result.get(
+                            "wordpress_delivery_error"
+                        )
                     if _wp_error:
                         st.warning(
                             "The article is approved and packaged. WordPress "

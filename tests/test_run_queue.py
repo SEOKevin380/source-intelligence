@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from newswire_workbench.run_queue import LeaseLost, QueueConflict, RunJobRepository
+from newswire_workbench.run_worker import RunQueueWorker, queue_path
 
 
 class Clock:
@@ -196,3 +197,84 @@ def test_finish_persists_structured_terminal_state(tmp_path):
             status="completed",
             terminal_code="done",
         )
+
+
+def test_latest_for_project_tracks_newest_terminal_attempt(tmp_path):
+    repo = RunJobRepository(tmp_path / "queue.db")
+    first, _ = _submit(repo, "first")
+    claimed = repo.claim_next()
+    repo.finish(
+        claimed.id,
+        claimed.lease_token,
+        status="failed",
+        terminal_code="typed_stop",
+    )
+    second, created = _submit(repo, "second")
+    assert created is True
+    assert second.id != first.id
+    assert repo.latest_for_project("project-1").id == second.id
+
+
+class FakeWorkerEngine:
+    def __init__(self, root):
+        self.root = root
+        self.project = {
+            "id": "project-1",
+            "source_hash": "source-1",
+            "stage": "source_ready",
+        }
+        self.prepared = []
+
+    def get(self, project_id):
+        assert project_id == self.project["id"]
+        return dict(self.project)
+
+    def prepare_queue_execution(
+        self, project_id, *, queue_job_id, reclaim_attempt
+    ):
+        self.prepared.append((project_id, queue_job_id, reclaim_attempt))
+        return True
+
+    def run_to_completion(
+        self, project_id, master_instructions, progress_callback
+    ):
+        assert master_instructions == "rules"
+        progress_callback("Drafting")
+        self.project["stage"] = "package_ready"
+        progress_callback("Packaged")
+        return {
+            "stage": "package_ready",
+            "article_hash": "article-1",
+        }
+
+    def usage_summary(self, project_id):
+        return {"calls": 4}
+
+    def capabilities(self):
+        return {"wordpress": False}
+
+    def quarantine_queue_failure(self, *args, **kwargs):
+        raise AssertionError("Successful worker must not quarantine")
+
+
+def test_worker_owns_job_to_terminal_result(tmp_path):
+    fake = FakeWorkerEngine(tmp_path)
+    repo = RunJobRepository(queue_path(tmp_path))
+    submitted, _ = repo.submit(
+        idempotency_key="worker-test",
+        project_id="project-1",
+        source_hash="source-1",
+        workflow_version="workflow-v1",
+    )
+    worker = RunQueueWorker(
+        tmp_path,
+        "rules",
+        engine_factory=lambda root: fake,
+    )
+    finished = worker.run_once()
+    assert finished.id == submitted.id
+    assert finished.status == "completed"
+    assert finished.terminal_code == "package_ready"
+    assert finished.result["paid_calls"] == 4
+    assert finished.result["article_hash"] == "article-1"
+    assert fake.prepared[0][2] == 1
