@@ -278,10 +278,7 @@ def test_testimonial_name_cannot_replace_canonical_product_in_seo_strategy():
         {"platform": "Globe Newswire"},
     )
 
-    assert (
-        "Primary Targets: Power Pro Genius review, "
-        "Power Pro Genius product review"
-    ) in prompt
+    assert "Primary Targets: Power Pro Genius" in prompt
     assert "What is Power Pro Genius?" in prompt
     assert "Wilma Besley review" not in prompt
     assert "What is Wilma Besley?" not in prompt
@@ -309,6 +306,44 @@ def test_missing_legacy_globe_summary_is_rebuilt_as_pass_not_false_fail():
 
     assert "Globe v1.12 Source Phrase Pre-Screen: PASS" in prompt
     assert "Globe v1.12 Phrase Blocklist: FAIL" not in prompt
+
+
+def test_globe_prior_coverage_gets_distinct_intent_without_faq_collision():
+    from prompt_builders import build_l6_press_release_prompt
+
+    prompt = build_l6_press_release_prompt(
+        {
+            "product": {
+                "product_name": "Power Pro Genius",
+                "official_url": "https://power.example/offer",
+                "product_type": "device",
+                "key_features": [
+                    "Whole-Home Electricity Stabilization",
+                    "Easy plug-in installation",
+                ],
+                "claims": [{"claim": "Stabilize electrical current"}],
+            },
+            "compliance": {},
+        },
+        {
+            "platform": "Globe Newswire",
+            "previous_releases": (
+                "PVMedCenter: /power-pro-genius-review/ | "
+                "TutelaMedical: /power-pro-genius-review-examined/"
+            ),
+        },
+    )
+
+    assert (
+        "Primary Targets: Power Pro Genius "
+        "Whole-Home Electricity Stabilization"
+    ) in prompt
+    assert "Primary Targets: Power Pro Genius review" not in prompt
+    assert "Reader Questions to Answer in Narrative (never as an FAQ)" in prompt
+    assert "People Also Ask (weave into FAQ section)" not in prompt
+    assert "as FAQ section Q&A" not in prompt
+    assert "Do not create an FAQ, Q&A section, CTA" in prompt
+    assert "or meta-description deliverable for Globe Format C" in prompt
 
 
 def test_category_conflict_uses_performance_marketing_not_watchdog_posture():

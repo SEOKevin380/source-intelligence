@@ -998,7 +998,11 @@ review by a Google Quality Rater evaluating E-E-A-T for YMYL health content.
 # PRESS RELEASE: MBK v3.10 VA BRIEF SUBMISSION
 # =============================================================================
 
-def _build_cvd_source_block(full_data, platform=""):
+def _build_cvd_source_block(
+    full_data,
+    platform="",
+    previous_releases="",
+):
     """Build pre-researched source data organized by CVD-5 categories.
 
     This maps Source Intelligence research directly to the MBK production system's
@@ -2329,21 +2333,86 @@ provided for reader awareness, not as a contraindication for the product itself.
             "collectible": "collectible",
             "unknown": "offering",
         }.get(product_type, "product")
-        keywords = {
-            "primary": [f"{safe_name} review", f"{safe_name} {kind} review"],
-            "buyer_intent": [f"{safe_name} official website", f"{safe_name} pricing", f"is {safe_name} worth it"],
-            "informational": [f"how {safe_name} works", f"what {safe_name} includes", f"{kind} features and limitations"],
-            "comparison": [f"{safe_name} alternatives", f"{safe_name} vs competitors"],
-            "safety_queries": [],
-            "people_also_ask": [
-                f"What is {safe_name}?",
-                f"How does {safe_name} work?",
-                f"What does {safe_name} include?",
-                f"How much does {safe_name} cost?",
-                f"Who is {safe_name} designed for?",
-                f"What are the limitations of {safe_name}?",
-            ],
-        }
+        has_previous_coverage = bool(
+            str(previous_releases or "").strip()
+            and str(previous_releases).strip().casefold()
+            != "first release"
+        )
+        if has_previous_coverage:
+            raw_features = product.get("key_features", [])
+            if isinstance(raw_features, str):
+                raw_features = [
+                    item.strip()
+                    for item in re.split(r"[;\n]", raw_features)
+                    if item.strip()
+                ]
+            feature_focus = next(
+                (
+                    str(item).strip()
+                    for item in raw_features
+                    if 3 <= len(str(item).strip()) <= 80
+                ),
+                kind,
+            )
+            keywords = {
+                "primary": [
+                    f"{safe_name} {feature_focus}",
+                    f"{safe_name} {kind} features and specifications",
+                ],
+                "buyer_intent": [
+                    f"{safe_name} official website",
+                    f"{safe_name} pricing and warranty",
+                    f"{safe_name} current offer details",
+                ],
+                "informational": [
+                    f"how {safe_name} works",
+                    f"{safe_name} {feature_focus} features",
+                    f"{safe_name} installation delivery and terms",
+                ],
+                "comparison": [
+                    f"{safe_name} alternatives",
+                    f"{feature_focus} {kind} comparison",
+                ],
+                "safety_queries": [],
+                "people_also_ask": [
+                    f"What is {safe_name}?",
+                    f"How does {safe_name} work?",
+                    f"What does {safe_name} include?",
+                    f"How much does {safe_name} cost?",
+                    f"Who is {safe_name} designed for?",
+                    f"What are the limitations of {safe_name}?",
+                ],
+            }
+        else:
+            keywords = {
+                "primary": [
+                    f"{safe_name} review",
+                    f"{safe_name} {kind} review",
+                ],
+                "buyer_intent": [
+                    f"{safe_name} official website",
+                    f"{safe_name} pricing",
+                    f"is {safe_name} worth it",
+                ],
+                "informational": [
+                    f"how {safe_name} works",
+                    f"what {safe_name} includes",
+                    f"{kind} features and limitations",
+                ],
+                "comparison": [
+                    f"{safe_name} alternatives",
+                    f"{safe_name} vs competitors",
+                ],
+                "safety_queries": [],
+                "people_also_ask": [
+                    f"What is {safe_name}?",
+                    f"How does {safe_name} work?",
+                    f"What does {safe_name} include?",
+                    f"How much does {safe_name} cost?",
+                    f"Who is {safe_name} designed for?",
+                    f"What are the limitations of {safe_name}?",
+                ],
+            }
     if keywords:
         # Filter keywords containing R12 blocklist terms (e.g., "male enhancement" is R12)
         def _kw_safe(kw):
@@ -2368,12 +2437,32 @@ provided for reader awareness, not as a contraindication for the product itself.
             block += f"Safety Queries: {', '.join(safety_kw[:4])}\n"
         paa = keywords.get("people_also_ask", [])
         if paa:
-            block += "People Also Ask (weave into FAQ section):\n"
+            if is_globe:
+                block += (
+                    "Reader Questions to Answer in Narrative "
+                    "(never as an FAQ):\n"
+                )
+            else:
+                block += "People Also Ask (weave into FAQ section):\n"
             for q in paa[:6]:
                 block += f"  • {q}\n"
-        block += "\nINSTRUCTION: Naturally incorporate primary + buyer intent keywords in H2s,\n"
-        block += "opening paragraph, and meta description. Use People Also Ask questions\n"
-        block += "as FAQ section Q&A. Target informational keywords in explanatory sections.\n"
+        if is_globe:
+            block += (
+                "\nINSTRUCTION: Use the selected differentiated intent in "
+                "the headline, opening, and narrative subheads.\n"
+                "Answer relevant reader questions naturally in the release "
+                "body. Do not create an FAQ, Q&A section, CTA,\n"
+                "or meta-description deliverable for Globe Format C.\n"
+            )
+        else:
+            block += (
+                "\nINSTRUCTION: Naturally incorporate primary + buyer intent "
+                "keywords in H2s,\n"
+                "opening paragraph, and meta description. Use People Also Ask "
+                "questions\n"
+                "as FAQ section Q&A. Target informational keywords in "
+                "explanatory sections.\n"
+            )
 
     # ── C20: PUBLICATION HISTORY (from CRM database) ──
     try:
@@ -2553,7 +2642,11 @@ COMPETITOR RELEASE(S): {competitor}
         pass  # Corpus is an intelligence enhancement, never a production stop.
 
     # ── PRE-RESEARCHED SOURCE DATA (CVD-organized) ──
-    prompt += _build_cvd_source_block(full_data, platform=platform)
+    prompt += _build_cvd_source_block(
+        full_data,
+        platform=platform,
+        previous_releases=previous,
+    )
     prompt += """
 
 DELIVERABLE:
