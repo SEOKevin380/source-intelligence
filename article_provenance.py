@@ -21,8 +21,9 @@ def extract_sealed_pack(source_text: str) -> dict:
         return {}
     raw = source_text.split(marker, 1)[1].strip()
     try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
+        value, _ = json.JSONDecoder().raw_decode(raw)
+        return value if isinstance(value, dict) else {}
+    except (json.JSONDecodeError, TypeError):
         return {}
 
 

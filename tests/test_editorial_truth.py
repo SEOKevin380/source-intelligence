@@ -1,4 +1,5 @@
 import json
+import hashlib
 from unittest.mock import patch
 
 import pytest
@@ -454,6 +455,114 @@ def test_reviewer_candidate_scope_hash_mismatch_cannot_approve(tmp_path):
         item["id"] == "E-REVIEW-SCOPE"
         for item in report["mandatory_edits"]
     )
+
+
+def test_reviewer_may_attest_with_supplied_source_artifact_id(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = _pack()
+    pack["publication_claims"]["feature"][2]["artifact_id"] = "artifact-a1"
+    source = (
+        "gaming source\n"
+        "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══\n"
+        + json.dumps(pack)
+    )
+    pid = engine.create_project(
+        "Example Fortune",
+        "AccessNewsWire",
+        source,
+        vertical="gaming",
+    )
+    article = (
+        _disclosure()
+        + "<p>The paid product is sent through a protected digital "
+          "destination after checkout.</p>"
+    )
+    digest = hashlib.sha256(
+        f"Example Fortune\n{article}".encode()
+    ).hexdigest()
+    with engine._connect() as conn:
+        conn.execute(
+            "UPDATE projects SET article_text=?,article_hash=?,stage=? "
+            "WHERE id=?",
+            (article, digest, "revised", pid),
+        )
+    project = engine.get(pid)
+    truth = audit_editorial_truth(pack, project["article_text"], AFFILIATE)
+    candidates = truth["review_candidates"]
+    assert candidates
+    target = next(
+        item for item in candidates
+        if item.get("best_source_artifact_id") == "artifact-a1"
+    )
+    decisions = []
+    for item in candidates:
+        decisions.append({
+            "sentence_id": item["sentence_id"],
+            "verdict": (
+                "source_supported"
+                if item["sentence_id"] == target["sentence_id"]
+                else "non_material"
+            ),
+            "source_ids": (
+                ["artifact-a1"]
+                if item["sentence_id"] == target["sentence_id"]
+                else []
+            ),
+            "rationale": "Exact source artifact supports the sentence.",
+        })
+    engine._record_llm_call(
+        pid,
+        "compliance",
+        route_for("compliance", "gaming"),
+        100,
+        100,
+        raw_output=json.dumps({
+            "verdict": "approved",
+            "mandatory_count": 0,
+            "conditional_approval_after_exact_edits": False,
+            "source_accuracy": {"verified": 1, "checked": len(candidates)},
+            "editorial_truth_review": {
+                "candidate_set_hash": truth[
+                    "review_candidate_set_hash"
+                ],
+                "decisions": decisions,
+            },
+            "mandatory_edits": [],
+            "recommended_edits": [],
+            "approved_elements": [],
+            "notes": [],
+        }),
+        lifecycle="provider_succeeded",
+    )
+    with patch(
+        "newswire_workbench.engine.deterministic_findings",
+        return_value=[],
+    ):
+        report = engine._openai_review(
+            engine.get(pid), final=False, purpose="compliance"
+        )
+    assert not any(
+        item["id"] == "E-REVIEW-SCOPE"
+        for item in report["mandatory_edits"]
+    ), report["mandatory_edits"]
+
+
+def test_identical_reviewer_replacement_is_not_a_blocker(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    report = engine._remove_house_rule_conflicts({
+        "verdict": "not_approved",
+        "mandatory_edits": [{
+            "id": "M1",
+            "category": "Link integrity",
+            "issue": "The link should be replaced.",
+            "exact_text": "<a href=\"https://example.com\">Offer</a>",
+            "replacement": "<a href=\"https://example.com\">Offer</a>",
+        }],
+        "recommended_edits": [],
+        "notes": [],
+    })
+    assert report["verdict"] == "approved"
+    assert report["mandatory_edits"] == []
 
 
 def test_manual_final_candidate_cannot_bypass_editorial_depth(tmp_path):

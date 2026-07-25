@@ -46,7 +46,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v34-closed-loop-action-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "bidirectional-editorial-truth-20260725-r30"
+WORKBENCH_RUNTIME_REVISION = "bidirectional-editorial-truth-20260725-r31"
 
 STAGES = (
     "source_ready",
@@ -3317,6 +3317,14 @@ class WorkbenchEngine:
                     "sentence_id": item["sentence_id"],
                     "exact_text": item["exact_text"],
                     "best_source_id": item["best_source_id"],
+                    "allowed_source_ids": sorted({
+                        source_id
+                        for source_id in (
+                            item["best_source_id"],
+                            item.get("best_source_artifact_id") or "",
+                        )
+                        if source_id
+                    }),
                     "best_source_excerpt": item[
                         "best_source_excerpt"
                     ],
@@ -3589,11 +3597,23 @@ class WorkbenchEngine:
                 if not candidate:
                     continue
                 if decision.get("verdict") == "source_supported":
-                    best_source_id = candidate.get("best_source_id") or ""
+                    allowed_source_ids = {
+                        str(source_id)
+                        for source_id in (
+                            candidate.get("best_source_id") or "",
+                            candidate.get(
+                                "best_source_artifact_id"
+                            ) or "",
+                        )
+                        if str(source_id)
+                    }
                     if (
-                        not best_source_id
-                        or best_source_id not in (
-                            decision.get("source_ids") or []
+                        not allowed_source_ids
+                        or not allowed_source_ids.intersection(
+                            str(source_id)
+                            for source_id in (
+                                decision.get("source_ids") or []
+                            )
                         )
                     ):
                         attestation_errors.append(
@@ -4092,7 +4112,14 @@ class WorkbenchEngine:
                 rejected.append({"id": item.get("id"), "reason": "deterministic_gate_requires_mechanical_or_model_repair"})
                 continue
             reason = ""
-            if self._unsafe_reviewer_replacement(replacement):
+            if (
+                exact
+                and replacement
+                and re.sub(r"\s+", " ", exact).strip()
+                == re.sub(r"\s+", " ", replacement).strip()
+            ):
+                reason = "replacement_is_identical_and_requires_no_action"
+            elif self._unsafe_reviewer_replacement(replacement):
                 reason = "replacement_conflicts_with_house_disclosure_or_cta_rules"
             elif re.fullmatch(r"Priority code\s+[A-Z0-9-]+\s+may apply\.", exact, re.I):
                 reason = "source_supplied_priority_code_is_not_internal_language"

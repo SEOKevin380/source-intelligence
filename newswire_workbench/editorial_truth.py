@@ -186,7 +186,7 @@ def _source_fragments(pack: dict) -> list[dict]:
     rows = []
     seen = set()
 
-    def add(path, text, claim_id=""):
+    def add(path, text, claim_id="", artifact_id=""):
         normalized = _normalize(text)
         key = normalized.casefold()
         if len(normalized) < 3 or key in seen:
@@ -196,6 +196,7 @@ def _source_fragments(pack: dict) -> list[dict]:
             "source_id": str(claim_id or hashlib.sha256(
                 f"{path}:{normalized}".encode()
             ).hexdigest()[:16]),
+            "artifact_id": str(artifact_id or ""),
             "path": path,
             "text": normalized,
             "tokens": _tokens(normalized),
@@ -208,6 +209,7 @@ def _source_fragments(pack: dict) -> list[dict]:
                 f"publication_claims.{claim_type}[{index}]",
                 item.get("text") or "",
                 item.get("claim_id") or "",
+                item.get("artifact_id") or "",
             )
     # Historical source packs may predate publication_claims. The compact
     # claims_by_type ledger is still publication-safe factual evidence.
@@ -218,6 +220,7 @@ def _source_fragments(pack: dict) -> list[dict]:
                     f"claims_by_type.{claim_type}[{index}]",
                     item.get("text") or item.get("excerpt") or "",
                     item.get("claim_id") or "",
+                    item.get("artifact_id") or "",
                 )
     manifest = pack.get("intake_manifest") or {}
     for path, text in _walk_strings(
@@ -297,6 +300,7 @@ def _is_exempt_sentence(row: dict) -> bool:
 def _best_source(row: dict, fragments: list[dict]) -> dict:
     best = {
         "source_id": "",
+        "artifact_id": "",
         "path": "",
         "text": "",
         "sentence_coverage": 0.0,
@@ -325,6 +329,7 @@ def _best_source(row: dict, fragments: list[dict]) -> dict:
             continue
         best = {
             "source_id": fragment["source_id"],
+            "artifact_id": fragment["artifact_id"],
             "path": fragment["path"],
             "text": fragment["text"],
             "sentence_coverage": round(sentence_coverage, 3),
@@ -425,6 +430,7 @@ def _grounding_audit(pack: dict, article: str) -> dict:
                 ),
                 "unsupported_excerpt": match.group(0),
                 "best_source_id": best["source_id"],
+                "best_source_artifact_id": best["artifact_id"],
                 "best_source_excerpt": best["text"],
                 "sentence_coverage": best["sentence_coverage"],
             })
@@ -437,6 +443,7 @@ def _grounding_audit(pack: dict, article: str) -> dict:
             "exact_text": row["text"],
             "heading": row["heading"],
             "best_source_id": best["source_id"],
+            "best_source_artifact_id": best["artifact_id"],
             "best_source_excerpt": best["text"],
             "sentence_coverage": best["sentence_coverage"],
             "source_coverage": best["source_coverage"],
@@ -447,6 +454,9 @@ def _grounding_audit(pack: dict, article: str) -> dict:
             "sentence_id": item["sentence_id"],
             "exact_text": item["exact_text"],
             "best_source_id": item["best_source_id"],
+            "best_source_artifact_id": item[
+                "best_source_artifact_id"
+            ],
         }
         for item in candidates
     ]

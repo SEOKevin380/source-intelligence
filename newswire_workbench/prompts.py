@@ -608,8 +608,9 @@ Review all applicable categories:
 25. Editorial-truth candidate coverage: the machine-generated packet below
     lists material sentences that were not decisively grounded by lexical
     evidence. Return exactly one decision for every candidate ID and echo the
-    packet hash. `source_supported` requires the supplied best source ID to
-    entail the entire sentence, not merely share a topic. Use `non_material`
+    packet hash. `source_supported` requires at least one supplied
+    `allowed_source_ids` value whose excerpt or artifact entails the entire
+    sentence, not merely shares a topic. Use `non_material`
     only for pure navigation, disclosure, question, or reader advice that
     asserts no product fact. Use `unsupported` for any invented bridge fact,
     and provide a mandatory exact replacement or deletion.
