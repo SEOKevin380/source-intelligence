@@ -715,12 +715,20 @@ Globe: {'PASS' if compliance.get('globe_compliance', {}).get('passes', True) els
         block += "\n--- TESTIMONIALS (Reference Only — Do Not Republish as Verified) ---\n"
         for t in testimonials:
             if isinstance(t, dict) and t.get("text"):
-                name = (t.get('name', '') or '').strip() or 'Unattributed'
+                testimonial_name = (
+                    (t.get('name', '') or '').strip() or 'Unattributed'
+                )
                 location = (t.get('location', '') or '').strip()
                 if location:
-                    block += f"- {name} ({location}): \"{t['text'][:300]}...\"\n"
+                    block += (
+                        f"- {testimonial_name} ({location}): "
+                        f"\"{t['text'][:300]}...\"\n"
+                    )
                 else:
-                    block += f"- {name}: \"{t['text'][:300]}...\"\n"
+                    block += (
+                        f"- {testimonial_name}: "
+                        f"\"{t['text'][:300]}...\"\n"
+                    )
 
     # Keyword & content strategy
     keywords = full_data.get("keywords", {})
@@ -1917,6 +1925,11 @@ provided for reader awareness, not as a contraindication for the product itself.
         aw = {"passes": not _r12_terms, "flagged_terms": _r12_terms}
     bc = compliance.get("barchart_compliance", {})
     gc = compliance.get("globe_compliance", {})
+    if not gc:
+        # Newer/older saved packs may not carry the compatibility summary.
+        # Reconstruct it deterministically instead of treating absence as FAIL.
+        from compliance import build_globe_compliance_report
+        gc = build_globe_compliance_report(product)
 
     # ── STANDING DECLINES (highest severity — appears first) ──
     standing_declines = compliance.get("standing_declines", [])
@@ -1933,13 +1946,21 @@ provided for reader awareness, not as a contraindication for the product itself.
     # ── PLATFORM-SPECIFIC BLOCKLIST CHECKS ──
     if is_globe:
         # Globe-specific compliance
-        block += f"Globe v1.12 Phrase Blocklist: {'PASS' if gc.get('passes') else 'FAIL'}\n"
+        globe_status = (
+            "PASS"
+            if gc.get("passes")
+            else (
+                "SOURCE FILTER ACTIVE "
+                f"({len(gc.get('flagged_terms', []))} phrase(s))"
+            )
+        )
+        block += f"Globe v1.12 Source Phrase Pre-Screen: {globe_status}\n"
         if not gc.get("passes"):
             for cat, terms in gc.get("flagged_categories", {}).items():
                 cat_label = cat.split("_", 1)[-1].replace("_", " ").title() if "_" in cat else cat
                 block += f"  Category {cat.split('_')[0]}: {', '.join(terms)}\n"
-            block += "  NOTE: These terms/phrases are confirmed Globe rejection triggers.\n"
-            block += "  The production system must avoid them entirely — no rewording fixes them.\n"
+            block += "  NOTE: These source phrases are excluded from Globe output.\n"
+            block += "  The final article must omit them and pass the exact-output gate.\n"
         block += "Globe Format: Format C (default — no CTAs, no FAQ, no affiliate disclosure in opening)\n"
         block += "Globe Voice: Brand-as-subject (Rule 1) + Mechanism-forward (Rule 2)\n"
         block += "  All attribution must be direct: '[Brand] is X' — never 'according to the brand'\n"
@@ -2245,12 +2266,20 @@ provided for reader awareness, not as a contraindication for the product itself.
             block += f"\n═══ TESTIMONIALS ({len(testimonials)} — C9 reference, not independently verified) ═══\n"
         for t in testimonials:
             if isinstance(t, dict) and t.get("text"):
-                name = (t.get('name', '') or '').strip() or 'Unattributed'
+                testimonial_name = (
+                    (t.get('name', '') or '').strip() or 'Unattributed'
+                )
                 location = (t.get('location', '') or '').strip()
                 if location:
-                    block += f"- {name} ({location}): \"{t['text'][:300]}\"\n"
+                    block += (
+                        f"- {testimonial_name} ({location}): "
+                        f"\"{t['text'][:300]}\"\n"
+                    )
                 else:
-                    block += f"- {name}: \"{t['text'][:300]}\"\n"
+                    block += (
+                        f"- {testimonial_name}: "
+                        f"\"{t['text'][:300]}\"\n"
+                    )
 
     # ── KEYWORD & CONTENT STRATEGY ──
     keywords = full_data.get("keywords", {})

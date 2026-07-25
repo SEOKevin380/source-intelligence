@@ -255,6 +255,62 @@ def test_generation_prompt_enforces_client_positive_compliance_boundary():
     assert "Editorial review occurs after drafting" in prompt
 
 
+def test_testimonial_name_cannot_replace_canonical_product_in_seo_strategy():
+    from prompt_builders import build_l6_press_release_prompt
+
+    prompt = build_l6_press_release_prompt(
+        {
+            "product": {
+                "product_name": "Power Pro Genius",
+                "official_url": "https://power.example/offer",
+                "product_type": "device",
+                "claims": [{"claim": "Stabilize electrical current"}],
+                "testimonials": [
+                    {"name": "Brenda Shearer", "text": "Easy to install."},
+                    {"name": "Wilma Besley", "text": "I bought three."},
+                ],
+            },
+            "compliance": {},
+            "keywords": {
+                "primary": ["Power Pro Genius review"],
+            },
+        },
+        {"platform": "Globe Newswire"},
+    )
+
+    assert (
+        "Primary Targets: Power Pro Genius review, "
+        "Power Pro Genius product review"
+    ) in prompt
+    assert "What is Power Pro Genius?" in prompt
+    assert "Wilma Besley review" not in prompt
+    assert "What is Wilma Besley?" not in prompt
+
+
+def test_missing_legacy_globe_summary_is_rebuilt_as_pass_not_false_fail():
+    from prompt_builders import build_l6_press_release_prompt
+
+    prompt = build_l6_press_release_prompt(
+        {
+            "product": {
+                "product_name": "Power Pro Genius",
+                "official_url": "https://power.example/offer",
+                "product_type": "device",
+                "description": "A plug-in electricity monitoring device.",
+                "claims": [{"claim": "Stabilize electrical current"}],
+            },
+            "compliance": {
+                "state": "cleared",
+                "risk_level": "low",
+            },
+        },
+        {"platform": "Globe Newswire"},
+    )
+
+    assert "Globe v1.12 Source Phrase Pre-Screen: PASS" in prompt
+    assert "Globe v1.12 Phrase Blocklist: FAIL" not in prompt
+
+
 def test_category_conflict_uses_performance_marketing_not_watchdog_posture():
     from prompt_builders import build_l6_press_release_prompt
 

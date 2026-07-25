@@ -144,6 +144,100 @@ def _severity_to_state(severity: Severity) -> ComplianceState:
     return ComplianceState.READY_FOR_EDITORIAL_REVIEW
 
 
+def build_globe_compliance_report(product_data: dict) -> dict:
+    """Return a complete Globe source-phrase report for any pipeline version.
+
+    The report evaluates supplied source language. Matches are candidates for
+    exclusion from Globe output; they do not change the canonical product
+    identity and do not by themselves reject an otherwise researchable offer.
+    """
+    from config import GLOBE_BLOCKLIST
+
+    product = product_data if isinstance(product_data, dict) else {}
+    claims = product.get("claims", [])
+    claims = claims if isinstance(claims, list) else []
+
+    source_fields = [
+        str(product.get("product_name", "")),
+        str(product.get("description", "")),
+        str(product.get("tagline", "")),
+    ]
+    manufacturer_claims = product.get("manufacturer_claims", [])
+    if isinstance(manufacturer_claims, str):
+        source_fields.append(manufacturer_claims)
+    elif isinstance(manufacturer_claims, list):
+        source_fields.extend(str(item) for item in manufacturer_claims)
+
+    for ingredient in (
+        product.get("supplement_facts", {}).get("ingredients", [])
+        if isinstance(product.get("supplement_facts"), dict)
+        else []
+    ):
+        if isinstance(ingredient, dict):
+            source_fields.extend([
+                str(ingredient.get("name", "")),
+                str(ingredient.get("description", "")),
+            ])
+        else:
+            source_fields.append(str(ingredient))
+
+    claim_texts = []
+    for claim in claims:
+        if isinstance(claim, dict):
+            claim_text = str(claim.get("claim", claim.get("text", "")))
+        else:
+            claim_text = str(claim)
+        claim_texts.append(claim_text)
+        source_fields.append(claim_text)
+
+    corpus = " ".join(source_fields).casefold()
+    flagged_categories = {}
+    flagged_terms = []
+    for category, terms in GLOBE_BLOCKLIST.items():
+        matched = [
+            term for term in terms
+            if str(term).casefold() in corpus
+        ]
+        if matched:
+            unique = list(dict.fromkeys(matched))
+            flagged_categories[category] = unique
+            flagged_terms.extend(unique)
+
+    blocked_claims = []
+    for claim_text in claim_texts:
+        folded_claim = claim_text.casefold()
+        matched = []
+        for category, terms in GLOBE_BLOCKLIST.items():
+            for term in terms:
+                if str(term).casefold() in folded_claim:
+                    matched.append(f"{category}: {term}")
+        if matched:
+            blocked_claims.append({
+                "claim": claim_text,
+                "matched_terms": list(dict.fromkeys(matched)),
+                "reason": (
+                    "Globe source phrase exclusion: "
+                    + ", ".join(dict.fromkeys(matched))
+                ),
+            })
+
+    flagged_terms = list(dict.fromkeys(flagged_terms))
+    return {
+        "passes": not flagged_terms,
+        "flagged_terms": flagged_terms,
+        "flagged_categories": flagged_categories,
+        "blocked_claims": blocked_claims,
+        "action": "pass" if not flagged_terms else "filter_source_phrases",
+        "notes": (
+            "Globe v1.12 source phrase pre-screen"
+            + (
+                f" — {len(blocked_claims)} claim(s) excluded from Globe output"
+                if blocked_claims else ""
+            )
+        ),
+    }
+
+
 # ============================================================================
 # BUILT-IN RULES (loaded from config.py data)
 # ============================================================================

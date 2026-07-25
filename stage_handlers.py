@@ -2370,7 +2370,11 @@ def handle_comply(job: Job) -> dict:
     offering_type_str = identify_result.get("offering_type", "unknown")
 
     try:
-        from compliance import ComplianceEngine, ComplianceState
+        from compliance import (
+            ComplianceEngine,
+            ComplianceState,
+            build_globe_compliance_report,
+        )
         from entities import OfferingType
 
         try:
@@ -2482,6 +2486,8 @@ def handle_comply(job: Job) -> dict:
                     "review_flag": True,
                     "notes": "Manual editorial review required",
                 },
+                "globe_compliance":
+                    build_globe_compliance_report(product_data),
             },
             "risk_level": risk_level,
         }

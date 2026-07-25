@@ -32,7 +32,7 @@ from config import (
     ANTHROPIC_API_KEY, PUBMED_SEARCH_URL, PUBMED_FETCH_URL,
     PUBMED_DELAY, PUBMED_MAX_RESULTS, PUBMED_MAX_INGREDIENTS,
     INGREDIENT_DB_PATH, OUTPUT_DIR, USER_AGENT,
-    ACCESSWIRE_BLOCKLIST, GLOBE_BLOCKLIST, YMYL_CATEGORIES, CLAIM_RED_FLAGS,
+    ACCESSWIRE_BLOCKLIST, YMYL_CATEGORIES, CLAIM_RED_FLAGS,
     HEDGE_ALTERNATIVES, SITE_CATEGORIES, PUBMED_API_KEY,
     CVD9_DISEASE_TERMS, CVD9_REVERSAL_VERBS,
     DECEPTIVE_CLAIM_PATTERNS, CVD9_STANDING_DECLINES,
@@ -3425,32 +3425,13 @@ def phase7_compliance_check(product_data):
                 "reason": f"Contains banned terms: {', '.join(matched_terms)} — cannot appear in any publishable content",
             })
 
-    # Globe Newswire blocklist check — scan claims and product fields against
-    # Globe's Categories A-K phrase blocklist (zero tolerance on Globe platform)
-    globe_flagged_categories = {}
-    globe_flagged_terms = []
-    globe_blocked_claims = []
-    for cat_key, cat_terms in GLOBE_BLOCKLIST.items():
-        for term in cat_terms:
-            term_lower = term.lower()
-            if term_lower in all_text:
-                globe_flagged_terms.append(term)
-                globe_flagged_categories.setdefault(cat_key, []).append(term)
-    # Check individual claims for Globe blocklist terms
-    for claim_obj in claims:
-        claim_text = claim_obj.get("claim", "") if isinstance(claim_obj, dict) else str(claim_obj)
-        claim_lower = claim_text.lower()
-        matched = []
-        for cat_key, cat_terms in GLOBE_BLOCKLIST.items():
-            for term in cat_terms:
-                if term.lower() in claim_lower:
-                    matched.append(f"{cat_key}: {term}")
-        if matched:
-            globe_blocked_claims.append({
-                "claim": claim_text,
-                "matched_terms": matched,
-                "reason": f"Globe blocklist: {', '.join(matched)}",
-            })
+    # Keep the legacy and resumable pipelines on one deterministic Globe
+    # source-phrase contract.
+    from compliance import build_globe_compliance_report
+    globe_compliance = build_globe_compliance_report(product_data)
+    globe_flagged_categories = globe_compliance["flagged_categories"]
+    globe_flagged_terms = globe_compliance["flagged_terms"]
+    globe_blocked_claims = globe_compliance["blocked_claims"]
 
     # ── DECEPTIVE CLAIM DETECTION (regex patterns for impossible claims) ──
     # These represent physically impossible outcomes that no legitimate product can deliver.
@@ -3620,15 +3601,7 @@ def phase7_compliance_check(product_data):
             "notes": "Male enhancement — manual review required" if category == "male_enhancement" else "Compliance not evaluated — requires manual review before publishing",
             "review_flag": True,  # Always flag for manual review
         },
-        "globe_compliance": {
-            "passes": len(globe_flagged_terms) == 0 and len(globe_blocked_claims) == 0,
-            "flagged_terms": globe_flagged_terms,
-            "flagged_categories": globe_flagged_categories,
-            "blocked_claims": globe_blocked_claims,
-            "notes": "Globe v1.12 Categories A-K phrase blocklist" + (
-                f" — {len(globe_blocked_claims)} claims auto-excluded from Globe prompt" if globe_blocked_claims else ""
-            ),
-        },
+        "globe_compliance": globe_compliance,
     }
 
     _emit(f"  Claims audited: {len(claims)}")

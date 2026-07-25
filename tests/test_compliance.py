@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from compliance import (
     ComplianceEngine, ComplianceState, ComplianceReport,
-    ComplianceRule, Severity,
+    ComplianceRule, Severity, build_globe_compliance_report,
 )
 from entities import OfferingType
 
@@ -73,6 +73,31 @@ class TestComplianceEngine:
         globe_report = engine.evaluate(text, OfferingType.SUPPLEMENT, channel="globe")
 
         assert globe_report.blocks > wp_report.blocks
+
+    def test_globe_source_report_filters_claims_without_entity_mutation(self):
+        product = {
+            "product_name": "Example Device",
+            "claims": [
+                {
+                    "claim": (
+                        "According to the company, click here to review it."
+                    )
+                },
+                {"claim": "Uses a plug-in design."},
+            ],
+            "testimonials": [
+                {"name": "Jane Customer", "text": "I tried it."}
+            ],
+        }
+
+        report = build_globe_compliance_report(product)
+
+        assert report["passes"] is False
+        assert report["action"] == "filter_source_phrases"
+        assert "according to the company" in report["flagged_terms"]
+        assert "click here" in report["flagged_terms"]
+        assert len(report["blocked_claims"]) == 1
+        assert product["product_name"] == "Example Device"
 
     def test_offering_type_filtering(self, engine):
         """Some rules only apply to ingestible products."""
