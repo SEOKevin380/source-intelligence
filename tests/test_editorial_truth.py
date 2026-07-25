@@ -3,8 +3,14 @@ from unittest.mock import patch
 
 import pytest
 
-from article_provenance import build_article_claim_ledger
-from newswire_workbench.editorial_truth import audit_editorial_truth
+from article_provenance import (
+    build_article_claim_ledger,
+    repair_bidirectional_claim_blocks,
+)
+from newswire_workbench.editorial_truth import (
+    audit_editorial_truth,
+    repair_cta_integrity,
+)
 from newswire_workbench.engine import WorkbenchEngine
 from newswire_workbench.routing import route_for
 from source_pack_contract import seal_source_pack
@@ -53,6 +59,7 @@ def _pack():
                     "text": (
                         "One-time or monthly recurring options are available."
                     ),
+                    "publication_treatment": "seller_attribution_required",
                 },
             ],
             "limitation": [
@@ -180,6 +187,66 @@ def test_affiliate_cta_density_is_bounded_independently_of_contact_links():
         item["category"] == "CTA density integrity"
         for item in audit["cta_integrity_violations"]
     )
+
+
+def test_cta_repair_removes_excess_links_and_disambiguates_roles():
+    body = [
+        _disclosure(),
+        '<p><a href="https://example.com/"><strong>'
+        "Review the current product details</strong></a></p>",
+        f'<p><a href="{AFFILIATE}"><strong>'
+        "Review the current product details</strong></a></p>",
+    ]
+    for index in range(5):
+        body.append(
+            "<p>According to the seller, a secure digital link is provided "
+            "after purchase.</p>"
+        )
+        body.append(
+            f'<p><a href="{AFFILIATE}"><strong>'
+            f"Review offer detail {index}</strong></a></p>"
+        )
+    repaired, report = repair_cta_integrity(
+        _pack(), "".join(body), AFFILIATE
+    )
+    audit = audit_editorial_truth(_pack(), repaired, AFFILIATE)
+    assert report["changed"]
+    assert report["removed_cta_text"]
+    assert "Visit the official product website" in repaired
+    assert {
+        item["role"] for item in report["changed_labels"]
+    } == {"official", "affiliate"}
+    assert audit["cta_integrity_violations"] == []
+
+
+def test_bidirectional_zero_cost_repair_deletes_false_and_unattributed_blocks():
+    article = (
+        _disclosure()
+        + "<p>According to the seller, a free scratch game lets users uncover "
+          "six of nine crystal balls to reveal Fortune Numbers.</p>"
+        + "<p>According to the seller, personalized readings and reports are "
+          "based on generated Fortune Numbers.</p>"
+        + "<p>A secure digital link is provided after purchase.</p>"
+        + "<p>The seller does not specify account content library sizes.</p>"
+        + "<p>One-time or monthly recurring options are available.</p>"
+        + "".join(
+            f'<p><a href="{AFFILIATE}"><strong>'
+            f"Review offer detail {index}</strong></a></p>"
+            + "<p>According to the seller, a secure digital link is provided "
+              "after purchase.</p>"
+            for index in range(5)
+        )
+    )
+    repaired, report = repair_bidirectional_claim_blocks(
+        _pack(), article, AFFILIATE
+    )
+    ledger = build_article_claim_ledger(_pack(), repaired)
+    assert report["changed"]
+    assert "content library" not in repaired
+    assert "One-time or monthly recurring options" not in repaired
+    assert ledger["grounding_violations"] == []
+    assert ledger["attribution_violations"] == []
+    assert ledger["cta_integrity_violations"] == []
 
 
 def test_bidirectional_claim_ledger_fails_when_required_claims_are_present_but_article_adds_false_fact():
@@ -387,3 +454,20 @@ def test_reviewer_candidate_scope_hash_mismatch_cannot_approve(tmp_path):
         item["id"] == "E-REVIEW-SCOPE"
         for item in report["mandatory_edits"]
     )
+
+
+def test_manual_final_candidate_cannot_bypass_editorial_depth(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Example Fortune",
+        "AccessNewsWire",
+        "gaming source",
+        vertical="gaming",
+    )
+    with pytest.raises(RuntimeError, match="Manual final candidate failed"):
+        engine.import_manual_article(
+            pid,
+            _disclosure() + "<p>A short final candidate.</p>",
+            final_candidate=True,
+        )
+    assert engine.get(pid)["stage"] == "admin_review"

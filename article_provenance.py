@@ -224,6 +224,68 @@ def prune_unattributed_claim_blocks(pack: dict, article: str) -> tuple[str, dict
     }
 
 
+def repair_bidirectional_claim_blocks(
+    pack: dict, article: str, affiliate_href: str = ""
+) -> tuple[str, dict]:
+    """Delete deterministic false claims, prune attribution, and fix CTAs.
+
+    This bounded zero-model primitive only removes complete semantic blocks
+    containing high-confidence unsupported claims, uses the established
+    attribution prune, and performs meaning-preserving CTA cleanup. Callers
+    must re-run every depth, coverage, formatting, and semantic gate before
+    accepting the result.
+    """
+    from newswire_workbench.editorial_truth import (
+        audit_editorial_truth,
+        repair_cta_integrity,
+    )
+
+    initial = audit_editorial_truth(pack, article, affiliate_href)
+    unsupported_sentences = {
+        re.sub(
+            r"\s+", " ", str(item.get("exact_text") or "")
+        ).strip()
+        for item in initial.get("grounding_violations") or []
+        if str(item.get("exact_text") or "").strip()
+    }
+    soup = BeautifulSoup(html.unescape(article or ""), "html.parser")
+    removed_truth_sentences = []
+    for block in list(soup.find_all(["p", "li", "figcaption"])):
+        plain = re.sub(
+            r"\s+", " ", block.get_text(" ", strip=True)
+        ).strip()
+        matching = [
+            sentence
+            for sentence in unsupported_sentences
+            if sentence in plain
+        ]
+        if not matching:
+            continue
+        removed_truth_sentences.extend(matching)
+        block.decompose()
+    for list_node in list(soup.find_all(["ul", "ol"])):
+        if not list_node.get_text(" ", strip=True):
+            list_node.decompose()
+
+    attribution_pruned, attribution_report = (
+        prune_unattributed_claim_blocks(pack, str(soup))
+    )
+    cta_repaired, cta_report = repair_cta_integrity(
+        pack, attribution_pruned, affiliate_href
+    )
+    return cta_repaired, {
+        "changed": bool(
+            removed_truth_sentences
+            or attribution_report["changed"]
+            or cta_report["changed"]
+        ),
+        "removed_truth_block_count": len(removed_truth_sentences),
+        "removed_truth_sentences": sorted(set(removed_truth_sentences)),
+        "attribution": attribution_report,
+        "cta": cta_report,
+    }
+
+
 def _sentences(article: str) -> list[str]:
     """Compatibility wrapper returning only sentence text."""
     return [record["text"] for record in _sentence_records(article)]

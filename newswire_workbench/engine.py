@@ -46,7 +46,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v34-closed-loop-action-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "bidirectional-editorial-truth-20260725-r29"
+WORKBENCH_RUNTIME_REVISION = "bidirectional-editorial-truth-20260725-r30"
 
 STAGES = (
     "source_ready",
@@ -1767,6 +1767,7 @@ class WorkbenchEngine:
             "03b-recovered-compliance-revision.html",
             bump=True,
             require_publishable=True,
+            allow_depth_recovery=True,
         ):
             return False
         recovered = self.get(project_id)
@@ -2955,6 +2956,7 @@ class WorkbenchEngine:
                 bump=True,
                 call_purpose=repair_purpose,
                 require_publishable=self._uses_locked_call_path(p),
+                allow_depth_recovery=self._uses_locked_call_path(p),
             )
             if not accepted:
                 return self.get(project_id)
@@ -3178,7 +3180,18 @@ class WorkbenchEngine:
             if final_candidate
             else ("drafted" if p["stage"] == "source_ready" else "revised")
         )
-        self._set_article(p, article, next_stage, "manual-article.html")
+        accepted = self._set_article(
+            p,
+            article,
+            next_stage,
+            "manual-article.html",
+            require_publishable=final_candidate,
+        )
+        if final_candidate and not accepted:
+            raise RuntimeError(
+                "Manual final candidate failed the current deterministic "
+                "publication and bidirectional provenance contract."
+            )
         if final_candidate:
             saved = self.get(project_id)
             self._event(
@@ -4166,6 +4179,7 @@ class WorkbenchEngine:
     def _set_article(
         self, p, article, stage, filename, bump=False, call_purpose=None,
         require_publishable=False, prevalidated_source_grounding=False,
+        allow_depth_recovery=False,
     ):
         """Finalize a provider candidate before it can replace canonical state.
 
@@ -4226,37 +4240,32 @@ class WorkbenchEngine:
         article, structured_contact_report = ensure_structured_contact_block(
             extract_sealed_pack(p["source_text"]), article
         )
-        provenance_prune = {
+        provenance_repair = {
             "changed": False,
-            "removed_block_count": 0,
-            "removed_sentences": [],
+            "removed_truth_block_count": 0,
+            "removed_truth_sentences": [],
+            "attribution": {
+                "changed": False,
+                "removed_block_count": 0,
+                "removed_sentences": [],
+            },
+            "cta": {
+                "changed": False,
+                "changed_labels": [],
+                "removed_cta_text": [],
+                "remaining_violations": [],
+            },
         }
         if require_publishable:
             from article_provenance import (
-                build_article_claim_ledger,
-                extract_sealed_pack,
-                prune_unattributed_claim_blocks,
+                repair_bidirectional_claim_blocks,
             )
             sealed_pack = extract_sealed_pack(p["source_text"])
-            pruned_article, prune_report = prune_unattributed_claim_blocks(
-                sealed_pack, article
+            article, provenance_repair = (
+                repair_bidirectional_claim_blocks(
+                    sealed_pack, article, affiliate_href
+                )
             )
-            if prune_report["changed"]:
-                pruned_preflight = audit_article(
-                    pruned_article,
-                    p["platform"],
-                    p["vertical"],
-                    affiliate_href,
-                )
-                pruned_provenance = build_article_claim_ledger(
-                    sealed_pack, pruned_preflight["article"]
-                )
-                if (
-                    not pruned_preflight["blockers"]
-                    and pruned_provenance["passed"]
-                ):
-                    article = pruned_preflight["article"]
-                    provenance_prune = prune_report
         # Canonicalize all mechanically repairable requirements before any
         # paid compliance review. Reviewers should spend judgment on meaning,
         # not Markdown, heading wrappers, CTA distribution, or disclosures.
@@ -4276,7 +4285,9 @@ class WorkbenchEngine:
         if require_publishable:
             blockers = [
                 item for item in candidate_preflight["blockers"]
-                if item.get("id") != "D18"
+                if not (
+                    allow_depth_recovery and item.get("id") == "D18"
+                )
             ]
         if require_publishable:
             blockers.extend(provenance_blockers)
@@ -4345,19 +4356,26 @@ class WorkbenchEngine:
                     "runtime_revision": WORKBENCH_RUNTIME_REVISION,
                 },
             )
-        if provenance_prune["changed"]:
+        if provenance_repair["changed"]:
+            self._event(
+                p["id"],
+                "bidirectional_claim_blocks_repaired",
+                stage,
+                digest,
+                {
+                    **provenance_repair,
+                    "paid_calls_added": 0,
+                    "runtime_revision": WORKBENCH_RUNTIME_REVISION,
+                },
+            )
+        if provenance_repair["attribution"]["changed"]:
             self._event(
                 p["id"],
                 "unattributed_claim_blocks_pruned",
                 stage,
                 digest,
                 {
-                    "removed_block_count": provenance_prune[
-                        "removed_block_count"
-                    ],
-                    "removed_sentences": provenance_prune[
-                        "removed_sentences"
-                    ],
+                    **provenance_repair["attribution"],
                     "paid_calls_added": 0,
                     "runtime_revision": WORKBENCH_RUNTIME_REVISION,
                 },

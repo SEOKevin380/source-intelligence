@@ -537,7 +537,11 @@ def _cta_audit(pack: dict, article: str, affiliate_href: str = "") -> dict:
     # The generation contract allows three to four naturally spaced partner
     # CTAs in a full-length release. Scale shorter copy down without turning
     # an otherwise compliant 1,200-1,600 word article into a needless jam.
-    max_affiliate = max(2, min(4, math.ceil(max(word_count, 1) / 400)))
+    max_affiliate = (
+        4
+        if word_count >= 1200
+        else max(2, min(3, math.ceil(max(word_count, 1) / 400)))
+    )
     max_conversion = max_affiliate + 1
     findings = []
 
@@ -645,6 +649,146 @@ def _cta_audit(pack: dict, article: str, affiliate_href: str = "") -> dict:
             for item in anchors
         ],
         "cta_integrity_violations": findings,
+    }
+
+
+def _remove_conversion_anchor(anchor) -> str:
+    """Remove one conversion link without deleting surrounding article copy."""
+    text = _normalize(anchor.get_text(" ", strip=True))
+    parent = anchor.parent
+    if (
+        parent is not None
+        and parent.name in {"p", "li", "div"}
+        and _normalize(parent.get_text(" ", strip=True)) == text
+        and len(parent.find_all("a", href=True)) == 1
+    ):
+        parent.decompose()
+        return text
+    anchor.unwrap()
+    return text
+
+
+def repair_cta_integrity(
+    pack: dict, article: str, affiliate_href: str = ""
+) -> tuple[str, dict]:
+    """Apply bounded, meaning-preserving CTA repairs at zero model cost.
+
+    The routine may relabel ambiguous official/partner links and remove excess
+    standalone conversion links. It never changes a destination or inserts a
+    new commercial assertion.
+    """
+    soup = BeautifulSoup(html.unescape(article or ""), "html.parser")
+    official_url = str(
+        (pack.get("product") or {}).get("official_url") or ""
+    ).strip()
+    official_host = _host(official_url)
+    affiliate_href = str(
+        affiliate_href
+        or (pack.get("intake_manifest") or {}).get("affiliate_link")
+        or (pack.get("release_details") or {}).get("affiliate_link")
+        or ""
+    ).strip()
+    changed_labels = []
+    removed = []
+
+    def conversion_rows():
+        rows = []
+        for anchor in soup.find_all("a", href=True):
+            href = str(anchor.get("href") or "").strip()
+            if _is_contact_anchor(anchor):
+                continue
+            role = ""
+            if affiliate_href and href == affiliate_href:
+                role = "affiliate"
+            elif official_host and _host(href) == official_host:
+                role = "official"
+            if role:
+                rows.append((anchor, role))
+        return rows
+
+    by_label = {}
+    for anchor, role in conversion_rows():
+        label = re.sub(
+            r"[^a-z0-9]+",
+            " ",
+            _normalize(anchor.get_text(" ", strip=True)).casefold(),
+        ).strip()
+        by_label.setdefault(label, []).append((anchor, role))
+    for label, rows in by_label.items():
+        if not label or len({role for _anchor, role in rows}) < 2:
+            continue
+        for anchor, role in rows:
+            old = _normalize(anchor.get_text(" ", strip=True))
+            new = (
+                "Visit the official product website"
+                if role == "official"
+                else "Review the current partner offer"
+            )
+            strong = anchor.find("strong")
+            target = strong if strong is not None else anchor
+            target.clear()
+            target.string = new
+            changed_labels.append({
+                "old": old,
+                "new": new,
+                "role": role,
+            })
+
+    # Consecutive standalone links add no reader value. Keep the first and
+    # remove the later block before applying numeric density limits.
+    previous_block = None
+    for anchor, _role in list(conversion_rows()):
+        parent = anchor.parent
+        while parent is not None and parent.name not in {"p", "li", "div"}:
+            parent = parent.parent
+        if parent is None:
+            previous_block = None
+            continue
+        text = _normalize(parent.get_text(" ", strip=True))
+        anchor_text = _normalize(anchor.get_text(" ", strip=True))
+        if text != anchor_text:
+            previous_block = None
+            continue
+        if (
+            previous_block is not None
+            and previous_block.find_next_sibling() is parent
+        ):
+            removed.append(_remove_conversion_anchor(anchor))
+            continue
+        previous_block = parent
+
+    initial = _cta_audit(pack, str(soup), affiliate_href)
+    maximum_affiliate = initial["maximum_affiliate_ctas"]
+    maximum_conversion = initial["maximum_conversion_ctas"]
+
+    affiliates = [
+        anchor for anchor, role in conversion_rows() if role == "affiliate"
+    ]
+    while len(affiliates) > maximum_affiliate:
+        anchor = affiliates.pop()
+        removed.append(_remove_conversion_anchor(anchor))
+
+    conversions = conversion_rows()
+    while len(conversions) > maximum_conversion:
+        # Preserve the first official link and the earliest naturally placed
+        # partner CTAs. Remove later official duplicates first, then the final
+        # remaining conversion link.
+        official = [
+            anchor for anchor, role in conversions if role == "official"
+        ]
+        target = official[-1] if len(official) > 1 else conversions[-1][0]
+        removed.append(_remove_conversion_anchor(target))
+        conversions = conversion_rows()
+
+    repaired = str(soup)
+    final = _cta_audit(pack, repaired, affiliate_href)
+    return repaired, {
+        "changed": bool(changed_labels or removed),
+        "changed_labels": changed_labels,
+        "removed_cta_text": removed,
+        "remaining_violations": final["cta_integrity_violations"],
+        "affiliate_cta_count": final["affiliate_cta_count"],
+        "conversion_cta_count": final["conversion_cta_count"],
     }
 
 

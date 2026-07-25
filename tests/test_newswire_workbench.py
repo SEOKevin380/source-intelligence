@@ -1028,6 +1028,22 @@ def test_current_workflow_reserves_one_call_per_required_purpose(tmp_path):
 
 def test_zero_cost_final_candidate_uses_only_reserved_signoff(tmp_path):
     engine = WorkbenchEngine(tmp_path)
+    long_claims = [
+        {
+            "text": (
+                f"Literal product fact {index} "
+                + (
+                    f"source grounded feature detail {index} "
+                    "for the current device "
+                ) * 55
+            ),
+            "artifact_id": "a1",
+            "source_class": "official_vendor",
+            "review_status": "unreviewed",
+            "metadata": {"excerpt_is_literal": True},
+        }
+        for index in range(3)
+    ]
     pack = seal_source_pack({
         "product": {
             "product_name": "Test Device",
@@ -1035,7 +1051,7 @@ def test_zero_cost_final_candidate_uses_only_reserved_signoff(tmp_path):
             "product_type": "device",
         },
         "all_artifacts": [{"artifact_id": "a1"}],
-        "claims_by_type": _three_literal_claims(),
+        "claims_by_type": {"feature": long_claims},
         "required_facts": {"missing": []},
     })
     pid = engine.create_project_from_pack(
@@ -1043,7 +1059,13 @@ def test_zero_cost_final_candidate_uses_only_reserved_signoff(tmp_path):
     )
     engine.import_manual_article(
         pid,
-        "<h2><strong>Test Device</strong></h2><p>Exact candidate.</p>",
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received "
+        "if a purchase is made through links in this advertorial.</p>"
+        "<h2><strong>Test Device</strong></h2>"
+        + "".join(
+            f"<p>Seller materials state {item['text']}.</p>"
+            for item in long_claims
+        ),
         final_candidate=True,
     )
     assert engine.get(pid)["stage"] == "revised"
@@ -1889,7 +1911,7 @@ def test_barchart_affiliate_links_are_added_and_bolded():
         html, "Barchart Advertorial", "device",
         "https://example.com/product",
     )
-    assert repaired.count('href="https://example.com/product"') == 4
+    assert repaired.count('href="https://example.com/product"') == 3
     assert '<a href="https://example.com/product"><strong>' in repaired
 
 
@@ -2200,7 +2222,7 @@ def test_barchart_set_article_uses_sealed_pack_affiliate_link(tmp_path):
     )
     engine.import_manual_article(pid, article)
     saved = engine.get(pid)["article_text"]
-    assert saved.count('href="https://partner.example/device"') == 4
+    assert saved.count('href="https://partner.example/device"') == 3
 
 
 def test_routing_uses_stronger_final_review_only_for_higher_risk():
@@ -4329,7 +4351,7 @@ def test_publication_gate_repair_hides_raw_url_and_adds_required_structure():
     )
     assert partition_findings(findings)[0] == []
     assert "https://partner.example/offer</a>" not in repaired
-    assert repaired.count('href="https://partner.example/offer"') == 5
+    assert repaired.count('href="https://partner.example/offer"') == 4
 
 
 def test_legacy_mechanical_admin_project_recovers_and_resumes(tmp_path):

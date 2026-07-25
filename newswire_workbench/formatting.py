@@ -535,7 +535,7 @@ def repair_publication_gates(html, platform, vertical, affiliate_href=""):
 
     normalized = normalize_master_html(str(soup), word_count)
     if affiliate_href and affiliate_href.upper() != "TRAFFIC-FIRST":
-        target = 5 if platform == "AccessNewsWire" else 4
+        target = 4 if platform == "AccessNewsWire" else 3
         normalized = ensure_affiliate_links(
             normalized, affiliate_href, target=target
         )

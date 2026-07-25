@@ -534,11 +534,15 @@ def deterministic_findings(article, platform, vertical, affiliate_href=""):
         })
     hrefs = re.findall(r"<a\b[^>]*href=[\"']([^\"']+)[\"']", article, re.I)
     dominant_link_count = max((hrefs.count(href) for href in set(hrefs)), default=0)
-    if platform == "AccessNewsWire" and word_count >= 1200 and not 5 <= dominant_link_count <= 6:
+    if (
+        platform == "AccessNewsWire"
+        and word_count >= 1200
+        and not 3 <= dominant_link_count <= 4
+    ):
         findings.append({
             "id": "D16", "category": "MBK strategic link gate",
-            "issue": f"AccessNewsWire long-form article has {dominant_link_count} affiliate-destination links; MBK requires 5–6.",
-            "exact_text": "", "replacement": "Use 5–6 natural, evenly distributed affiliate links with bold descriptive anchors and no raw URLs.",
+            "issue": f"AccessNewsWire long-form article has {dominant_link_count} affiliate-destination links; MBK requires 3–4.",
+            "exact_text": "", "replacement": "Use 3–4 natural, evenly distributed affiliate links with bold descriptive anchors and no raw URLs.",
         })
     if vertical == "financial":
         guaranteed_trial = re.search(r"\bguaranteed trial\b", article, re.I)
