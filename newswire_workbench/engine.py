@@ -3986,6 +3986,43 @@ class WorkbenchEngine:
                 return True
         return False
 
+    @staticmethod
+    def _replace_plain_text_in_semantic_block(
+        article, exact_text, replacement
+    ):
+        """Apply one reviewer edit hidden only by inline presentation markup.
+
+        Independent reviewers quote reader-visible text, while the canonical
+        HTML may wrap part of that text in ``strong`` or ``em``. A raw string
+        replacement then misses an otherwise exact edit. This fallback is
+        deliberately narrow: exactly one non-linked semantic block must
+        contain the complete normalized quote. Rebuilding that block as plain
+        text may remove emphasis, but it cannot change another paragraph or
+        silently discard a link.
+        """
+        def visible_text(value):
+            normalized = re.sub(r"\s+", " ", str(value or "")).strip()
+            return re.sub(r"\s+([.,;:!?])", r"\1", normalized)
+
+        exact = visible_text(exact_text)
+        if not exact:
+            return article, False
+        soup = BeautifulSoup(article, "html.parser")
+        matches = []
+        for block in soup.find_all(["p", "li", "td", "th", "figcaption"]):
+            plain = visible_text(block.get_text(" ", strip=True))
+            if exact in plain:
+                matches.append((block, plain))
+        if len(matches) != 1:
+            return article, False
+        block, plain = matches[0]
+        if block.find("a") is not None:
+            return article, False
+        rewritten = plain.replace(exact, str(replacement or "").strip(), 1)
+        block.clear()
+        block.string = rewritten
+        return str(soup), True
+
     def _adjudicate_current(self, p, report, target_stage="revised"):
         """Apply safe exact reviewer edits while rejecting stale/contradictory ones."""
         article = p["article_text"]
@@ -4017,8 +4054,11 @@ class WorkbenchEngine:
                     or re.sub(r"<[^>]+>", "", exact).strip() == release_title.strip()
                 )
             )
-            if not exact or (exact not in article and not title_match):
-                skipped.append({"id": item.get("id"), "reason": "exact_text_not_current"})
+            if not exact:
+                skipped.append({
+                    "id": item.get("id"),
+                    "reason": "exact_text_not_current",
+                })
                 continue
             if re.fullmatch(r"Priority code\s+[A-Z0-9-]+\s+may apply\.", exact, re.I):
                 skipped.append({"id": item.get("id"), "reason": "source_supplied_priority_code_is_not_internal_language"})
@@ -4027,6 +4067,20 @@ class WorkbenchEngine:
                 replacement = ""
             if self._unsafe_reviewer_replacement(replacement):
                 skipped.append({"id": item.get("id"), "reason": "replacement_conflicts_with_house_rules"})
+                continue
+            if exact not in article and not title_match:
+                article, block_replaced = (
+                    self._replace_plain_text_in_semantic_block(
+                        article, exact, replacement
+                    )
+                )
+                if not block_replaced:
+                    skipped.append({
+                        "id": item.get("id"),
+                        "reason": "exact_text_not_current",
+                    })
+                    continue
+                applied.append(item.get("id"))
                 continue
             if title_match:
                 cleaned_title = re.sub(r"<[^>]+>", "", replacement).strip()

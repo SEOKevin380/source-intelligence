@@ -3177,6 +3177,38 @@ def test_adjudicator_applies_exact_fixes_and_rejects_bad_platform_attribution(tm
     assert "AccessNewsWire may receive" not in updated
 
 
+def test_adjudicator_applies_visible_quote_split_by_inline_emphasis(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Test", "AccessNewsWire", "gaming source", "gaming"
+    )
+    engine.import_manual_article(
+        pid,
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<p><strong>The product guarantees a prize</strong>. "
+        "Readers always win. Additional context remains.</p>",
+    )
+    project = engine.get(pid)
+    report = {"mandatory_edits": [{
+        "id": "M1",
+        "exact_text": (
+            "The product guarantees a prize. Readers always win."
+        ),
+        "replacement": (
+            "The seller positions the product for entertainment only."
+        ),
+    }]}
+    assert engine._adjudicate_current(project, report) is True
+    updated = engine.get(pid)["article_text"]
+    assert "guarantees a prize" not in updated
+    assert "Readers always win" not in updated
+    assert (
+        "The seller positions the product for entertainment only."
+        in updated
+    )
+    assert "Additional context remains." in updated
+
+
 def test_adjudicator_can_repair_separately_stored_release_title(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     pid = engine.create_project(
