@@ -3,6 +3,7 @@
 import html as html_lib
 import json
 import re
+from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup, NavigableString
 
@@ -500,8 +501,33 @@ def repair_publication_gates(html, platform, vertical, affiliate_href=""):
             strong.string = rewritten
             heading.append(strong)
 
+    affiliate_host = (
+        (urlparse(str(affiliate_href)).hostname or "").casefold()
+        if affiliate_href
+        else ""
+    )
     for anchor in soup.find_all("a"):
-        if re.match(r"^(?:https?://|www\.)", anchor.get_text(" ", strip=True), re.I):
+        anchor_text = anchor.get_text(" ", strip=True)
+        anchor_href = str(anchor.get("href") or "").strip()
+        text_host = (
+            (urlparse(anchor_text).hostname or "").casefold()
+            if re.match(r"^https?://", anchor_text, re.I)
+            else ""
+        )
+        href_host = (
+            (urlparse(anchor_href).hostname or "").casefold()
+            if re.match(r"^https?://", anchor_href, re.I)
+            else ""
+        )
+        raw_affiliate_anchor = bool(
+            re.match(r"^(?:https?://|www\.)", anchor_text, re.I)
+            and affiliate_host
+            and (
+                href_host == affiliate_host
+                or text_host == affiliate_host
+            )
+        )
+        if raw_affiliate_anchor:
             anchor.clear()
             strong = soup.new_tag("strong")
             strong.string = "Review the current offer details"

@@ -1,12 +1,14 @@
 import json
 
 import pytest
+from bs4 import BeautifulSoup
 
 from article_provenance import (
     build_article_claim_ledger,
     ensure_structured_contact_block,
 )
 from newswire_workbench.prompts import writer_evidence_view
+from newswire_workbench.formatting import repair_publication_gates
 from prompt_builders import build_l6_press_release_prompt
 from source_pack_contract import (
     form_values_from_pack,
@@ -210,3 +212,39 @@ def test_structured_contact_contract_is_vertical_agnostic(product_type):
 
     assert report["field_count"] == 5
     assert contact_violations == []
+
+
+def test_publication_repair_hides_only_raw_affiliate_url_anchors():
+    article = """
+    <p><a href="https://affiliate.example/offer">
+      https://affiliate.example/offer
+    </a></p>
+    <h2>Contact Information</h2>
+    <ul>
+      <li>Order Support:
+        <a href="https://www.clkbank.com/#!/?">
+          https://www.clkbank.com/#!/?
+        </a>
+      </li>
+      <li>Official Product Website:
+        <a href="https://scratch-fortune.com/">
+          https://scratch-fortune.com/
+        </a>
+      </li>
+    </ul>
+    """
+    repaired = repair_publication_gates(
+        article,
+        "AccessNewsWire",
+        "gaming",
+        "https://affiliate.example/offer",
+    )
+
+    link_texts = {
+        anchor.get_text(" ", strip=True)
+        for anchor in BeautifulSoup(repaired, "html.parser").find_all("a")
+    }
+    assert "https://www.clkbank.com/#!/?" in link_texts
+    assert "https://scratch-fortune.com/" in link_texts
+    assert "https://affiliate.example/offer" not in link_texts
+    assert "Review the current offer details" in repaired
