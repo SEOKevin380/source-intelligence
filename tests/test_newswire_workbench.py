@@ -550,6 +550,13 @@ def test_fact_identity_ignores_claim_order_and_contract_timestamp(tmp_path):
     reordered_pack["source_pack_contract"]["generated_at"] = (
         "2099-01-01T00:00:00+00:00"
     )
+    reordered_pack["publication_claims"]["feature"][0].setdefault(
+        "metadata", {}
+    )["migration_runtime"] = "later-extractor"
+    reordered_pack["excluded_publication_claims"] = [{
+        "text": "A newly retained raw marketing statement",
+        "reason": "excluded",
+    }]
     assert _pack_fact_source_hash(first_pack) == _pack_fact_source_hash(
         reordered_pack
     )

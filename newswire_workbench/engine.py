@@ -46,7 +46,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v34-closed-loop-action-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "product-first-blueprint-owner-20260725-r23"
+WORKBENCH_RUNTIME_REVISION = "product-first-blueprint-owner-20260725-r24"
 
 STAGES = (
     "source_ready",
@@ -93,10 +93,33 @@ def _pack_fact_source_hash(pack):
     package. Project identity has a different job: equivalent fact ledgers
     must converge even when harmless array ordering changes during resealing.
     """
-    payload = copy.deepcopy(pack or {})
-    contract = payload.get("source_pack_contract") or {}
-    contract.pop("sha256", None)
-    contract.pop("generated_at", None)
+    source = copy.deepcopy(pack or {})
+    claims = []
+    for claim_type, items in (
+        source.get("publication_claims") or {}
+    ).items():
+        for claim in items or []:
+            if not isinstance(claim, dict):
+                continue
+            claims.append({
+                "claim_type": claim_type,
+                "text": str(claim.get("text", "")).strip(),
+                "publication_treatment": str(
+                    claim.get("publication_treatment", "")
+                ).strip(),
+            })
+    contract = source.get("source_pack_contract") or {}
+    # Project authority follows the usable fact/offer contract, not volatile
+    # extraction metadata or excluded raw marketing inventories. Exact pack
+    # integrity remains protected independently by contract.sha256.
+    payload = {
+        "product": source.get("product") or {},
+        "intake_manifest": source.get("intake_manifest") or {},
+        "required_facts": source.get("required_facts") or {},
+        "publication_claims": claims,
+        "readiness": contract.get("readiness", ""),
+        "contract_version": contract.get("version"),
+    }
 
     def normalize(value):
         if isinstance(value, dict):

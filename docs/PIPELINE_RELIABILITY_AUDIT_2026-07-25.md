@@ -46,7 +46,7 @@ test pass before deployment.
 
 - Full automated suite: `625 passed`
 - Pipeline contract audit: `passed`, `model_calls=0`
-- Runtime revision: `product-first-blueprint-owner-20260725-r23`
+- Runtime revision: `product-first-blueprint-owner-20260725-r24`
 
 External provider, network, credential, and publisher outages cannot be made
 impossible. The reliability contract is therefore: no silent jam, no hidden
