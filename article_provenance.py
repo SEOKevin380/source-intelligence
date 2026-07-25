@@ -444,6 +444,13 @@ def ensure_structured_contact_block(
             + html.escape(media_name)
             + "</li>"
         )
+    media_title = str(contact.get("media_contact_title") or "").strip()
+    if media_title:
+        parts.append(
+            "<li><strong>Media Contact Title:</strong> "
+            + html.escape(media_title)
+            + "</li>"
+        )
     support_email = str(contact.get("support_email") or "").strip()
     if support_email:
         escaped_email = html.escape(support_email)
@@ -453,6 +460,13 @@ def ensure_structured_contact_block(
             + '">'
             + escaped_email
             + "</a></li>"
+        )
+    support_hours = str(contact.get("support_hours") or "").strip()
+    if support_hours:
+        parts.append(
+            "<li><strong>Product Support Hours:</strong> "
+            + html.escape(support_hours)
+            + "</li>"
         )
     for field, label in (
         ("support_phone_us", "U.S. Support Phone"),
@@ -481,6 +495,16 @@ def ensure_structured_contact_block(
             + html.escape(provider)
             + "</li>"
         )
+    order_email = str(contact.get("order_support_email") or "").strip()
+    if order_email:
+        escaped_order_email = html.escape(order_email)
+        parts.append(
+            '<li><strong>Order Support Email:</strong> <a href="mailto:'
+            + html.escape(order_email, quote=True)
+            + '">'
+            + escaped_order_email
+            + "</a></li>"
+        )
     order_url = str(contact.get("order_support_url") or "").strip()
     safe_order_url = _safe_href(order_url)
     if order_url:
@@ -498,6 +522,17 @@ def ensure_structured_contact_block(
             + rendered
             + "</li>"
         )
+    for field, label in (
+        ("business_address", "Business Address"),
+        ("return_address", "Product Return Address"),
+    ):
+        value = str(contact.get(field) or "").strip()
+        if value:
+            parts.append(
+                f"<li><strong>{label}:</strong> "
+                + html.escape(value)
+                + "</li>"
+            )
     safe_official_url = _safe_href(official_url)
     if official_url:
         rendered = html.escape(official_url)
@@ -568,7 +603,11 @@ def _contact_coverage_violations(pack: dict, article: str) -> list[dict]:
 
     text_fields = {
         "media_contact_name": "media contact name",
+        "media_contact_title": "media contact title",
+        "support_hours": "product support hours",
         "order_support_provider": "order support provider",
+        "business_address": "business address",
+        "return_address": "product return address",
     }
     for field, label in text_fields.items():
         value = str(contact.get(field) or "").strip()
@@ -595,6 +634,23 @@ def _contact_coverage_violations(pack: dict, article: str) -> list[dict]:
                 "Contact Information section."
             ),
             "required": email,
+            "actual": "",
+        })
+
+    order_email = str(
+        contact.get("order_support_email") or ""
+    ).strip().casefold()
+    if order_email and not (
+        order_email in section_folded
+        or f"mailto:{order_email}" in link_folded
+    ):
+        violations.append({
+            "id": "P-COVERAGE-CONTACT-ORDER_SUPPORT_EMAIL",
+            "issue": (
+                "The supplied order support email is missing from the final "
+                "Contact Information section."
+            ),
+            "required": order_email,
             "actual": "",
         })
 

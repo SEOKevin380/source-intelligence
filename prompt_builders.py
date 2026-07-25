@@ -12,12 +12,60 @@ from config import (INGREDIENT_DB_PATH, ACCESSWIRE_BLOCKLIST,
                     R12_SAFE_ALTERNATIVES, CATEGORY_DISPLAY_LABELS,
                     RISK_DISPLAY_LABELS)
 from source_pack_contract import (
+    is_publication_placeholder,
     normalize_contact_information,
     normalized_intake_manifest,
 )
 
 # Gold Standard Exemplar Library — proven patterns from past approved releases
 _GOLD_STANDARDS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gold_standards.json")
+
+
+def _source_conflict_fields(product):
+    """Return normalized product paths that may not enter publication copy."""
+    fields = {
+        str(field or "").strip().casefold()
+        for field in (product.get("quarantined_fields", []) or [])
+        if str(field or "").strip()
+    }
+    for item in product.get("source_conflicts", []) or []:
+        if not isinstance(item, dict):
+            continue
+        field = str(item.get("field") or "").strip().casefold()
+        resolution = str(item.get("resolution") or "").casefold()
+        if field and (
+            not resolution
+            or "unresolved" in resolution
+            or "quarantin" in resolution
+            or "omit" in resolution
+        ):
+            fields.add(field)
+    return fields
+
+
+def _field_is_conflicted(conflicted_fields, field):
+    folded = str(field or "").strip().casefold()
+    return any(
+        folded == conflict
+        or conflict.startswith(folded + ".")
+        or folded.startswith(conflict + ".")
+        for conflict in conflicted_fields
+    )
+
+
+def _safe_public_company(company):
+    """Strip masked/template values from extracted public company records."""
+    return {
+        key: value
+        for key, value in (company or {}).items()
+        if not is_publication_placeholder(value)
+    } if isinstance(company, dict) else {}
+
+
+def _complete_testimonial_text(value):
+    """Reject clipped fragments; a quote must end as a complete sentence."""
+    text = " ".join(str(value or "").split()).strip().strip('"')
+    return text if text and text[-1] in ".!?…" else ""
 
 
 def _verification_label(data_present, source="", fetched_at=""):
@@ -625,7 +673,7 @@ Globe: {'PASS' if compliance.get('globe_compliance', {}).get('passes', True) els
 
     # Company
     block += "\n--- COMPANY / CONTACT ---\n"
-    company = product.get("company", {})
+    company = _safe_public_company(product.get("company", {}))
     if company:
         for k, v in company.items():
             if v:
@@ -1053,6 +1101,11 @@ def _build_cvd_source_block(
     ingredients = ingredients if isinstance(ingredients, list) else []
     ingredient_kb = _load_ingredient_kb()
     today = date.today().strftime("%B %d, %Y")
+    conflicted_fields = _source_conflict_fields(product)
+    if _field_is_conflicted(conflicted_fields, "pricing"):
+        pricing = []
+    if _field_is_conflicted(conflicted_fields, "refund_policy"):
+        rp = {}
 
     # ── Category conflict auto-resolution ──
     # If conflict exists but wasn't resolved by research_product.py (older JSON),
@@ -1155,14 +1208,18 @@ Official URL: {product.get('official_url', '')}
 PHASE 0.0 STATUS: DATA COLLECTION COMPLETE
 The Source Intelligence Tool has already performed live page fetches on the
 official URL, policy pages, and affiliate link — satisfying CVD-1 live-source
-requirements. The collected data is organized below by CVD-5 categories.
-All SEO strategy, archetype selection, and angle differentiation should be
-determined by your own real-time SERP analysis — this data feeds facts only.
+requirements. The collected data is organized below by CVD-5 categories. The
+deterministic keyword block below is the non-cannibalizing baseline selected
+from current product identity, features, and prior coverage. The production
+system may validate and refine that baseline with real-time SERP evidence, but
+it must not replace the canonical product identity or drift back into an
+already-used intent.
 
-Marketing claims below have been pre-screened. Claims that failed compliance
-review (CVD-9 disease-reversal language, R12 banned terms, Globe A-K phrases)
-have already been removed — only publishable claims are included. Claims
-marked with hedging suggestions should use the softened version provided.
+Marketing statements below have been pre-screened. Hard-blocked source language
+(CVD-9 disease-reversal language, applicable R12 terms, and Globe A-K phrases)
+has been removed. Remaining statements are source inputs, not independently
+verified facts or pre-approved final copy. Apply the required attribution,
+qualification, mechanism-forward rewrite, or omission before publication.
 
 CLIENT ADVOCACY STANDARD (GOVERNING RULE):
 - Assume the client and brand are acting in good faith.
@@ -1206,12 +1263,34 @@ EDITORIAL DELIVERY:
 
 """
 
+    if product.get("source_conflicts"):
+        block += "MATERIAL SOURCE CONFLICTS — QUARANTINED FROM OUTPUT:\n"
+        block += (
+            "The following incompatible values remain useful audit evidence but "
+            "are not publication facts. Do not select, combine, or mention a "
+            "contested value unless a recorded resolution explicitly controls it.\n"
+        )
+        for conflict in product.get("source_conflicts", []) or []:
+            if not isinstance(conflict, dict):
+                continue
+            field = str(conflict.get("field") or "unspecified field")
+            resolution = str(
+                conflict.get("resolution") or "unresolved — omit"
+            )
+            block += (
+                f"- {field}: incompatible records retained in the sealed "
+                f"audit pack [{resolution}]\n"
+            )
+        block += "\n"
+
     # Platform-specific guidance appended to the header
     is_globe_platform = "globe" in (platform or "").lower()
     is_barchart_platform = "barchart" in (platform or "").lower()
 
     if is_globe_platform:
         block += """GLOBE NEWSWIRE PLATFORM NOTES:
+- This is MBK's account-specific Format C advertorial contract. It controls this
+  workflow over generic public press-release templates.
 - Format C is the DEFAULT. No CTAs, no FAQ, no affiliate disclosure in opening.
 - Voice: Brand-as-subject (Rule 1). Every sentence has the brand as subject, never
   as object being observed. '[Brand] is X' — never 'According to the brand, X.'
@@ -1378,13 +1457,41 @@ provided for reader awareness, not as a contraindication for the product itself.
     elif product_type == "device":
         block += f"C1 — {c1_label}\n"
         block += "Source: supplied official page, specifications, and intake records\n"
-        device_fields = ["key_features", "specifications", "power_source", "certifications", "warranty"]
+        device_fields = [
+            "key_features", "specifications", "power_source", "warranty",
+        ]
         found = False
         for key in device_fields:
+            if _field_is_conflicted(conflicted_fields, key):
+                block += (
+                    f"  {key.replace('_', ' ').title()}: "
+                    "QUARANTINED — incompatible source values; omit from draft\n"
+                )
+                continue
             value = product.get(key)
             if value:
                 found = True
-                rendered = "; ".join(str(v) for v in value) if isinstance(value, list) else str(value)
+                if isinstance(value, dict):
+                    safe_items = []
+                    for nested_key, nested_value in value.items():
+                        path = f"{key}.{nested_key}"
+                        if (
+                            nested_value in (None, "", [], {})
+                            or _field_is_conflicted(conflicted_fields, path)
+                        ):
+                            continue
+                        safe_items.append(f"{nested_key}: {nested_value}")
+                    rendered = "; ".join(safe_items)
+                elif isinstance(value, list):
+                    rendered = "; ".join(str(v) for v in value)
+                else:
+                    rendered = str(value)
+                if not rendered:
+                    block += (
+                        f"  {key.replace('_', ' ').title()}: "
+                        "QUARANTINED — no uncontested value\n"
+                    )
+                    continue
                 block += f"  {key.replace('_', ' ').title()}: {rendered}\n"
             else:
                 block += f"  {key.replace('_', ' ').title()}: NOT ESTABLISHED\n"
@@ -1517,7 +1624,7 @@ provided for reader awareness, not as a contraindication for the product itself.
 
     # ── C4: CONTACT INFORMATION ���─
     block += "\n"
-    company = product.get("company", {})
+    company = _safe_public_company(product.get("company", {}))
     has_contact = bool(
         intake_contact or (company and any(company.values()))
     )
@@ -1536,11 +1643,16 @@ provided for reader awareness, not as a contraindication for the product itself.
         block += f"Source: {source_label}\n"
         contact_labels = {
             "media_contact_name": "Media Contact",
+            "media_contact_title": "Media Contact Title",
             "support_email": "Product Support Email",
+            "support_hours": "Product Support Hours",
             "support_phone_us": "U.S. Support Phone",
             "support_phone_international": "International Support Phone",
             "order_support_provider": "Order Support Provider",
+            "order_support_email": "Order Support Email",
             "order_support_url": "Order Support URL",
+            "business_address": "Business Address",
+            "return_address": "Product Return Address",
         }
         for key, label in contact_labels.items():
             if intake_contact.get(key):
@@ -1556,6 +1668,13 @@ provided for reader awareness, not as a contraindication for the product itself.
             "Final-output requirement: reproduce every structured contact "
             "value exactly inside the Contact Information section.\n"
         )
+        if is_globe_platform and not intake_contact.get("media_contact_name"):
+            block += (
+                "Globe contact handling: no separate media-contact person was "
+                "supplied. Use the Product / Brand as the contact organization "
+                "with the exact support channels above; do not invent a person "
+                "or title.\n"
+            )
     else:
         block += "C4 — CONTACT INFORMATION [PARTIAL]\n"
         block += f"  Brand: {product.get('brand_name', name)}\n"
@@ -1565,9 +1684,29 @@ provided for reader awareness, not as a contraindication for the product itself.
     # ── C5: LEGAL / CORPORATE ENTITY ──
     block += "\n"
     block += "C5 — LEGAL / CORPORATE ENTITY [PARTIAL]\n"
-    entity_name = product.get('brand_name', '') or name
-    block += f"  Operating entity: {entity_name}\n"
-    block += "Use brand name only. Do not fabricate corporate entity details.\n"
+    entity_name = next((
+        str(value).strip()
+        for value in (
+            product.get("legal_entity"),
+            company.get("legal_entity"),
+            company.get("legal_name"),
+            company.get("corporate_name"),
+            company.get("operating_entity"),
+        )
+        if not is_publication_placeholder(value)
+    ), "")
+    brand_identity = str(
+        product.get("brand_name") or name or ""
+    ).strip()
+    if entity_name and entity_name.casefold() != brand_identity.casefold():
+        block += f"  Seller-reported legal entity: {entity_name}\n"
+    else:
+        block += "  Legal operating entity: NOT ESTABLISHED\n"
+    block += (
+        f"Use {brand_identity or name} as the product/brand identity only. "
+        "Do not relabel the brand as a corporation or fabricate corporate "
+        "entity details.\n"
+    )
 
     # ── C7: CLINICAL CITATIONS / RESEARCH ──
     block += "\n"
@@ -1581,14 +1720,31 @@ provided for reader awareness, not as a contraindication for the product itself.
         else:
             block += "No performance or track-record claims were established. Do not imply returns or results.\n"
     elif product_type == "device":
-        certifications = product.get("certifications", []) or []
+        certifications = (
+            []
+            if _field_is_conflicted(conflicted_fields, "certifications")
+            else product.get("certifications", []) or []
+        )
         evidence = product.get("independent_testing", []) or product.get("evidence", []) or []
         block += "C7 — PRODUCT TESTING / CERTIFICATIONS\n"
-        if certifications or evidence:
-            for item in list(certifications) + list(evidence):
-                block += f"  - {item}\n"
+        if evidence:
+            for item in list(evidence):
+                block += f"  - Supplied testing record: {item}\n"
+            block += (
+                "Certification scope rule: preserve the exact recorded scope. "
+                "UL-recognized components do not establish that the finished "
+                "device is UL listed, approved, or certified. Do not upgrade a "
+                "seller statement into independent certification.\n"
+            )
         else:
             block += "No independent testing or certification evidence was established. Do not imply certification.\n"
+        if certifications:
+            block += (
+                "Seller-page certification statements are retained in the "
+                "sealed audit record but are not publication evidence. Do not "
+                "name or repeat them without an independently verified "
+                "certificate in the source pack.\n"
+            )
     elif product_type not in clinical_types:
         credentials = (
             product.get("author_credentials") or product.get("credentials")
@@ -1709,6 +1865,17 @@ provided for reader awareness, not as a contraindication for the product itself.
     block += "\n"
     shipping = product.get("shipping_policy", product.get("shipping", {}))
     shipping = shipping if isinstance(shipping, dict) else {}
+    safe_shipping = {
+        key: value
+        for key, value in shipping.items()
+        if (
+            value
+            and not _field_is_conflicted(
+                conflicted_fields, f"shipping_policy.{key}"
+            )
+            and not _field_is_conflicted(conflicted_fields, key)
+        )
+    }
     if product_type == "financial":
         block += "C10 — ACCESS / DELIVERY [NO VERIFIED DATA]\n"
         block += "No delivery cadence, access method, or fulfillment terms were established. Omit them.\n"
@@ -1719,12 +1886,18 @@ provided for reader awareness, not as a contraindication for the product itself.
             block += f"  Verified Access Method: {access_method}\n"
         else:
             block += "No access or delivery method was established. Do not invent one.\n"
-    elif shipping and any(shipping.values()):
+    elif safe_shipping:
         block += f"C10 — SHIPPING / DELIVERY {_verification_label(True, source='live_page')}\n"
         block += "Source: live page extraction\n"
-        for k, v in shipping.items():
-            if v:
-                block += f"  {k.replace('_', ' ').title()}: {v}\n"
+        for k, v in safe_shipping.items():
+            block += f"  {k.replace('_', ' ').title()}: {v}\n"
+        if len(safe_shipping) != len({
+            key: value for key, value in shipping.items() if value
+        }):
+            block += (
+                "  One or more shipping values were quarantined because "
+                "captured sources conflict. Do not reconstruct them.\n"
+            )
     else:
         block += "C10 — SHIPPING / DELIVERY [NO DATA]\n"
         block += "Not extracted. Omit shipping details or direct reader to official site.\n"
@@ -1796,6 +1969,12 @@ provided for reader awareness, not as a contraindication for the product itself.
         device_term_fields = ["model", "variants", "package_contents", "warranty"]
         found = False
         for key in device_term_fields:
+            if _field_is_conflicted(conflicted_fields, key):
+                block += (
+                    f"  {key.replace('_', ' ').title()}: "
+                    "QUARANTINED — incompatible source values; omit from draft\n"
+                )
+                continue
             value = product.get(key)
             if value:
                 found = True
@@ -2221,9 +2400,19 @@ provided for reader awareness, not as a contraindication for the product itself.
     # ── MARKETING CLAIMS — all blocked claims silently omitted ──
     block += "\n"
     if is_globe:
-        block += "═══ MARKETING CLAIMS (MECHANISM-FORWARD REWRITE REQUIRED FOR GLOBE) ═══\n"
+        block += "═══ SELLER MARKETING STATEMENTS — RAW SOURCE LANGUAGE, NOT APPROVED COPY ═══\n"
+        block += (
+            "These lines document the seller's presentation. Do not repeat "
+            "them verbatim or state them as established outcomes. Preserve "
+            "only supportable commercial meaning through Format C's "
+            "brand-as-subject, mechanism-forward language; otherwise omit.\n"
+        )
     else:
-        block += "═══ MARKETING CLAIMS (VERBATIM — SOURCE: LIVE URL FETCH) ═══\n"
+        block += "═══ SELLER MARKETING STATEMENTS (SOURCE: LIVE URL FETCH) ═══\n"
+        block += (
+            "Treat these as attributed source statements, not independently "
+            "verified product facts or pre-approved final copy.\n"
+        )
 
     # Build sets of blocked claim texts to silently exclude
     cvd9 = compliance.get("cvd9_blocked_claims", [])
@@ -2247,6 +2436,15 @@ provided for reader awareness, not as a contraindication for the product itself.
     for c in claims:
         if isinstance(c, dict):
             claim_text = c.get("claim", "")
+            if (
+                product_type == "device"
+                and re.search(
+                    r"\b(?:UL|RoHS|FCC|CE)\b",
+                    claim_text,
+                    flags=re.IGNORECASE,
+                )
+            ):
+                continue
             if claim_text.lower() not in blocked_texts:
                 block += f"- [{c.get('source', 'unknown')}] \"{claim_text}\"\n"
                 clean_count += 1
@@ -2260,6 +2458,16 @@ provided for reader awareness, not as a contraindication for the product itself.
     # ── TESTIMONIALS (reference only) ──
     testimonials = product.get("testimonials", [])
     if testimonials:
+        if is_globe:
+            block += (
+                "\n═══ TESTIMONIAL EVIDENCE ═══\n"
+                "Seller-page testimonials are retained in the audit record but "
+                "excluded from the Globe drafting brief. Do not introduce a "
+                "testimonial, named customer, savings figure, or customer "
+                "outcome into the release.\n"
+            )
+            testimonials = []
+    if testimonials:
         # Check if all testimonials lack attribution
         all_anonymous = all(not (t.get('name', '') or '').strip() for t in testimonials if isinstance(t, dict))
         if all_anonymous:
@@ -2270,6 +2478,9 @@ provided for reader awareness, not as a contraindication for the product itself.
             block += f"\n═══ TESTIMONIALS ({len(testimonials)} — C9 reference, not independently verified) ═══\n"
         for t in testimonials:
             if isinstance(t, dict) and t.get("text"):
+                complete_text = _complete_testimonial_text(t.get("text"))
+                if not complete_text:
+                    continue
                 testimonial_name = (
                     (t.get('name', '') or '').strip() or 'Unattributed'
                 )
@@ -2277,12 +2488,12 @@ provided for reader awareness, not as a contraindication for the product itself.
                 if location:
                     block += (
                         f"- {testimonial_name} ({location}): "
-                        f"\"{t['text'][:300]}\"\n"
+                        f"\"{complete_text}\"\n"
                     )
                 else:
                     block += (
                         f"- {testimonial_name}: "
-                        f"\"{t['text'][:300]}\"\n"
+                        f"\"{complete_text}\"\n"
                     )
 
     # ── KEYWORD & CONTENT STRATEGY ──
@@ -2569,15 +2780,20 @@ PREVIOUS RELEASES: {previous}"""
     if structured_contact:
         prompt += "\nSTRUCTURED CONTACT INFORMATION:"
         for key, label in (
-            ("media_contact_name", "Media Contact"),
+            ("media_contact_name", "Media Contact Name"),
+            ("media_contact_title", "Media Contact Title"),
             ("support_email", "Product Support Email"),
+            ("support_hours", "Product Support Hours"),
             ("support_phone_us", "U.S. Support Phone"),
             (
                 "support_phone_international",
                 "International Support Phone",
             ),
             ("order_support_provider", "Order Support Provider"),
+            ("order_support_email", "Order Support Email"),
             ("order_support_url", "Order Support URL"),
+            ("business_address", "Business Address"),
+            ("return_address", "Product Return Address"),
         ):
             if structured_contact.get(key):
                 prompt += f"\n  {label}: {structured_contact[key]}"

@@ -878,3 +878,97 @@ def test_new_commercial_vertical_prompts_generate_without_wrong_category_languag
         else:
             assert "describe gold, silver, rarity" in lowered
             assert "only when the supplied record establishes the exact fact" in lowered
+
+
+def test_globe_power_device_prompt_quarantines_conflicts_and_testimonials():
+    from prompt_builders import build_l6_press_release_prompt
+
+    prompt = build_l6_press_release_prompt({
+        "product": {
+            "product_name": "Power Pro Genius",
+            "brand_name": "Power Pro Genius",
+            "official_url": "https://powerprogenius.com/secure-bogo/",
+            "product_type": "device",
+            "category": "Consumer Electronics",
+            "specifications": {
+                "coverage_per_unit": "800-1,200 sq ft",
+                "results_timeline": "6-8 weeks",
+            },
+            "certifications": ["UL approved", "RoHS compliant"],
+            "shipping_policy": {
+                "delivery_time": "12-15 business days after dispatch",
+            },
+            "company": {
+                "name": "[OPERATOR LEGAL NAME]",
+                "email": "[email protected]",
+                "address": "[ADDRESS]",
+            },
+            "claims": [{
+                "source": "sales_page",
+                "claim": "Slash your power bill",
+            }],
+            "testimonials": [{
+                "name": "Wilma Besley",
+                "location": "Orlando, FL",
+                "text": "We save $50 each month and you're ",
+            }],
+            "source_conflicts": [
+                {
+                    "field": "specifications.results_timeline",
+                    "values": ["2-3 weeks", "6-8 weeks"],
+                    "resolution": "unresolved — omit",
+                },
+                {
+                    "field": "certifications",
+                    "values": ["UL approved", "UL-recognized components"],
+                    "resolution": "unresolved — omit",
+                },
+                {
+                    "field": "shipping_policy.delivery_time",
+                    "values": ["10-12 business days", "12-15 business days"],
+                    "resolution": "unresolved — omit",
+                },
+            ],
+        },
+        "intake_manifest": {
+            "product_name": "Power Pro Genius",
+            "product_url": "https://powerprogenius.com/secure-bogo/",
+            "publishing_channel": "Globe Newswire",
+            "operator_notes": (
+                "Email: support@powerprogenius.com\n"
+                "Phone: +1-833-295-1090\n"
+                "Available 7 days a week, 8 AM – 8 PM EST\n"
+                "Product Return Address:\n"
+                "Power Pro Genius\n1147 E Exchange St., Boise, ID 83716\nUSA"
+            ),
+            "contact_information": {
+                "media_contact_name": "Power Pro Genius",
+                "support_email": "support@powerprogenius.com",
+                "support_phone_us": "+1-833-295-1090",
+            },
+        },
+        "compliance": {
+            "risk_level": "Moderate",
+            "globe_compliance": {"passes": True, "blocked_claims": []},
+            "accesswire_compliance": {"passes": True, "blocked_claims": []},
+        },
+        "safety": {},
+        "ingredient_research": {},
+    }, {
+        "platform": "Globe Newswire",
+        "ymyl_category": "No",
+    })
+
+    assert "RAW SOURCE LANGUAGE, NOT APPROVED COPY" in prompt
+    assert "Seller-page testimonials are retained in the audit record" in prompt
+    assert "Wilma Besley" not in prompt
+    assert "save $50" not in prompt
+    assert "[email protected]" not in prompt
+    assert "[OPERATOR LEGAL NAME]" not in prompt
+    assert "Operating entity: Power Pro Genius" not in prompt
+    assert "Legal operating entity: NOT ESTABLISHED" in prompt
+    assert "Results Timeline: 6-8 weeks" not in prompt
+    assert "UL approved" not in prompt
+    assert "12-15 business days after dispatch" not in prompt
+    assert "incompatible records retained in the sealed audit pack" in prompt
+    assert "Globe contact handling" not in prompt

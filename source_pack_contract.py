@@ -34,6 +34,9 @@ STRUCTURED_PRODUCT_CLAIM_TYPES = {
     "key_features": "feature",
     "specifications": "specification",
     "power_source": "specification",
+    "warranty": "manufacturer_claim",
+    "shipping_policy": "shipping_policy",
+    "shipping": "shipping_policy",
     "pricing": "pricing",
     "services_offered": "feature",
     "pricing_tiers": "pricing",
@@ -64,12 +67,35 @@ STRUCTURED_PRODUCT_CLAIM_TYPES = {
 
 CONTACT_INFORMATION_FIELDS = (
     "media_contact_name",
+    "media_contact_title",
     "support_email",
+    "support_hours",
     "support_phone_us",
     "support_phone_international",
     "order_support_provider",
+    "order_support_email",
     "order_support_url",
+    "business_address",
+    "return_address",
 )
+
+
+def is_publication_placeholder(value) -> bool:
+    """Return True when a scalar is a template/masked value, not public data."""
+    clean = " ".join(str(value or "").split()).strip()
+    if not clean:
+        return True
+    folded = clean.casefold()
+    if folded in {
+        "unknown", "not established", "n/a", "none", "not provided",
+        "unavailable", "tbd", "redacted",
+    }:
+        return True
+    if re.search(r"\[[^\]]+\]", clean):
+        return True
+    return folded in {
+        "email protected", "protected email", "example@example.com",
+    }
 
 
 def normalize_contact_information(value=None) -> dict:
@@ -78,15 +104,22 @@ def normalize_contact_information(value=None) -> dict:
     aliases = {
         "media_contact": "media_contact_name",
         "contact_name": "media_contact_name",
+        "contact_title": "media_contact_title",
+        "media_title": "media_contact_title",
         "email": "support_email",
         "product_support_email": "support_email",
+        "hours": "support_hours",
+        "support_availability": "support_hours",
         "phone": "support_phone_us",
         "phone_us": "support_phone_us",
         "us_phone": "support_phone_us",
         "phone_intl": "support_phone_international",
         "international_phone": "support_phone_international",
         "order_support": "order_support_provider",
+        "order_email": "order_support_email",
         "order_support_link": "order_support_url",
+        "address": "business_address",
+        "product_return_address": "return_address",
     }
     normalized = {}
     for key, value_item in raw.items():
@@ -94,9 +127,7 @@ def normalize_contact_information(value=None) -> dict:
         if canonical not in CONTACT_INFORMATION_FIELDS:
             continue
         clean = " ".join(str(value_item or "").split()).strip()
-        if clean and clean.casefold() not in {
-            "unknown", "not established", "n/a", "none",
-        }:
+        if not is_publication_placeholder(clean):
             normalized[canonical] = clean
     return {
         key: normalized[key]
@@ -141,6 +172,13 @@ def extract_legacy_intake_terms(operator_notes: str) -> tuple[dict, str]:
     )
     if media_match:
         contact["media_contact_name"] = media_match.group(1)
+    media_title = re.search(
+        r"(?im)^\s*(?:media\s+contact\s+title|contact\s+title)\s*:\s*"
+        r"(.+?)\s*$",
+        notes,
+    )
+    if media_title:
+        contact["media_contact_title"] = media_title.group(1)
 
     product_phone = re.search(
         r"(?im)^\s*(?:product\s+support\s+)?phone(?:\s+number)?\s*:\s*"
@@ -168,6 +206,14 @@ def extract_legacy_intake_terms(operator_notes: str) -> tuple[dict, str]:
             international_phone.group(1).strip()
         )
 
+    support_hours = re.search(
+        r"(?im)^\s*((?:Available|Support\s+Hours)\b[^:\n]*"
+        r"(?:[:\-]\s*)?.+?)\s*$",
+        notes,
+    )
+    if support_hours:
+        contact["support_hours"] = support_hours.group(1).strip()
+
     order_label = re.search(
         r"(?im)^\s*([A-Za-z0-9 .&'-]+?)\s+Order\s+Support\s*:"
         r"\s*(https?://\S+)?\s*$",
@@ -184,6 +230,41 @@ def extract_legacy_intake_terms(operator_notes: str) -> tuple[dict, str]:
             url_match = re.search(r"(?im)^\s*(https?://\S+)\s*$", following)
             if url_match:
                 contact["order_support_url"] = url_match.group(1).strip()
+        order_block = notes[order_label.start():]
+        next_section = re.search(
+            r"(?im)^\s*(?:Refund|Guarantee|Return|Product\s+Return|"
+            r"Business\s+Address)\b",
+            order_block[1:],
+        )
+        if next_section:
+            order_block = order_block[:next_section.start() + 1]
+        order_email = re.search(
+            r"(?i)\bEmail\s*:\s*"
+            r"([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})",
+            order_block,
+        )
+        if order_email:
+            contact["order_support_email"] = order_email.group(1)
+
+    def address_block(*labels):
+        joined = "|".join(re.escape(label) for label in labels)
+        match = re.search(
+            rf"(?ims)^\s*(?:{joined})\s*:\s*(.*?)"
+            r"(?=^\s*(?:Product\s+Support|Order\s+Support|Refund|"
+            r"Guarantee|Support\s+Hours|Available|Product\s+Return|"
+            r"Return\s+Address|Business\s+Address|Company\s+Address)\b|\Z)",
+            notes,
+        )
+        if not match:
+            return ""
+        return " ".join(match.group(1).split()).strip()
+
+    return_address = address_block("Product Return Address", "Return Address")
+    if return_address:
+        contact["return_address"] = return_address
+    business_address = address_block("Business Address", "Company Address")
+    if business_address:
+        contact["business_address"] = business_address
 
     refund_match = re.search(
         r"(?im)^\s*(.*\b\d{1,3}\s*[- ]?\s*day\b.*"
@@ -429,6 +510,11 @@ def _structured_product_claims(pack: dict) -> dict:
     product = pack.get("product") or {}
     artifact_id, source_class = _structured_source_artifact(pack)
     migrated = {}
+    quarantined_fields = {
+        str(field or "").strip().casefold()
+        for field in product.get("quarantined_fields", []) or []
+        if str(field or "").strip()
+    }
 
     def add(claim_type: str, field: str, text: str):
         clean = str(text or "").strip()
@@ -450,6 +536,13 @@ def _structured_product_claims(pack: dict) -> dict:
         })
 
     for field, claim_type in STRUCTURED_PRODUCT_CLAIM_TYPES.items():
+        folded_field = field.casefold()
+        if any(
+            folded_field == quarantined
+            or quarantined.startswith(folded_field + ".")
+            for quarantined in quarantined_fields
+        ):
+            continue
         value = product.get(field)
         if not value:
             continue
@@ -476,6 +569,14 @@ def _structured_product_claims(pack: dict) -> dict:
             # sealed contract identity for otherwise identical facts.
             for key in sorted(value, key=lambda item: str(item).casefold()):
                 item = value[key]
+                nested_field = f"{field}.{key}".casefold()
+                if any(
+                    nested_field == quarantined
+                    or quarantined.startswith(nested_field + ".")
+                    or nested_field.startswith(quarantined + ".")
+                    for quarantined in quarantined_fields
+                ):
+                    continue
                 clean_item = str(item or "").strip()
                 if (
                     not clean_item
@@ -532,11 +633,16 @@ def _intake_publication_claims(pack: dict) -> dict:
 
     labels = {
         "media_contact_name": "Media contact name",
+        "media_contact_title": "Media contact title",
         "support_email": "Product support email",
+        "support_hours": "Product support hours",
         "support_phone_us": "United States support phone",
         "support_phone_international": "International support phone",
         "order_support_provider": "Order support provider",
+        "order_support_email": "Order support email",
         "order_support_url": "Order support URL",
+        "business_address": "Business address",
+        "return_address": "Product return address",
     }
     claims = []
     for key in CONTACT_INFORMATION_FIELDS:

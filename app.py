@@ -1581,19 +1581,7 @@ elif show_form:
                     channel=rd_platform or "",
                     client_locked_title=rd_client_title or "",
                     operator_notes=(update_notes or rd_notes or ""),
-                    contact_information={
-                        "media_contact_name":
-                            rd_media_contact_name.strip(),
-                        "support_email": rd_support_email.strip(),
-                        "support_phone_us":
-                            rd_support_phone_us.strip(),
-                        "support_phone_international":
-                            rd_support_phone_international.strip(),
-                        "order_support_provider":
-                            rd_order_support_provider.strip(),
-                        "order_support_url":
-                            rd_order_support_url.strip(),
-                    },
+                    contact_information=resolved_contact,
                     refund_terms=rd_refund_terms.strip(),
                     unattended=True,
                 )
@@ -1677,19 +1665,7 @@ elif show_form:
                     channel=rd_platform or "",
                     client_locked_title=rd_client_title or "",
                     operator_notes=rd_notes or "",
-                    contact_information={
-                        "media_contact_name":
-                            rd_media_contact_name.strip(),
-                        "support_email": rd_support_email.strip(),
-                        "support_phone_us":
-                            rd_support_phone_us.strip(),
-                        "support_phone_international":
-                            rd_support_phone_international.strip(),
-                        "order_support_provider":
-                            rd_order_support_provider.strip(),
-                        "order_support_url":
-                            rd_order_support_url.strip(),
-                    },
+                    contact_information=resolved_contact,
                     refund_terms=rd_refund_terms.strip(),
                     unattended=True,
                 )
@@ -1866,17 +1842,24 @@ else:
     rd_order_support_provider = fv.get("rd_order_support_provider", "")
     rd_order_support_url = fv.get("rd_order_support_url", "")
     rd_refund_terms = fv.get("rd_refund_terms", "")
+    from source_pack_contract import (
+        normalize_contact_information,
+        normalized_intake_manifest,
+    )
+    _structured_contact_information = normalize_contact_information(
+        normalized_intake_manifest(data).get("contact_information")
+    )
+    _structured_contact_information.update(normalize_contact_information({
+        "media_contact_name": rd_media_contact_name,
+        "support_email": rd_support_email,
+        "support_phone_us": rd_support_phone_us,
+        "support_phone_international": rd_support_phone_international,
+        "order_support_provider": rd_order_support_provider,
+        "order_support_url": rd_order_support_url,
+    }))
     _structured_contact_information = {
         key: value
-        for key, value in {
-            "media_contact_name": rd_media_contact_name,
-            "support_email": rd_support_email,
-            "support_phone_us": rd_support_phone_us,
-            "support_phone_international":
-                rd_support_phone_international,
-            "order_support_provider": rd_order_support_provider,
-            "order_support_url": rd_order_support_url,
-        }.items()
+        for key, value in _structured_contact_information.items()
         if str(value or "").strip()
     }
 

@@ -13,6 +13,7 @@ from prompt_builders import build_l6_press_release_prompt
 from source_pack_contract import (
     extract_labeled_source_inputs,
     form_values_from_pack,
+    normalize_contact_information,
     resolve_intake_contact_terms,
     seal_source_pack,
 )
@@ -102,7 +103,41 @@ The product includes a 60-day money-back guarantee."""
     assert contact["support_email"] == "contact@getCogniHoney.com"
     assert contact["support_phone_us"] == "+1 (323) 237-8559"
     assert contact["order_support_provider"] == "PagAmerican"
+    assert contact["order_support_email"] == "support@pagamerican.app"
     assert refund == "The product includes a 60-day money-back guarantee."
+
+
+def test_one_box_intake_preserves_hours_and_return_address():
+    notes = """Email: support@powerprogenius.com
+Phone: +1-833-295-1090
+Available 7 days a week, 8 AM – 8 PM EST
+60-Day Money-Back Guarantee
+Product Return Address:
+Power Pro Genius
+1147 E Exchange St., Boise, ID 83716
+USA"""
+    contact, refund = resolve_intake_contact_terms(notes)
+
+    assert contact["support_email"] == "support@powerprogenius.com"
+    assert contact["support_phone_us"] == "+1-833-295-1090"
+    assert contact["support_hours"] == (
+        "Available 7 days a week, 8 AM – 8 PM EST"
+    )
+    assert contact["return_address"] == (
+        "Power Pro Genius 1147 E Exchange St., Boise, ID 83716 USA"
+    )
+    assert refund == "60-Day Money-Back Guarantee"
+
+
+def test_masked_contact_placeholders_never_become_publication_fields():
+    contact = normalize_contact_information({
+        "media_contact_name": "[OPERATOR LEGAL NAME]",
+        "support_email": "[email protected]",
+        "business_address": "[ADDRESS]",
+        "order_support_email": "real@example.org",
+    })
+
+    assert contact == {"order_support_email": "real@example.org"}
 
 
 def test_explicit_contact_override_wins_over_automatic_note_sorting():

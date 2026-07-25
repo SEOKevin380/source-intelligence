@@ -367,6 +367,60 @@ def _decode_cloudflare_emails(html):
     return result
 
 
+def _sanitize_extracted_product_data(data):
+    """Remove masked/template values before they can enter a source contract."""
+    if not isinstance(data, dict):
+        return data
+    from source_pack_contract import is_publication_placeholder
+
+    company = data.get("company")
+    if isinstance(company, dict):
+        data["company"] = {
+            key: value
+            for key, value in company.items()
+            if not is_publication_placeholder(value)
+        }
+
+    conflicts = []
+    for item in data.get("source_conflicts", []) or []:
+        if not isinstance(item, dict):
+            continue
+        field = str(item.get("field") or "").strip()
+        values = [
+            " ".join(str(value or "").split()).strip()
+            for value in item.get("values", []) or []
+            if not is_publication_placeholder(value)
+        ]
+        if field and len(set(values)) >= 2:
+            clean = dict(item)
+            clean["field"] = field
+            clean["values"] = list(dict.fromkeys(values))
+            conflicts.append(clean)
+    data["source_conflicts"] = conflicts
+
+    # The audit record keeps the incompatible values, but the canonical
+    # product snapshot must not keep either candidate. This deterministic
+    # removal protects downstream consumers even when the extractor ignored
+    # the prompt instruction to leave a contested field empty.
+    for conflict in conflicts:
+        parts = [
+            part.strip()
+            for part in str(conflict["field"]).split(".")
+            if part.strip()
+        ]
+        if not parts:
+            continue
+        cursor = data
+        for part in parts[:-1]:
+            if not isinstance(cursor, dict):
+                cursor = None
+                break
+            cursor = cursor.get(part)
+        if isinstance(cursor, dict):
+            cursor.pop(parts[-1], None)
+    return data
+
+
 def call_claude(prompt, system="You are a product research assistant. Extract ONLY verifiable facts. Never invent data.", max_tokens=4000, model="claude-haiku-4-5-20251001", images=None):
     """Call Claude API for intelligent extraction. Supports text and image inputs."""
     if not ANTHROPIC_API_KEY:
@@ -1953,7 +2007,13 @@ def _validate_product_category(data):
         }
 
 
-def phase1_extract_product(url, vsl_url=None, product_name=None, browser_session=None):
+def phase1_extract_product(
+    url,
+    vsl_url=None,
+    product_name=None,
+    browser_session=None,
+    source_html=None,
+):
     """Scrape product page and extract structured data via Claude.
 
     Multi-layer extraction strategy:
@@ -1968,8 +2028,17 @@ def phase1_extract_product(url, vsl_url=None, product_name=None, browser_session
     all_pages = {}
     vsl_content = ""
 
+    # A pipeline refresh has already captured an immutable source artifact.
+    # Extract directly from those exact bytes instead of fetching a second,
+    # potentially different version of the page.
+    if source_html:
+        all_pages = {"main": str(source_html)}
+        _emit(
+            f"  Using captured source artifact: "
+            f"{len(all_pages['main']):,} bytes"
+        )
     # Layer 1: Direct scrape (main URL + subpages)
-    if url:
+    elif url:
         _emit(f"  Fetching: {url}")
         all_pages = _try_multiple_urls(url, browser_session=browser_session)
         main_size = len(all_pages.get("main", ""))
@@ -2134,6 +2203,20 @@ RULES:
   analysis, use product_type "financial" and extract the service fields below.
 - For devices/electronics, extract specifications, power source, certifications,
   independent testing, warranty, warnings, compatibility, and key features.
+- Preserve certification scope exactly. "Built with UL-recognized components"
+  is NOT "UL approved," "UL listed," or "UL certified" for the finished device.
+  Do not promote a component recognition into a finished-product certification.
+- Reconcile the complete captured source before selecting a value. If the same
+  current source material gives incompatible shipping times, performance
+  timelines, prices, specifications, certification scope, warranty terms, or
+  other facts, do not silently choose the strongest value. Leave the contested
+  output field empty and add a source_conflicts entry naming the exact schema
+  field and incompatible values. Narrow, specific policy/FAQ/checkout language
+  may control broad marketing copy only when the context makes that hierarchy
+  unambiguous; still record what was superseded.
+- Never put masked/template values such as "[email protected]",
+  "[OPERATOR LEGAL NAME]", "[ADDRESS]", "TBD", or "not established" into a
+  public company/contact field.
 - For software, extract features, supported platforms, integrations, security,
   support, access, billing, renewal, cancellation, and privacy terms.
 - For services/professional offerings, extract the service scope, deliverables,
@@ -2266,6 +2349,14 @@ Return ONLY valid JSON with this exact structure:
         "phone": "",
         "website": ""
     }},
+    "source_conflicts": [
+        {{
+            "field": "shipping_policy.delivery_time",
+            "values": ["10-12 business days from order", "12-15 business days after dispatch"],
+            "sources": ["official offer shipping section", "official FAQ"],
+            "resolution": "unresolved — omit the contested value"
+        }}
+    ],
     "claims": [
         {{"claim": "", "source": "sales_page", "verified": false}}
     ],
@@ -2286,7 +2377,9 @@ Return ONLY valid JSON with this exact structure:
         return _empty_product_data(url, product_name)
 
     # Parse JSON from response
-    data = _parse_claude_json(response, product_name)
+    data = _sanitize_extracted_product_data(
+        _parse_claude_json(response, product_name)
+    )
 
     # Ensure required fields
     data.setdefault("product_name", product_name or "Unknown")
@@ -3323,6 +3416,22 @@ def phase7_compliance_check(product_data):
 
     # YMYL classification
     risk_level = YMYL_CATEGORIES.get(category, "Moderate")
+    product_type = str(
+        product_data.get("product_type", "") or ""
+    ).strip().lower()
+    device_claim_text = " ".join(
+        str(item.get("claim", "") if isinstance(item, dict) else item)
+        for item in claims
+    ).casefold()
+    if product_type == "device" and any(
+        term in device_claim_text
+        for term in (
+            "electricity bill", "power bill", "electrical shock", "emf",
+            "electromagnetic", "surge", "ul approved", "ul certified",
+            "fda cleared", "fda approved",
+        )
+    ):
+        risk_level = "Moderate"
     _emit(f"  YMYL Category: {category} (Risk: {risk_level})")
 
     # Audit each claim

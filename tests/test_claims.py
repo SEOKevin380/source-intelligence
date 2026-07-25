@@ -711,6 +711,40 @@ class TestRequiredFactsCoverage:
         result = ledger.check_required_facts(oid, ["serving_size"])
         assert "serving_size" in result["missing"]
 
+    def test_conflicted_fact_key_claim_does_not_count(self, ledger):
+        oid = "fk-conflicted-1"
+        ledger.add_claim(Claim(
+            offering_id=oid,
+            claim_text="Delivery time: 12-15 business days",
+            claim_type=ClaimType.SHIPPING_POLICY,
+            source_artifact_id="artifact-a",
+            review_status=ReviewStatus.CONFLICTED,
+            metadata={"fact_key": "delivery_time"},
+        ))
+
+        result = ledger.check_required_facts(oid, ["delivery_time"])
+
+        assert "delivery_time" in result["missing"]
+
+    def test_structured_shipping_conflict_is_detected_across_artifacts(
+            self, ledger):
+        for artifact_id, value in (
+            ("artifact-a", "Delivery time: 10-12 business days"),
+            ("artifact-b", "Delivery time: 12-15 business days"),
+        ):
+            ledger.add_claim(Claim(
+                offering_id="shipping-conflict-1",
+                claim_text=value,
+                claim_type=ClaimType.SHIPPING_POLICY,
+                source_artifact_id=artifact_id,
+                metadata={"fact_key": "delivery_time"},
+            ))
+
+        conflicts = ledger.detect_conflicts("shipping-conflict-1")
+
+        assert len(conflicts) == 1
+        assert "delivery_time" in conflicts[0][2]
+
     def test_strict_mode_blocks_manual_only_claims(self, ledger):
         """In strict mode, manual entries (NEEDS_VERIFICATION + no artifact)
         do NOT satisfy mandatory fact coverage."""

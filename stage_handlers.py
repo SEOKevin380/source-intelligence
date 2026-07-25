@@ -81,6 +81,21 @@ def _same_site(first_url: str, second_url: str) -> bool:
     return first == second or first.endswith("." + second) or second.endswith("." + first)
 
 
+def _same_source_url(first_url: str, second_url: str) -> bool:
+    """Compare canonical source URLs while ignoring fragments/trailing slashes."""
+    first = urlparse(str(first_url or "").strip())
+    second = urlparse(str(second_url or "").strip())
+    if not first.hostname or not second.hostname:
+        return False
+
+    def normalized(parsed):
+        host = (parsed.hostname or "").lower().removeprefix("www.")
+        path = re.sub(r"/+", "/", parsed.path or "/").rstrip("/") or "/"
+        return parsed.scheme.lower(), host, path, parsed.query
+
+    return normalized(first) == normalized(second)
+
+
 def _looks_like_marketing_offer(url: str) -> bool:
     """Recognize a submitted offer/VSL page without requiring a second field."""
     parsed = urlparse(url or "")
@@ -875,7 +890,12 @@ def _normalize_fact_value(fact_key: str, value) -> list:
     return [f"{fact_key}: {value}"] if value else []
 
 
-def _merge_product_data(base_product: dict, recovered_data: dict) -> dict:
+def _merge_product_data(
+    base_product: dict,
+    recovered_data: dict,
+    *,
+    replace_existing: bool = True,
+) -> dict:
     """Merge recovered source-of-record facts into the canonical product.
 
     Label OCR used to create ledger claims without updating the structured
@@ -889,6 +909,8 @@ def _merge_product_data(base_product: dict, recovered_data: dict) -> dict:
         recovered_sf = {}
     current_sf = deepcopy(merged.get("supplement_facts", {}) or {})
 
+    if replace_existing and recovered_sf.get("ingredients"):
+        current_sf = {}
     existing = list(current_sf.get("ingredients", []) or [])
     existing_keys = {
         (str(item.get("name", "")).strip().lower(),
@@ -931,14 +953,137 @@ def _merge_product_data(base_product: dict, recovered_data: dict) -> dict:
     if current_sf:
         merged["supplement_facts"] = current_sf
 
-    # Merge other non-empty recovered fields without replacing identity data.
+    # A refresh of the same official URL replaces stale non-empty values. An
+    # additional supporting URL fills gaps and extends lists without silently
+    # overriding the canonical offer snapshot.
     for key, value in recovered.items():
         if key == "supplement_facts" or value in (None, "", [], {}):
             continue
         if key in ("product_name", "official_url") and merged.get(key):
             continue
-        merged[key] = deepcopy(value)
+        if replace_existing or not merged.get(key):
+            merged[key] = deepcopy(value)
+        elif isinstance(value, list) and isinstance(merged.get(key), list):
+            existing_items = {
+                json.dumps(item, sort_keys=True, default=str)
+                for item in merged[key]
+            }
+            for item in value:
+                encoded = json.dumps(item, sort_keys=True, default=str)
+                if encoded not in existing_items:
+                    merged[key].append(deepcopy(item))
+                    existing_items.add(encoded)
+        elif isinstance(value, dict) and isinstance(merged.get(key), dict):
+            for nested_key, nested_value in value.items():
+                if nested_value not in (None, "", [], {}) and not merged[key].get(
+                    nested_key
+                ):
+                    merged[key][nested_key] = deepcopy(nested_value)
     return merged
+
+
+def _supersede_refreshed_fact_claims(
+    ledger,
+    offering_id: str,
+    refreshed_product: dict,
+) -> list:
+    """Reject stale fact claims before a same-source refresh is inserted."""
+    if not offering_id or not isinstance(refreshed_product, dict):
+        return []
+    refreshed_keys = {
+        str(key)
+        for key, value in refreshed_product.items()
+        if value not in (None, "", [], {})
+    }
+    for key, value in refreshed_product.items():
+        if not isinstance(value, dict):
+            continue
+        for nested_key, nested_value in value.items():
+            if nested_value in (None, "", [], {}):
+                continue
+            refreshed_keys.add(str(nested_key))
+            refreshed_keys.add(f"{key}.{nested_key}")
+    supplement = refreshed_product.get("supplement_facts") or {}
+    if supplement.get("ingredients"):
+        refreshed_keys.add("ingredients_with_amounts")
+    if supplement.get("serving_size"):
+        refreshed_keys.add("serving_size")
+    if (
+        supplement.get("servings_per_container")
+        or supplement.get("servings")
+    ):
+        refreshed_keys.add("servings_per_container")
+
+    from claims import ReviewStatus
+
+    superseded = []
+    for claim in ledger.get_claims(offering_id):
+        fact_key = str((claim.metadata or {}).get("fact_key") or "").strip()
+        if (
+            fact_key in refreshed_keys
+            and claim.review_status not in {
+                ReviewStatus.REJECTED,
+                ReviewStatus.CONFLICTED,
+            }
+        ):
+            ledger.update_review_status(
+                claim.claim_id,
+                ReviewStatus.REJECTED,
+                reviewer="official-source-refresh",
+            )
+            superseded.append(claim.claim_id)
+    return superseded
+
+
+def _quarantine_conflicted_product_fields(
+    product_data: dict,
+    reconcile_result: dict,
+) -> dict:
+    """Remove structured values whose underlying claims are conflicted."""
+    product = deepcopy(product_data or {})
+    conflict_records = reconcile_result.get("conflicts", []) or []
+    quarantined = set(product.get("quarantined_fields", []) or [])
+    source_conflicts = list(product.get("source_conflicts", []) or [])
+    for source_conflict in source_conflicts:
+        if not isinstance(source_conflict, dict):
+            continue
+        resolution = str(source_conflict.get("resolution") or "").casefold()
+        field = str(source_conflict.get("field") or "").strip()
+        if field and (
+            not resolution
+            or "unresolved" in resolution
+            or "quarantin" in resolution
+            or "omit" in resolution
+        ):
+            quarantined.add(field)
+    for record in conflict_records:
+        fact_keys = [
+            str(value or "").strip()
+            for value in record.get("fact_keys", []) or []
+            if str(value or "").strip()
+        ]
+        quarantined.update(fact_keys)
+        source_conflicts.append({
+            "field": ", ".join(fact_keys) or "claim_ledger",
+            "values": [
+                str(value or "").strip()
+                for value in record.get("values", []) or []
+                if str(value or "").strip()
+            ],
+            "sources": record.get("source_artifact_ids", []) or [],
+            "resolution": "conflicted values quarantined from publication",
+            "description": record.get("description", ""),
+        })
+
+    for field in quarantined:
+        top_level = field.split(".", 1)[0]
+        if top_level in product:
+            product.pop(top_level, None)
+    if quarantined:
+        product["quarantined_fields"] = sorted(quarantined)
+    if source_conflicts:
+        product["source_conflicts"] = source_conflicts
+    return product
 
 
 def _product_data_from_verified_claims(job: Job, base_product: dict) -> dict:
@@ -954,7 +1099,13 @@ def _product_data_from_verified_claims(job: Job, base_product: dict) -> dict:
 
     sf = {"ingredients": []}
     for claim in ClaimsLedger().get_claims(job.offering_id):
-        if claim.review_status == ReviewStatus.REJECTED or not claim.source_artifact_id:
+        if (
+            claim.review_status in {
+                ReviewStatus.REJECTED,
+                ReviewStatus.CONFLICTED,
+            }
+            or not claim.source_artifact_id
+        ):
             continue
         meta = claim.metadata or {}
         verified = bool(
@@ -1134,48 +1285,34 @@ def handle_extract(job: Job) -> dict:
             try:
                 from research_product import phase1_extract_product
                 new_product_data = phase1_extract_product(
-                    artifact_text, job.url
+                    job.url,
+                    product_name=job.product_name or None,
+                    source_html=artifact_text,
                 )
                 if isinstance(new_product_data, dict):
                     # Use new-only data for claims extraction
                     extract_data = new_product_data
 
-                    # Merge into product_data for downstream stages only
-                    new_supp = new_product_data.get("supplement_facts", {})
-                    old_supp = product_data.get("supplement_facts", {})
-                    if new_supp.get("ingredients"):
-                        existing_names = {
-                            i.get("name", "").lower()
-                            for i in old_supp.get("ingredients", [])
-                        }
-                        merged_ings = list(old_supp.get("ingredients", []))
-                        for new_ing in new_supp["ingredients"]:
-                            if new_ing.get("name", "").lower() not in existing_names:
-                                merged_ings.append(new_ing)
-                        product_data = dict(product_data)
-                        product_data["supplement_facts"] = dict(old_supp)
-                        product_data["supplement_facts"]["ingredients"] = merged_ings
-                    # Merge pricing
-                    new_pricing = new_product_data.get("pricing", {})
-                    if new_pricing:
-                        old_pricing = dict(product_data.get("pricing", {}))
-                        old_pricing.update(new_pricing)
-                        product_data["pricing"] = old_pricing
-                    # Merge claims
-                    new_claims = new_product_data.get("claims", [])
-                    if new_claims:
-                        old_claims = list(product_data.get("claims", []))
-                        old_texts = {
-                            (c.get("claim", c) if isinstance(c, dict) else c).lower()
-                            for c in old_claims
-                        }
-                        for nc in new_claims:
-                            nc_text = nc.get("claim", nc) if isinstance(nc, dict) else nc
-                            if nc_text.lower() not in old_texts:
-                                old_claims.append(nc)
-                        product_data["claims"] = old_claims
-            except Exception:
-                pass  # Fall through to extract from existing product_data
+                    official_refresh = _same_source_url(
+                        job.url, product_data.get("official_url", "")
+                    )
+                    superseded_claim_ids = []
+                    if official_refresh:
+                        superseded_claim_ids = _supersede_refreshed_fact_claims(
+                            ledger,
+                            job.offering_id,
+                            new_product_data,
+                        )
+                    product_data = _merge_product_data(
+                        product_data,
+                        new_product_data,
+                        replace_existing=official_refresh,
+                    )
+            except Exception as exc:
+                raise RuntimeError(
+                    "The captured update artifact could not be reconciled "
+                    "into the canonical product snapshot"
+                ) from exc
 
         claims_batch = []
 
@@ -1701,6 +1838,18 @@ def handle_extract(job: Job) -> dict:
         ),
         "extraction_errors": extraction_errors,
     }
+    if is_update:
+        result["official_source_refresh"] = bool(
+            artifact_text
+            and _same_source_url(
+                job.url, identify_result.get("product_data", {}).get(
+                    "official_url", ""
+                )
+            )
+        )
+        result["superseded_claim_ids"] = locals().get(
+            "superseded_claim_ids", []
+        )
     # Always propagate the canonical snapshot. Initial label OCR is just as
     # important as update-mode extraction for downstream research and output.
     result["merged_product_data"] = product_data
@@ -1916,7 +2065,10 @@ def recover_evidence(url: str, offering_id: str, job_id: str,
                 new_data = {}
         else:
             from research_product import phase1_extract_product
-            new_data = phase1_extract_product(text_content, url)
+            new_data = phase1_extract_product(
+                url,
+                source_html=text_content,
+            )
     except Exception as extract_err:
         _log_recovery_audit(
             "recovery_failure", offering_id, job_id,
@@ -2289,20 +2441,43 @@ def handle_reconcile(job: Job) -> dict:
     Runs the claims ledger conflict detection for the offering.
     """
     conflicts = []
+    conflict_records = []
 
     try:
         from claims import ClaimsLedger
         ledger = ClaimsLedger()
         conflicts = ledger.detect_conflicts(job.offering_id)
+        for claim_a_id, claim_b_id, description in conflicts:
+            claim_a = ledger.get_claim(claim_a_id)
+            claim_b = ledger.get_claim(claim_b_id)
+            claims = [claim for claim in (claim_a, claim_b) if claim]
+            conflict_records.append({
+                "claim_a": claim_a_id,
+                "claim_b": claim_b_id,
+                "description": description,
+                "fact_keys": list(dict.fromkeys(
+                    str((claim.metadata or {}).get("fact_key") or "").strip()
+                    for claim in claims
+                    if str(
+                        (claim.metadata or {}).get("fact_key") or ""
+                    ).strip()
+                )),
+                "values": [
+                    claim.claim_text for claim in claims
+                    if str(claim.claim_text or "").strip()
+                ],
+                "source_artifact_ids": list(dict.fromkeys(
+                    str(claim.source_artifact_id or "").strip()
+                    for claim in claims
+                    if str(claim.source_artifact_id or "").strip()
+                )),
+            })
     except ImportError:
         pass
 
     return {
         "conflicts_found": len(conflicts),
-        "conflicts": [
-            {"claim_a": a, "claim_b": b, "description": desc}
-            for a, b, desc in conflicts
-        ],
+        "conflicts": conflict_records,
     }
 
 
@@ -2456,6 +2631,18 @@ def handle_comply(job: Job) -> dict:
             ComplianceState.CLEARED: "low",
         }
         risk_level = state_to_risk.get(report.overall_state, "unknown")
+        if offering_type == OfferingType.DEVICE and any(
+            term in corpus.casefold()
+            for term in (
+                "electricity bill", "power bill", "electrical shock", "emf",
+                "electromagnetic", "surge", "ul approved", "ul certified",
+                "fda cleared", "fda approved",
+            )
+        ) and risk_level == "low":
+            # The product can continue unattended, but utility-cost, electrical
+            # safety, and certification assertions deserve exact-evidence
+            # verification rather than the generic low-risk gadget posture.
+            risk_level = "medium"
 
         return {
             "compliance": {
@@ -2863,6 +3050,7 @@ def handle_source_pack(job: Job) -> dict:
     identify_result = job.get_stage_result(PipelineStage.IDENTIFY)
     acquire_result = job.get_stage_result(PipelineStage.ACQUIRE)
     extract_result = job.get_stage_result(PipelineStage.EXTRACT)
+    reconcile_result = job.get_stage_result(PipelineStage.RECONCILE)
     research_result = job.get_stage_result(PipelineStage.RESEARCH)
     comply_result = job.get_stage_result(PipelineStage.COMPLY)
     review_result = job.get_stage_result(PipelineStage.REVIEW)
@@ -2871,7 +3059,10 @@ def handle_source_pack(job: Job) -> dict:
 
     # Prefer merged product from EXTRACT (includes new ingredients/prices
     # from update mode) over stale IDENTIFY data
-    product_data = dict(_canonical_product_for_job(job) or {})
+    product_data = _quarantine_conflicted_product_fields(
+        _canonical_product_for_job(job) or {},
+        reconcile_result,
+    )
     product_data.setdefault("product_name", job.product_name or "Unknown Product")
     product_data.setdefault("official_url", job.url)
     product_data.setdefault(
@@ -2922,8 +3113,11 @@ def handle_source_pack(job: Job) -> dict:
 
         # Group claims by type, prioritizing accepted > unreviewed > rejected
         for c in all_claims:
-            if c.review_status == ReviewStatus.REJECTED:
-                continue  # Skip rejected claims
+            if c.review_status in {
+                ReviewStatus.REJECTED,
+                ReviewStatus.CONFLICTED,
+            }:
+                continue  # Conflicted facts are quarantined, never published.
             ct = c.claim_type.value if hasattr(c.claim_type, 'value') else c.claim_type
             if ct not in claims_by_type:
                 claims_by_type[ct] = []

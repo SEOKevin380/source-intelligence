@@ -276,6 +276,54 @@ class ClaimsLedger:
                                 f"Conflicting prices for {pkg}: {prices}"
                             ))
 
+        # Singular structured facts from different artifacts must agree. This
+        # catches stale-update conflicts outside ingredients/pricing/refunds
+        # (for example warranty, device specifications, or power source).
+        singular_fact_keys = {
+            "serving_size", "servings_per_container", "specifications",
+            "warranty", "power_source", "fda_clearance_status",
+            "billing_frequency", "trial_period", "duration",
+            "delivery_time", "shipping_policy", "certifications",
+            "independent_testing",
+        }
+        by_fact_key = {}
+        for claim in claims:
+            if claim.review_status == ReviewStatus.REJECTED:
+                continue
+            fact_key = str(
+                (claim.metadata or {}).get("fact_key") or ""
+            ).strip()
+            if fact_key in singular_fact_keys:
+                by_fact_key.setdefault(fact_key, []).append(claim)
+        existing_pairs = {
+            frozenset((left, right))
+            for left, right, _ in conflicts
+        }
+        for fact_key, fact_claims in by_fact_key.items():
+            for index, first in enumerate(fact_claims):
+                for second in fact_claims[index + 1:]:
+                    if (
+                        not first.source_artifact_id
+                        or not second.source_artifact_id
+                        or first.source_artifact_id == second.source_artifact_id
+                    ):
+                        continue
+                    if (
+                        " ".join(first.claim_text.casefold().split())
+                        == " ".join(second.claim_text.casefold().split())
+                    ):
+                        continue
+                    pair = frozenset((first.claim_id, second.claim_id))
+                    if pair in existing_pairs:
+                        continue
+                    conflicts.append((
+                        first.claim_id,
+                        second.claim_id,
+                        f"Conflicting values for {fact_key}: "
+                        f"{first.claim_text!r} vs {second.claim_text!r}",
+                    ))
+                    existing_pairs.add(pair)
+
         # Mark conflicted claims
         for a_id, b_id, _ in conflicts:
             with _claims_lock:
@@ -559,8 +607,13 @@ class ClaimsLedger:
            These are marked provisional.
         """
         all_claims = self.get_claims(offering_id)
-        active = [c for c in all_claims
-                  if c.review_status != ReviewStatus.REJECTED]
+        active = [
+            c for c in all_claims
+            if c.review_status not in {
+                ReviewStatus.REJECTED,
+                ReviewStatus.CONFLICTED,
+            }
+        ]
 
         # Partition active claims into evidence-backed and manual/unverified
         evidence_backed = []
