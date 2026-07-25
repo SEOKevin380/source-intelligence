@@ -786,8 +786,18 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
     coverage_violations.extend(
         _contact_coverage_violations(pack, article)
     )
+    from newswire_workbench.editorial_truth import audit_editorial_truth
+    editorial_truth = audit_editorial_truth(
+        pack,
+        article,
+        str(
+            (pack.get("intake_manifest") or {}).get("affiliate_link")
+            or (pack.get("release_details") or {}).get("affiliate_link")
+            or ""
+        ),
+    )
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "source_pack_hash": (pack.get("source_pack_contract") or {}).get(
             "sha256", ""
         ),
@@ -800,10 +810,24 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
         "mappings": mappings,
         "attribution_violations": attribution_violations,
         "coverage_violations": coverage_violations,
-        "passed": not attribution_violations and not coverage_violations,
+        "grounding_violations": editorial_truth[
+            "grounding_violations"
+        ],
+        "cta_integrity_violations": editorial_truth[
+            "cta_integrity_violations"
+        ],
+        "editorial_truth": editorial_truth,
+        "passed": not (
+            attribution_violations
+            or coverage_violations
+            or editorial_truth["grounding_violations"]
+            or editorial_truth["cta_integrity_violations"]
+        ),
         "excluded_claims": pack.get("excluded_publication_claims") or [],
         "scope_note": (
-            "This deterministic ledger identifies textual claim support. "
-            "Independent review remains responsible for implied claims and context."
+            "This bidirectional ledger checks required source-to-article "
+            "coverage, article-to-source high-confidence grounding, and CTA "
+            "destination integrity. Explicit review candidates remain the "
+            "independent semantic reviewer's responsibility."
         ),
     }

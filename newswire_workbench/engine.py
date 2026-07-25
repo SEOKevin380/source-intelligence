@@ -46,7 +46,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v34-closed-loop-action-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "conditional-exact-patch-signoff-20260725-r27"
+WORKBENCH_RUNTIME_REVISION = "bidirectional-editorial-truth-20260725-r28"
 
 STAGES = (
     "source_ready",
@@ -84,6 +84,65 @@ def _now():
 
 def _hash(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _provenance_findings(ledger):
+    """Normalize every bidirectional provenance failure into blockers."""
+    findings = []
+    for item in ledger.get("coverage_violations") or []:
+        findings.append({
+            "id": item.get("id", "P-COVERAGE"),
+            "category": "Claim provenance coverage",
+            "issue": item.get("issue", "Claim coverage is incomplete."),
+            "exact_text": "",
+            "replacement": (
+                "Use distinct permitted claims from the sealed ledger."
+            ),
+        })
+    for index, item in enumerate(
+        ledger.get("attribution_violations") or [], 1
+    ):
+        findings.append({
+            "id": f"P-ATTR-{index}",
+            "category": "Claim provenance attribution",
+            "issue": (
+                "A mapped sealed claim is missing its required "
+                "seller/source attribution."
+            ),
+            "exact_text": item.get("article_sentence", ""),
+            "replacement": "Add the required claim-local attribution.",
+        })
+    for item in ledger.get("grounding_violations") or []:
+        findings.append({
+            "id": item.get("id", "E-TRUTH"),
+            "category": item.get(
+                "category", "Article-to-source grounding"
+            ),
+            "issue": item.get(
+                "issue", "A material article claim exceeds the sealed record."
+            ),
+            "exact_text": item.get("exact_text", ""),
+            "replacement": item.get(
+                "replacement",
+                "Delete the unsupported expansion or use a sourced sentence.",
+            ),
+        })
+    for item in ledger.get("cta_integrity_violations") or []:
+        findings.append({
+            "id": item.get("id", "E-CTA"),
+            "category": item.get(
+                "category", "CTA/link integrity"
+            ),
+            "issue": item.get(
+                "issue", "A conversion link violates CTA integrity."
+            ),
+            "exact_text": item.get("exact_text", ""),
+            "replacement": item.get(
+                "replacement",
+                "Use a distinct accurate CTA with a single destination role.",
+            ),
+        })
+    return findings
 
 
 def _pack_fact_source_hash(pack):
@@ -649,32 +708,9 @@ class WorkbenchEngine:
             extract_sealed_pack(p["source_text"]),
             p.get("article_text") or "",
         )
-        provenance_findings = []
-        for item in result["claim_provenance"].get(
-            "coverage_violations"
-        ) or []:
-            provenance_findings.append({
-                "id": item.get("id", "P-COVERAGE"),
-                "category": "Claim provenance coverage",
-                "issue": item.get("issue", "Claim coverage is incomplete."),
-                "exact_text": "",
-                "replacement": (
-                    "Use distinct permitted claims from the sealed ledger."
-                ),
-            })
-        for index, item in enumerate(
-            result["claim_provenance"].get("attribution_violations") or [], 1
-        ):
-            provenance_findings.append({
-                "id": f"P-ATTR-{index}",
-                "category": "Claim provenance attribution",
-                "issue": (
-                    "A mapped sealed claim is missing its required "
-                    "seller/source attribution."
-                ),
-                "exact_text": item.get("article_sentence", ""),
-                "replacement": "Add the required claim-local attribution.",
-            })
+        provenance_findings = _provenance_findings(
+            result["claim_provenance"]
+        )
         existing_blocker_keys = {
             (item.get("id"), item.get("exact_text", ""))
             for item in result["blockers"]
@@ -946,8 +982,7 @@ class WorkbenchEngine:
             return True
         if (
             not current_preflight["blockers"]
-            and not current_provenance.get("coverage_violations")
-            and not current_provenance.get("attribution_violations")
+            and current_provenance.get("passed")
             and final_available
         ):
             return True
@@ -972,6 +1007,8 @@ class WorkbenchEngine:
             current_blocker_ids == {"D18"}
             and not current_provenance.get("coverage_violations")
             and not current_provenance.get("attribution_violations")
+            and not current_provenance.get("grounding_violations")
+            and not current_provenance.get("cta_integrity_violations")
             and final_available
             and self._latest_successful_call_output(project_id, "draft")
             and self._latest_successful_call_output(
@@ -1072,6 +1109,23 @@ class WorkbenchEngine:
                 "The approved article has a current publication blocker and must "
                 "be repaired first: " +
                 ", ".join(item["id"] for item in blockers)
+            )
+        from article_provenance import (
+            build_article_claim_ledger,
+            extract_sealed_pack,
+        )
+        claim_ledger = build_article_claim_ledger(
+            extract_sealed_pack(p["source_text"]), p["article_text"]
+        )
+        if not claim_ledger["passed"]:
+            raise RuntimeError(
+                "WordPress handoff is blocked by the current bidirectional "
+                "editorial-truth, CTA integrity, coverage, or attribution "
+                "contract: "
+                + ", ".join(
+                    item.get("id", "unknown")
+                    for item in _provenance_findings(claim_ledger)
+                )
             )
         publisher = WordPressDraftPublisher()
         manifest_path = self.projects_dir / project_id / "submission-manifest.json"
@@ -1617,8 +1671,7 @@ class WorkbenchEngine:
         )
         if (
             not current_preflight["blockers"]
-            and not current_provenance.get("coverage_violations")
-            and not current_provenance.get("attribution_violations")
+            and current_provenance.get("passed")
         ):
             self._set_stage(project_id, "revised")
             self._event(
@@ -1937,6 +1990,8 @@ class WorkbenchEngine:
             preflight["blockers"]
             or provenance.get("coverage_violations")
             or provenance.get("attribution_violations")
+            or provenance.get("grounding_violations")
+            or provenance.get("cta_integrity_violations")
         ):
             candidate_hash = current["article_hash"]
             self._restore_conditional_exact_patch_snapshot(
@@ -1956,6 +2011,12 @@ class WorkbenchEngine:
                     ) or [],
                     "attribution_violations": provenance.get(
                         "attribution_violations"
+                    ) or [],
+                    "grounding_violations": provenance.get(
+                        "grounding_violations"
+                    ) or [],
+                    "cta_integrity_violations": provenance.get(
+                        "cta_integrity_violations"
                     ) or [],
                     "operator_decision_required": False,
                 },
@@ -2081,6 +2142,9 @@ class WorkbenchEngine:
         attribution_violations = list(
             initial_ledger.get("attribution_violations") or []
         )
+        grounding_violations = list(
+            initial_ledger.get("grounding_violations") or []
+        )
         base_has_categorical_assertions = any(
             item.get("id") == "D20"
             for item in deterministic_findings(
@@ -2088,7 +2152,9 @@ class WorkbenchEngine:
             )
         )
         sealed_only_rebuild = bool(
-            attribution_violations or base_has_categorical_assertions
+            attribution_violations
+            or grounding_violations
+            or base_has_categorical_assertions
         )
         if sealed_only_rebuild:
             # Do not prefix a mixed model sentence with "the seller says";
@@ -2113,7 +2179,10 @@ class WorkbenchEngine:
                 node = next_node
         base_html = str(base_soup)
         current_ledger = build_article_claim_ledger(sealed_pack, base_html)
-        if current_ledger.get("attribution_violations"):
+        if (
+            current_ledger.get("attribution_violations")
+            or current_ledger.get("grounding_violations")
+        ):
             return False
         report_path = project_dir / "02-openai-review.json"
         try:
@@ -2178,6 +2247,8 @@ class WorkbenchEngine:
                 maps_permitted_claim = (
                     block_ledger["used_claim_count"] >= 1
                     and not block_ledger["attribution_violations"]
+                    and not block_ledger["grounding_violations"]
+                    and not block_ledger["cta_integrity_violations"]
                 )
                 if not maps_permitted_claim:
                     continue
@@ -2230,10 +2301,7 @@ class WorkbenchEngine:
             sealed_pack, candidate
         )
         remaining = list(preflight["blockers"])
-        remaining.extend(candidate_provenance.get("coverage_violations") or [])
-        remaining.extend(
-            candidate_provenance.get("attribution_violations") or []
-        )
+        remaining.extend(_provenance_findings(candidate_provenance))
         if remaining:
             self._event(
                 project_id, "depth_reconciliation_incomplete", "admin_review",
@@ -2919,31 +2987,7 @@ class WorkbenchEngine:
                 extract_sealed_pack(p["source_text"]),
                 p["article_text"],
             )
-            provenance_blockers = []
-            for item in claim_ledger.get("coverage_violations") or []:
-                provenance_blockers.append({
-                    "id": item["id"],
-                    "category": "Claim provenance coverage",
-                    "issue": item["issue"],
-                    "exact_text": "",
-                    "replacement": (
-                        "Use additional distinct permitted claims from the "
-                        "sealed ledger with their required attribution."
-                    ),
-                })
-            for index, item in enumerate(
-                claim_ledger.get("attribution_violations") or [], 1
-            ):
-                provenance_blockers.append({
-                    "id": f"P-ATTR-{index}",
-                    "category": "Claim provenance attribution",
-                    "issue": (
-                        "A mapped sealed claim is missing its required "
-                        "seller/source attribution."
-                    ),
-                    "exact_text": item.get("article_sentence", ""),
-                    "replacement": "Add the required attribution.",
-                })
+            provenance_blockers = _provenance_findings(claim_ledger)
             if provenance_blockers:
                 preflight["blockers"] = (
                     list(preflight["blockers"]) + provenance_blockers
@@ -3244,10 +3288,34 @@ class WorkbenchEngine:
         return text
 
     def _openai_review(self, p, final, purpose=None):
+        from article_provenance import extract_sealed_pack
+        from .editorial_truth import audit_editorial_truth
+        truth_audit = audit_editorial_truth(
+            extract_sealed_pack(p["source_text"]),
+            p["article_text"],
+            _source_affiliate_link(p["source_text"]),
+        )
+        truth_packet = {
+            "candidate_set_hash": truth_audit[
+                "review_candidate_set_hash"
+            ],
+            "candidates": [
+                {
+                    "sentence_id": item["sentence_id"],
+                    "exact_text": item["exact_text"],
+                    "best_source_id": item["best_source_id"],
+                    "best_source_excerpt": item[
+                        "best_source_excerpt"
+                    ],
+                }
+                for item in truth_audit["review_candidates"]
+            ],
+        }
         prompt = compliance_prompt(
             p["source_text"], p["article_text"], p["platform"], p["vertical"],
             p["last_report"], final=final,
             release_title=p.get("release_title", p["title"]),
+            editorial_truth_packet=truth_packet,
         )
         purpose = purpose or ("final_signoff" if final else "compliance")
         route = route_for(purpose, p["vertical"])
@@ -3322,6 +3390,49 @@ class WorkbenchEngine:
                             "properties": {"verified": {"type": "integer"}, "checked": {"type": "integer"}},
                             "required": ["verified", "checked"],
                         },
+                        "editorial_truth_review": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "properties": {
+                                "candidate_set_hash": {"type": "string"},
+                                "decisions": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "additionalProperties": False,
+                                        "properties": {
+                                            "sentence_id": {
+                                                "type": "string"
+                                            },
+                                            "verdict": {
+                                                "type": "string",
+                                                "enum": [
+                                                    "source_supported",
+                                                    "non_material",
+                                                    "unsupported",
+                                                ],
+                                            },
+                                            "source_ids": {
+                                                "type": "array",
+                                                "items": {
+                                                    "type": "string"
+                                                },
+                                            },
+                                            "rationale": {
+                                                "type": "string"
+                                            },
+                                        },
+                                        "required": [
+                                            "sentence_id", "verdict",
+                                            "source_ids", "rationale",
+                                        ],
+                                    },
+                                },
+                            },
+                            "required": [
+                                "candidate_set_hash", "decisions"
+                            ],
+                        },
                         "mandatory_edits": {"type": "array", "items": {
                             "type": "object", "additionalProperties": False,
                             "properties": {
@@ -3344,7 +3455,8 @@ class WorkbenchEngine:
                     },
                     "required": ["verdict", "mandatory_count",
                                  "conditional_approval_after_exact_edits",
-                                 "source_accuracy", "mandatory_edits",
+                                 "source_accuracy", "editorial_truth_review",
+                                 "mandatory_edits",
                                  "recommended_edits", "approved_elements", "notes"],
                     },
                     }},
@@ -3434,6 +3546,104 @@ class WorkbenchEngine:
                 f"{purpose} returned a contradictory structured report; its "
                 "reserved call was consumed and will not be replayed"
             ) from exc
+        truth_review = report.get("editorial_truth_review")
+        if isinstance(truth_review, dict):
+            expected = {
+                item["sentence_id"]: item
+                for item in truth_audit["review_candidates"]
+            }
+            decisions = truth_review.get("decisions") or []
+            decision_ids = [
+                str(item.get("sentence_id") or "")
+                for item in decisions if isinstance(item, dict)
+            ]
+            attestation_errors = []
+            if truth_review.get("candidate_set_hash") != truth_audit[
+                "review_candidate_set_hash"
+            ]:
+                attestation_errors.append("candidate_set_hash")
+            if (
+                len(decision_ids) != len(set(decision_ids))
+                or set(decision_ids) != set(expected)
+            ):
+                attestation_errors.append("candidate_coverage")
+            for decision in decisions:
+                if not isinstance(decision, dict):
+                    attestation_errors.append("decision_shape")
+                    continue
+                sentence_id = str(decision.get("sentence_id") or "")
+                candidate = expected.get(sentence_id)
+                if not candidate:
+                    continue
+                if decision.get("verdict") == "source_supported":
+                    best_source_id = candidate.get("best_source_id") or ""
+                    if (
+                        not best_source_id
+                        or best_source_id not in (
+                            decision.get("source_ids") or []
+                        )
+                    ):
+                        attestation_errors.append(
+                            f"source_evidence:{sentence_id}"
+                        )
+            existing = report.setdefault("mandatory_edits", [])
+            existing_exact = {
+                str(item.get("exact_text") or "")
+                for item in existing
+            }
+            if attestation_errors:
+                existing.append({
+                    "id": "E-REVIEW-SCOPE",
+                    "category": "Editorial truth review coverage",
+                    "issue": (
+                        "The independent reviewer did not account for every "
+                        "material article-to-source candidate with valid "
+                        "source evidence: "
+                        + ", ".join(sorted(set(attestation_errors)))
+                    ),
+                    "exact_text": "",
+                    "replacement": (
+                        "Repeat the exact-hash semantic review and classify "
+                        "every supplied candidate against its source excerpt."
+                    ),
+                })
+            for decision in decisions:
+                if (
+                    not isinstance(decision, dict)
+                    or decision.get("verdict") != "unsupported"
+                ):
+                    continue
+                candidate = expected.get(
+                    str(decision.get("sentence_id") or "")
+                ) or {}
+                exact_text = str(candidate.get("exact_text") or "")
+                if not exact_text or exact_text in existing_exact:
+                    continue
+                existing.append({
+                    "id": "E-REVIEW-" + str(
+                        decision.get("sentence_id") or "UNKNOWN"
+                    ),
+                    "category": "Article-to-source grounding",
+                    "issue": (
+                        str(decision.get("rationale") or "").strip()
+                        or "The reviewer found this material sentence unsupported."
+                    ),
+                    "exact_text": exact_text,
+                    "replacement": (
+                        "Delete this sentence or replace it with complete "
+                        "reader-facing copy directly entailed by the sealed "
+                        "source record."
+                    ),
+                })
+                existing_exact.add(exact_text)
+            if attestation_errors or any(
+                isinstance(item, dict)
+                and item.get("verdict") == "unsupported"
+                for item in decisions
+            ):
+                report["mandatory_count"] = len(existing)
+                report["verdict"] = "not_approved"
+                report["conditional_approval_after_exact_edits"] = False
         report["reviewed_article_hash"] = p["article_hash"]
         report["approval_purpose"] = purpose
         report["prompt_version"] = PROMPT_VERSION
@@ -3534,6 +3744,23 @@ class WorkbenchEngine:
                 })
             report["mandatory_count"] = len(existing)
             report["verdict"] = "not_approved"
+        editorial_truth_findings = [
+            item for item in _provenance_findings(provenance)
+            if str(item.get("id") or "").startswith(("E-TRUTH-", "E-CTA-"))
+        ]
+        if editorial_truth_findings:
+            existing = report.setdefault("mandatory_edits", [])
+            existing_ids = {item.get("id") for item in existing}
+            for item in editorial_truth_findings:
+                if item.get("id") not in existing_ids:
+                    existing.append(item)
+            report["mandatory_count"] = len(existing)
+            report["verdict"] = "not_approved"
+            report["conditional_approval_after_exact_edits"] = False
+            report.setdefault("notes", []).append(
+                "The deterministic bidirectional editorial-truth or CTA "
+                "integrity gate found a material false-pass condition."
+            )
         return report
 
     def _record_llm_call(
@@ -3988,7 +4215,7 @@ class WorkbenchEngine:
         article = normalize_master_html(article, word_count)
         affiliate_href = _source_affiliate_link(p["source_text"])
         if word_count >= 1200 and affiliate_href:
-            target = 5 if p["platform"] == "AccessNewsWire" else 4
+            target = 4 if p["platform"] == "AccessNewsWire" else 3
             article = ensure_affiliate_links(
                 article, affiliate_href, target=target
             )
@@ -4044,9 +4271,7 @@ class WorkbenchEngine:
         provenance = build_article_claim_ledger(
             extract_sealed_pack(p["source_text"]), article
         )
-        provenance_blockers = list(
-            provenance.get("coverage_violations") or []
-        ) + list(provenance.get("attribution_violations") or [])
+        provenance_blockers = _provenance_findings(provenance)
         blockers = list(candidate_preflight["mechanical_remaining"])
         if require_publishable:
             blockers = [
@@ -4290,8 +4515,12 @@ class WorkbenchEngine:
         )
         if not claim_ledger["passed"]:
             raise RuntimeError(
-                "Package creation is blocked because sealed-claim coverage or "
-                "required seller/source attribution is incomplete."
+                "Package creation is blocked by the bidirectional editorial-"
+                "truth contract: "
+                + ", ".join(
+                    item.get("id", "unknown")
+                    for item in _provenance_findings(claim_ledger)
+                )
             )
         from policy_intelligence import policy_status
         policy = policy_status(p["vertical"])

@@ -399,16 +399,16 @@ Operating rules:
 - Place the first clean affiliate CTA near the start of the release, then
   distribute additional CTAs naturally and evenly through long copy. Do not
   cluster links, expose raw URLs, or repeat identical surrounding sentences.
-- For Barchart long-form device copy, use 4–5 varied, bold, product-specific
-  affiliate CTAs. For AccessNewsWire long-form copy, use 5–6. A prior-release
+- For Barchart long-form device copy, use 3–4 varied, bold, product-specific
+  affiliate CTAs. For AccessNewsWire long-form copy, use 3–4. A prior-release
   editorial backlink does not count as an affiliate CTA.
 - Follow the MBK WordPress HTML contract exactly: article-body headings use
   `<h2><strong>…</strong></h2>` and `<h3><strong>…</strong></h3>` (no H1 in
   the body); every CTA anchor wraps its anchor text in `<strong>`; distribute
   10–14 additional `<strong class="key-takeaway">` phrases outside headings;
   use ordinary STRONG without that class for headings, CTA anchors, and short
-  functional list labels; use 5–6 strategic
-  links for AccessNewsWire long-form copy; zero raw URLs, Markdown, `<hr>`, or
+  functional list labels; use 3–4 naturally spaced conversion CTAs for
+  AccessNewsWire long-form copy; zero raw URLs, Markdown, `<hr>`, or
   HTML comments. Format contact information as a clean scannable block.
 - Treat `key-takeaway` phrases as a persuasive scan path, not
   decoration. If a reader scans
@@ -460,8 +460,17 @@ SOURCE_RECORD_END
 
 def compliance_prompt(source_text: str, article: str, platform: str,
                       vertical: str, previous_report: dict = None,
-                      final: bool = False, release_title: str = "") -> str:
+                      final: bool = False, release_title: str = "",
+                      editorial_truth_packet: dict = None) -> str:
     prior = json.dumps(previous_report or {}, ensure_ascii=False)
+    truth_packet = json.dumps(
+        editorial_truth_packet or {
+            "candidate_set_hash": "",
+            "candidates": [],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
     editorial_context, sealed_facts = split_editorial_context(source_text)
     editorial_context = select_stage_editorial_context(
         editorial_context, "review"
@@ -525,7 +534,9 @@ Review all applicable categories:
 12. MBK HTML formatting: no body H1, every H2/H3 explicitly contains STRONG,
     CTA anchor text is explicitly STRONG, 10–14 non-heading
     STRONG.key-takeaway phrases,
-    and 5–6 strategic links in AccessNewsWire long-form copy.
+    and 3–4 naturally spaced conversion CTAs in AccessNewsWire long-form copy.
+    Contact, email, phone, and order-support links do not count as conversion
+    CTAs.
 13. Editorial depth: {depth_review_contract}
     Flag generic padding. If coverage is materially incomplete, identify the
     exact unanswered reader question and the source-backed material that can
@@ -583,6 +594,25 @@ Review all applicable categories:
     publishable without another judgment call. Set it to false for rewrites,
     reconstruction instructions, missing exact text, source conflicts, or edits
     that require choosing among alternatives.
+23. Bidirectional editorial truth: do not stop after checking whether required
+    source facts appear. Audit every material article sentence back against the
+    sealed record. Flag invented bridge facts, mechanisms, affiliations,
+    account/access terms, trial language, price variability, promotion
+    assumptions, commercial-risk judgments, and unsupported negative claims.
+    Seller attribution does not make an unsupported addition publishable.
+24. CTA/link integrity: inventory every visible link by destination role
+    (official, affiliate, product support, order support, email, phone, or
+    other). Reject consecutive standalone CTAs, identical CTA text pointing to
+    different destinations, misleading official/affiliate labels, or excessive
+    affiliate-link density. The final contact block is not CTA inventory.
+25. Editorial-truth candidate coverage: the machine-generated packet below
+    lists material sentences that were not decisively grounded by lexical
+    evidence. Return exactly one decision for every candidate ID and echo the
+    packet hash. `source_supported` requires the supplied best source ID to
+    entail the entire sentence, not merely share a topic. Use `non_material`
+    only for pure navigation, disclosure, question, or reader advice that
+    asserts no product fact. Use `unsupported` for any invented bridge fact,
+    and provide a mandatory exact replacement or deletion.
 
 Return JSON only matching this shape:
 {{
@@ -590,6 +620,15 @@ Return JSON only matching this shape:
   "mandatory_count": integer,
   "conditional_approval_after_exact_edits": true or false,
   "source_accuracy": {{"verified": integer, "checked": integer}},
+  "editorial_truth_review": {{
+    "candidate_set_hash": "exact packet hash",
+    "decisions": [{{
+      "sentence_id": "S-...",
+      "verdict": "source_supported" or "non_material" or "unsupported",
+      "source_ids": ["source id used, empty unless source_supported"],
+      "rationale": "brief reason"
+    }}]
+  }},
   "mandatory_edits": [{{"id":"M1","category":"...","issue":"...","exact_text":"...","replacement":"..."}}],
   "recommended_edits": [{{"id":"R1","category":"...","issue":"...","replacement":"..."}}],
   "approved_elements": ["..."],
@@ -598,6 +637,9 @@ Return JSON only matching this shape:
 
 Previous review, if any:
 {prior}
+
+EDITORIAL TRUTH REVIEW PACKET:
+{truth_packet}
 
 RELEASE TITLE:
 {release_title}
@@ -760,8 +802,14 @@ compliance report below.
   previous release, name its publisher, or create a section about prior coverage.
 - Keep one clean CTA near the opening and distribute later CTAs naturally.
 - Preserve the exact MBK HTML contract: no body H1; every H2/H3 and CTA anchor
-  contains STRONG; 10–14 additional STRONG.key-takeaway phrases; 5–6 strategic links for
-  AccessNewsWire long form; and a scannable contact block.
+  contains STRONG; 10–14 additional STRONG.key-takeaway phrases; 3–4 naturally
+  spaced conversion CTAs for AccessNewsWire long form; and a scannable contact
+  block. Never place two standalone CTAs consecutively or reuse one label for
+  different official and affiliate destinations.
+- Re-audit in both directions before returning the revision: every required
+  sealed fact used by the article must be accurately represented, and every
+  material product statement in the article must map back to an explicit
+  source value. Attribution cannot rescue an invented bridge fact.
 - If this is an AccessNewsWire financial newsletter/research review, build
   toward {profile['target_min']:,}–{profile['target_max']:,} useful, source-grounded words. Expand missing reader
   questions and product-specific analysis, never generic investment filler.
@@ -860,8 +908,12 @@ for maximum defensible SEO and conversion performance.
   Make the new title promise, opening thesis, and H2 spine visibly complementary.
 - Keep the first affiliate CTA near the opening and space later CTAs naturally
   across the article. Output no body H1. Explicitly bold every H2/H3 and CTA
-  anchor with STRONG, preserve 10–14 STRONG.key-takeaway phrases, and use 5–6
-  strategic links for AccessNewsWire long-form copy.
+  anchor with STRONG, preserve 10–14 STRONG.key-takeaway phrases, and use 3–4
+  naturally spaced conversion CTAs for AccessNewsWire long-form copy.
+- Re-audit every material product statement against an explicit sealed source
+  value. Delete invented connective explanations, affiliations, trial scope,
+  price variability, account/access assumptions, and commercial-risk
+  judgments even when they sound plausible or are seller-attributed.
 - Do not introduce facts, claims, experiences, testimonials, prices, or terms
   absent from the source record.
 - Do not turn attributed device descriptions into verified facts. Preserve
