@@ -11,6 +11,7 @@ from newswire_workbench.engine import (
     WORKBENCH_RUNTIME_REVISION,
     WORKBENCH_SOURCE_CONTEXT_VERSION,
     WorkbenchEngine,
+    _pack_fact_source_hash,
     _source_affiliate_link,
 )
 from newswire_workbench.prompts import detect_vertical
@@ -33,6 +34,7 @@ from newswire_workbench.formatting import (
 )
 from newswire_workbench.routing import risk_tier, route_for
 from newswire_workbench.publication_profiles import publication_profile
+from offering_taxonomy import UnsupportedProductTypeError
 from newswire_workbench.human_copy import (
     human_copy_diagnostics,
     normalize_american_english,
@@ -74,7 +76,61 @@ def _independent_approval(engine, project_id):
 def test_vertical_detection_is_category_aware():
     assert detect_vertical("investment stock newsletter") == "financial"
     assert detect_vertical("commemorative gold-plated coin") == "collectible"
-    assert detect_vertical("supplement facts serving size") == "health"
+    assert detect_vertical("supplement facts serving size") == "supplement"
+
+
+@pytest.mark.parametrize(
+    ("product_type", "expected_vertical"),
+    [
+        ("supplement", "supplement"),
+        ("topical", "topical"),
+        ("food", "food"),
+        ("cannabis", "cannabis"),
+        ("telehealth", "telehealth"),
+        ("research_peptide", "research_peptide"),
+        ("financial", "financial"),
+        ("gaming", "gaming"),
+        ("collectible", "collectible"),
+        ("device", "device"),
+        ("info_product", "info_product"),
+        ("software", "software"),
+        ("service", "service"),
+        ("program", "program"),
+        ("subscription", "subscription"),
+        ("professional", "professional"),
+    ],
+)
+def test_every_intake_product_type_routes_to_the_right_workbench_vertical(
+    product_type, expected_vertical
+):
+    assert detect_vertical(json.dumps({
+        "product": {"product_type": product_type}
+    })) == expected_vertical
+
+
+def test_unknown_explicit_product_type_never_silently_routes_generic():
+    with pytest.raises(UnsupportedProductTypeError):
+        detect_vertical(json.dumps({
+            "product": {"product_type": "unknown"}
+        }))
+
+
+@pytest.mark.parametrize(
+    "vertical",
+    [
+        "supplement", "topical", "device", "food", "cannabis",
+        "telehealth", "info_product", "financial", "software", "service",
+        "program", "subscription", "professional", "gaming", "collectible",
+        "research_peptide", "general_consumer", "health", "political",
+    ],
+)
+def test_every_supported_vertical_has_a_complete_offline_workflow_contract(
+    vertical
+):
+    report = audit_system_contract(vertical)
+    assert report["passed"] is True
+    assert report["end_to_end_budget_valid"] is True
+    assert not report["route_errors"]
 
 
 @pytest.mark.parametrize(
@@ -102,6 +158,24 @@ def test_generation_prompt_preserves_client_advocacy_without_invention():
     assert "client's strongest compliant advocate" in prompt
     assert "must not replace the article with a prosecution brief" in prompt
     assert "missing evidence" in prompt
+
+
+def test_offline_audit_keeps_affiliate_disclosure_gate_on_final_pass():
+    article = (
+        "<p><strong>Paid Advertorial</strong></p>"
+        "<p><a href=\"https://partner.example/offer\">Offer details</a></p>"
+    )
+    with patch(
+        "newswire_workbench.audit.repair_publication_gates",
+        side_effect=lambda value, *_args: value,
+    ):
+        report = audit_article(
+            article,
+            "AccessNewsWire",
+            "general_consumer",
+            "https://partner.example/offer",
+        )
+    assert "D5" in {item["id"] for item in report["blockers"]}
 
 
 def test_locked_blueprint_is_trusted_context_not_untrusted_evidence():
@@ -453,10 +527,76 @@ def test_two_tabs_converge_on_one_active_pack_project(tmp_path):
     matching = [
         item for item in engine.list_projects()
         if item["fact_source_hash"]
-        == pack["source_pack_contract"]["sha256"]
+        == _pack_fact_source_hash(pack)
         and item["platform"] == "Barchart Advertorial"
     ]
     assert len(matching) == 1
+
+
+def test_fact_identity_ignores_claim_order_and_contract_timestamp(tmp_path):
+    first_pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    reordered_pack = json.loads(json.dumps(first_pack))
+    reordered_pack["publication_claims"]["feature"].reverse()
+    reordered_pack["claims_by_type"]["feature"].reverse()
+    reordered_pack["source_pack_contract"]["generated_at"] = (
+        "2099-01-01T00:00:00+00:00"
+    )
+    assert _pack_fact_source_hash(first_pack) == _pack_fact_source_hash(
+        reordered_pack
+    )
+
+
+def test_valid_completed_package_outranks_newer_failed_duplicate(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    completed = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    engine._set_stage(completed, "package_ready")
+    failed = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    engine._set_stage(failed, "admin_review")
+
+    def preflight(project_id):
+        return {"ready_for_packaging": project_id == completed}
+
+    with patch.object(engine, "offline_preflight", side_effect=preflight):
+        assert engine.latest_project_from_pack(
+            pack,
+            "Barchart Advertorial",
+            WORKBENCH_SOURCE_CONTEXT_VERSION,
+        ) == completed
+        assert engine.is_authoritative_run_target(
+            completed,
+            pack,
+            "Barchart Advertorial",
+            WORKBENCH_SOURCE_CONTEXT_VERSION,
+        )
+        assert not engine.is_authoritative_run_target(
+            failed,
+            pack,
+            "Barchart Advertorial",
+            WORKBENCH_SOURCE_CONTEXT_VERSION,
+        )
 
 
 def test_superseded_project_cannot_execute_next_stage(tmp_path):
@@ -2235,6 +2375,112 @@ def test_contradictory_paid_reviewer_report_is_quarantined_not_replayed(
     )
 
 
+def test_invalid_required_reviewer_call_gets_a_fresh_transaction_owner(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    engine.import_manual_article(
+        pid,
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<p>Seller materials state Literal product fact 0.</p>"
+        "<p>Seller materials state Literal product fact 1.</p>"
+        "<p>Seller materials state Literal product fact 2.</p>",
+    )
+    engine._record_llm_call(
+        pid,
+        "compliance",
+        route_for("compliance", "device"),
+        100,
+        100,
+        raw_output="{not valid json",
+        lifecycle="provider_succeeded",
+    )
+    with pytest.raises(RuntimeError, match="invalid structured report"):
+        engine._openai_review(engine.get(pid), final=False)
+
+    assert engine.get(pid)["stage"] == "admin_review"
+    action = engine.run_action(pid)
+    assert action["action"] == "rebuild_corrected_transaction"
+    assert "compliance:invalid" in action["reason"]
+
+
+def test_provenance_repair_receives_exact_permitted_claim_text(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    claim_texts = (
+        "Alpha stability feature",
+        "Beta setup feature",
+        "Gamma support feature",
+    )
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": {
+            "feature": [
+                {
+                    "text": text,
+                    "artifact_id": "a1",
+                    "source_class": "official_vendor",
+                    "review_status": "unreviewed",
+                    "metadata": {"excerpt_is_literal": True},
+                }
+                for text in claim_texts
+            ]
+        },
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    engine.import_manual_article(
+        pid,
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<p>Alpha stability feature and Beta setup feature are included.</p>",
+    )
+    engine._record_llm_call(
+        pid,
+        "compliance",
+        route_for("compliance", "device"),
+        100,
+        100,
+        raw_output=json.dumps({
+            "verdict": "approved",
+            "mandatory_count": 0,
+            "source_accuracy": {"verified": 2, "checked": 2},
+            "mandatory_edits": [],
+            "recommended_edits": [],
+            "approved_elements": [],
+            "notes": [],
+        }),
+        lifecycle="provider_succeeded",
+    )
+    report = engine._openai_review(engine.get(pid), final=False)
+    attribution_edits = [
+        item for item in report["mandatory_edits"]
+        if item["id"].startswith("P-ATTR-")
+    ]
+    assert len(attribution_edits) == 1
+    assert "According to the seller" in attribution_edits[0]["replacement"]
+    assert "Alpha stability feature" in attribution_edits[0]["replacement"]
+    assert "Beta setup feature" in attribution_edits[0]["replacement"]
+
+
 def test_stale_report_cannot_advance_a_mutated_article(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     pid = engine.create_project(
@@ -3690,7 +3936,7 @@ def test_forced_rebuild_keeps_stable_fact_source_identity(tmp_path):
     assert (
         first_project["fact_source_hash"]
         == second_project["fact_source_hash"]
-        == pack["source_pack_contract"]["sha256"]
+        == _pack_fact_source_hash(pack)
     )
 
 

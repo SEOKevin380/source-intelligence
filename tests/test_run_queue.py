@@ -148,6 +148,32 @@ def test_running_cancel_is_cooperative_and_lease_holder_finishes(tmp_path):
     assert finished.status == "cancelled"
 
 
+def test_expired_cancelled_worker_is_finalized_instead_of_jammed(tmp_path):
+    clock = Clock()
+    repo = RunJobRepository(tmp_path / "queue.db", clock=clock)
+    _submit(repo)
+    job = repo.claim_next(lease_seconds=10)
+    repo.request_cancel(job.id)
+    clock.advance(11)
+    assert repo.claim_next() is None
+    assert repo.get(job.id).status == "cancelled"
+
+
+def test_expired_worker_cannot_finish_before_reclaim(tmp_path):
+    clock = Clock()
+    repo = RunJobRepository(tmp_path / "queue.db", clock=clock)
+    _submit(repo)
+    job = repo.claim_next(lease_seconds=10)
+    clock.advance(11)
+    with pytest.raises(LeaseLost):
+        repo.finish(
+            job.id,
+            job.lease_token,
+            status="completed",
+            terminal_code="done",
+        )
+
+
 def test_finish_persists_structured_terminal_state(tmp_path):
     repo = RunJobRepository(tmp_path / "queue.db")
     _submit(repo)

@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 
 def test_identify_does_not_blend_vsl_into_product_facts():
     from stage_handlers import handle_identify
@@ -182,7 +184,7 @@ def test_label_artifact_preserves_original_source_url(tmp_path):
     db.close()
 
 
-def test_source_pack_contains_complete_intake_and_uncited_artifacts(tmp_path):
+def test_blocked_source_pack_is_not_reported_as_research_complete(tmp_path):
     from acquire import Acquirer
     from database import ProductDatabase
     from evidence import EvidenceLake
@@ -226,17 +228,10 @@ def test_source_pack_contains_complete_intake_and_uncited_artifacts(tmp_path):
         }],
     })
 
-    with patch("config.DB_PATH", db_path):
-        pack = handle_source_pack(job)
-
-    data = pack["full_data"]
-    assert data["intake_manifest"]["vsl_url"].endswith("/vsl")
-    assert data["intake_manifest"]["publishing_channel"] == "Accesswire"
-    assert data["intake_manifest_hash"]
-    assert artifact_id in data["all_artifacts"]
-    assert "complete spoken-word transcript has not been confirmed" in pack["doc_text"]
-    assert "strongest compliant client-positive positioning" in pack["doc_text"]
-    assert "SOURCE-OF-RECORD RULE" in pack["doc_text"]
+    with patch("config.DB_PATH", db_path), pytest.raises(
+        ValueError, match="Source pack is blocked"
+    ):
+        handle_source_pack(job)
     db.close()
 
 
@@ -258,6 +253,33 @@ def test_generation_prompt_enforces_client_positive_compliance_boundary():
     assert "exclusive factual source for the draft" in prompt
     assert "EDITORIAL DELIVERY:" in prompt
     assert "Editorial review occurs after drafting" in prompt
+
+
+def test_category_conflict_uses_performance_marketing_not_watchdog_posture():
+    from prompt_builders import build_l6_press_release_prompt
+
+    prompt = build_l6_press_release_prompt(
+        {
+            "product": {
+                "product_name": "Example",
+                "official_url": "https://example.com",
+                "category": "weight_loss",
+            },
+            "compliance": {
+                "category_conflict": {
+                    "declared_category": "weight_loss",
+                    "resolved_category": "",
+                    "message": "The source materials use mixed category terms.",
+                    "resolution": "Use the verified product positioning.",
+                },
+            },
+        },
+        {"platform": "Accesswire"},
+    )
+
+    assert "client-positive, evidence-led performance-marketing tone" in prompt
+    assert "strongest supportable product case" in prompt
+    assert "investigative, consumer-protective tone" not in prompt
 
 
 def test_accesswire_r12_uses_neutral_approved_framing_and_never_pauses():

@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional, Dict, List, Any
 
+from offering_taxonomy import normalize_product_type
 
 class OfferingType(Enum):
     """All entity types the system can research and evaluate."""
@@ -113,7 +114,7 @@ class Offering:
         This is the bridge between old and new systems. Existing phase1 output
         flows through here to become a proper entity.
         """
-        type_str = product_data.get("product_type", "")
+        type_str = normalize_product_type(product_data.get("product_type", ""))
         if not type_str:
             offering_type = OfferingType.UNKNOWN
         else:

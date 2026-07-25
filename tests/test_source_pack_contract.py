@@ -236,6 +236,35 @@ def test_structured_buyer_protection_fields_enter_publication_ledger():
     )
 
 
+def test_structured_dict_order_does_not_change_sealed_contract_identity():
+    first = _pack()
+    first["claims_by_type"] = {}
+    first["product"]["refund_policy"] = {
+        "duration_days": 60,
+        "conditions": "If not satisfied with purchase",
+        "contact_method": "Contact support",
+    }
+    first["source_pack_contract"] = {
+        "generated_at": "2026-07-25T00:00:00+00:00"
+    }
+    second = copy.deepcopy(first)
+    second["product"]["refund_policy"] = {
+        "contact_method": "Contact support",
+        "conditions": "If not satisfied with purchase",
+        "duration_days": 60,
+    }
+
+    sealed_first = seal_source_pack(first)
+    sealed_second = seal_source_pack(second)
+
+    assert sealed_first["publication_claims"] == (
+        sealed_second["publication_claims"]
+    )
+    assert sealed_first["source_pack_contract"]["sha256"] == (
+        sealed_second["source_pack_contract"]["sha256"]
+    )
+
+
 def test_structured_facts_reconcile_when_raw_claims_all_fail():
     raw = _pack()
     raw["claims_by_type"] = {
@@ -392,3 +421,51 @@ def test_unreviewed_literal_news_claim_requires_source_attribution():
     assert pack["publication_claims"]["company_info"][0][
         "publication_treatment"
     ] == "source_attribution_required"
+
+
+def test_blocked_compliance_match_is_quarantined_from_publication_claims():
+    raw = _pack()
+    raw["claims_by_type"]["feature"][0]["text"] = (
+        "This product guarantees a winning outcome"
+    )
+    raw["compliance"] = {
+        "results": [{
+            "rule_id": "DECEPTIVE_CLAIMS",
+            "state": "blocked",
+            "matched_text": "guarantees a winning outcome",
+        }]
+    }
+    pack = seal_source_pack(raw)
+    published = [
+        claim["text"]
+        for claims in pack["publication_claims"].values()
+        for claim in claims
+    ]
+    assert "This product guarantees a winning outcome" not in published
+    assert any(
+        item["text"] == "This product guarantees a winning outcome"
+        for item in pack["excluded_publication_claims"]
+    )
+
+
+def test_explicit_unknown_type_blocks_before_workbench_spend():
+    raw = _pack()
+    raw["product"]["product_type"] = "unknown"
+    pack = seal_source_pack(raw)
+    assert pack["source_pack_contract"]["readiness"] == "blocked"
+    with pytest.raises(ValueError, match="unsupported_product_type"):
+        validate_source_pack(pack)
+
+
+def test_structured_claim_never_inherits_false_official_provenance():
+    raw = _pack()
+    raw["claims_by_type"] = {}
+    raw["product"]["key_features"] = ["Operator supplied feature"]
+    raw["all_artifacts"] = {
+        "operator-note": {
+            "source_url": "intake://operator",
+            "source_class": "operator_submitted",
+        }
+    }
+    pack = seal_source_pack(raw)
+    assert not pack["publication_claims"]

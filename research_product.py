@@ -3096,6 +3096,10 @@ def phase4_keyword_research(product_data):
     name = product_data.get("product_name", "")
     category = product_data.get("category", "")
     brand = product_data.get("brand_name", "")
+    from offering_taxonomy import normalize_product_type
+    product_type = normalize_product_type(
+        product_data.get("product_type", "")
+    ) or "general_consumer"
 
     if not name:
         _emit("  No product name — skipping keyword research")
@@ -3103,12 +3107,33 @@ def phase4_keyword_research(product_data):
 
     _emit(f"  Generating keyword intelligence for: {name}")
 
-    # Build keyword sets from product data
+    type_terms = {
+        "supplement": ("ingredients", "how it works", "side effects"),
+        "topical": ("ingredients", "how to use", "warnings"),
+        "device": ("features", "how it works", "specifications"),
+        "food": ("ingredients", "nutrition facts", "allergens"),
+        "cannabis": ("cannabinoid profile", "lab results", "availability"),
+        "telehealth": ("how it works", "pricing", "states available"),
+        "info_product": ("what is included", "how it works", "creator"),
+        "financial": ("topics covered", "subscription", "track record"),
+        "software": ("features", "pricing", "integrations"),
+        "service": ("services", "pricing", "credentials"),
+        "program": ("what is included", "duration", "instructor"),
+        "subscription": ("what is included", "pricing", "cancel"),
+        "professional": ("services", "credentials", "service area"),
+        "gaming": ("how it works", "what is included", "limitations"),
+        "collectible": ("materials", "value", "offer details"),
+        "research_peptide": ("purity", "research use only", "storage"),
+        "general_consumer": ("features", "how it works", "offer details"),
+    }
+    reader_terms = type_terms.get(product_type, type_terms["general_consumer"])
+
+    # Build buyer-first keyword sets from the exact product type. Trust and
+    # limitation intent is present but never allowed to dominate the strategy.
     keywords = {
         "primary": [
             f"{name} review",
             f"{name} review 2026",
-            f"{name} supplement",
             f"{name} reviews",
         ],
         "buyer_intent": [
@@ -3119,29 +3144,28 @@ def phase4_keyword_research(product_data):
             f"{name} pricing",
             f"buy {name}",
         ],
-        "informational": [],
+        "informational": [f"{name} {term}" for term in reader_terms],
         "comparison": [
             f"{name} vs",
             f"{name} alternatives",
             f"is {name} worth it",
         ],
-        "safety_queries": [
-            f"{name} side effects",
-            f"{name} ingredients",
-            f"is {name} safe",
+        "trust_and_limitations": [
             f"is {name} legit",
-            f"{name} complaints",
-            f"{name} scam",
+            f"{name} limitations",
+            f"{name} refund policy",
         ],
         "people_also_ask": [
-            f"Does {name} really work?",
-            f"What are the ingredients in {name}?",
-            f"Is {name} FDA approved?",
-            f"How long does {name} take to work?",
-            f"Can you buy {name} on Amazon?",
-            f"What are the side effects of {name}?",
+            f"What is {name}?",
+            f"How does {name} work?",
+            f"What does {name} include?",
+            f"How much does {name} cost?",
+            f"Who is {name} designed for?",
+            f"What are the limitations of {name}?",
         ],
     }
+    if product_type == "supplement":
+        keywords["primary"].append(f"{name} supplement")
 
     # Add category-specific informational keywords
     category_keywords = {
@@ -3157,7 +3181,10 @@ def phase4_keyword_research(product_data):
         "gut_health": ["best probiotics 2026", "gut health supplements review"],
         "immune_health": ["best immune support supplements 2026", "elderberry supplements review"],
     }
-    keywords["informational"] = category_keywords.get(category, [f"best {category} supplements 2026"])
+    if product_type == "supplement" and category:
+        keywords["informational"].extend(
+            category_keywords.get(category, [f"best {category} supplements 2026"])
+        )
 
     # Add brand-specific queries
     if brand and brand.lower() != name.lower():
@@ -3188,6 +3215,10 @@ def phase5_reputation_check(product_data):
 
     name = product_data.get("product_name", "")
     brand = product_data.get("brand_name", "")
+    from offering_taxonomy import normalize_product_type
+    product_type = normalize_product_type(
+        product_data.get("product_type", "")
+    ) or "general_consumer"
 
     if not name:
         return {}
@@ -3196,15 +3227,24 @@ def phase5_reputation_check(product_data):
 
     # We generate the search queries that should be run
     # (actual WebSearch happens at runtime when the tool is invoked via Claude Code)
+    queries = [
+        f'"{name}" reviews',
+        f'"{name}" site:trustpilot.com',
+        f'"{name}" OR "{brand}" site:bbb.org' if brand else f'"{name}" site:bbb.org',
+        f'"{name}" refund OR cancellation OR customer support',
+    ]
+    if product_type in {
+        "supplement", "topical", "food", "cannabis", "telehealth",
+        "research_peptide",
+    }:
+        queries.append(
+            f'"{brand or name}" FDA warning letter'
+        )
+    if product_type in {"financial", "telehealth", "professional"}:
+        queries.append(f'"{brand or name}" license OR registration')
+
     reputation = {
-        "search_queries_to_run": [
-            f'"{name}" review site:reddit.com',
-            f'"{name}" site:trustpilot.com',
-            f'"{name}" OR "{brand}" site:bbb.org' if brand else f'"{name}" site:bbb.org',
-            f'"{name}" complaint OR scam OR warning',
-            f'"{brand}" FDA warning letter' if brand else f'"{name}" FDA warning',
-            f'"{brand}" lawsuit' if brand else f'"{name}" lawsuit',
-        ],
+        "search_queries_to_run": queries,
         "bbb_rating": "Check required",
         "trustpilot_rating": "Check required",
         "reddit_sentiment": "Check required",
@@ -3218,7 +3258,6 @@ def phase5_reputation_check(product_data):
     _emit(f"  Generated {len(reputation['search_queries_to_run'])} reputation check queries")
 
     # Query FDA CAERS for adverse event reports
-    product_type = product_data.get("product_type", "supplement")
     if product_type in ("supplement", "food", "topical"):
         _emit(f"  [FDA CAERS] Querying adverse event reports...")
         caers = _query_fda_caers(name, brand)

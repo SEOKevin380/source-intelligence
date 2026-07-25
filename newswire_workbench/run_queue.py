@@ -245,6 +245,18 @@ class RunJobRepository:
         token = uuid.uuid4().hex
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            # A cancellation request is terminal once its worker lease expires.
+            # Otherwise a dead worker leaves an unclaimable running row forever.
+            conn.execute(
+                """UPDATE run_jobs
+                   SET status='cancelled',
+                       terminal_code='cancelled_by_operator',
+                       lease_token='', lease_expires_at='',
+                       completed_at=?, updated_at=?
+                   WHERE status='running' AND cancel_requested=1
+                     AND lease_expires_at < ?""",
+                (now, now, now),
+            )
             row = conn.execute(
                 """SELECT * FROM run_jobs
                    WHERE cancel_requested=0
@@ -376,7 +388,8 @@ class RunJobRepository:
                    SET status=?, terminal_code=?, result_json=?, error_json=?,
                        lease_token='', lease_expires_at='', completed_at=?,
                        updated_at=?
-                   WHERE id=? AND lease_token=? AND status='running'""",
+                   WHERE id=? AND lease_token=? AND status='running'
+                     AND lease_expires_at >= ?""",
                 (
                     status,
                     terminal_code,
@@ -386,6 +399,7 @@ class RunJobRepository:
                     now,
                     job_id,
                     lease_token,
+                    now,
                 ),
             )
             if changed.rowcount != 1:

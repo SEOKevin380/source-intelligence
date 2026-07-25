@@ -9,6 +9,7 @@ Unknown types fail closed — they cannot proceed without human classification.
 """
 
 from entities import OfferingType
+from offering_taxonomy import assert_taxonomy_complete
 
 
 INTELLIGENCE_PACKS = {
@@ -356,6 +357,8 @@ INTELLIGENCE_PACKS = {
         ],
     },
 }
+
+assert_taxonomy_complete({offering_type.value for offering_type in OfferingType})
 
 
 def get_pack(offering_type: OfferingType) -> dict:

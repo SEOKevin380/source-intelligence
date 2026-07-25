@@ -115,7 +115,9 @@ def audit_article(
             break
         seen.add(repaired)
 
-    final_findings = deterministic_findings(current, platform, vertical)
+    final_findings = deterministic_findings(
+        current, platform, vertical, affiliate_href
+    )
     blockers, recommendations = partition_findings(final_findings)
     mechanical_remaining = [
         item for item in blockers if item.get("id") in MECHANICAL_GATES

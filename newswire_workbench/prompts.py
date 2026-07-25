@@ -3,6 +3,7 @@
 import json
 import re
 
+from offering_taxonomy import workbench_route
 from .publication_profiles import publication_profile
 
 
@@ -66,22 +67,127 @@ def select_stage_editorial_context(
     return "\n\n".join(selected)
 
 VERTICAL_TERMS = {
-    "health": ("supplement", "telehealth", "vitamin", "ingredient", "serving size"),
+    "supplement": (
+        "supplement", "vitamin", "capsule", "serving size",
+        "supplement facts",
+    ),
+    "topical": ("topical", "cream", "serum", "apply to skin", "skin care"),
+    "food": ("functional food", "nutrition facts", "allergen", "beverage"),
+    "cannabis": ("cannabis", "cbd", "thc", "cannabinoid", "hemp"),
+    "telehealth": (
+        "telehealth", "telemedicine", "prescriber", "medical consultation",
+    ),
+    "research_peptide": (
+        "research peptide", "research use only", "peptide sequence",
+        "not for human consumption",
+    ),
     "financial": ("financial", "investment", "stock", "newsletter", "trading"),
     "gaming": ("lottery", "lotto", "gaming", "sweepstakes", "contest"),
     "collectible": ("coin", "collectible", "commemorative", "plated", "memorabilia"),
     "device": ("device", "gadget", "electronics", "power saver", "appliance"),
+    "software": ("software", "saas", "mobile app", "web app"),
+    "info_product": ("course", "ebook", "training", "masterclass"),
+    "subscription": ("subscription", "membership", "monthly box"),
+    "service": ("service provider", "done-for-you service"),
+    "program": ("coaching program", "certification program"),
+    "professional": ("licensed professional", "professional practice"),
 }
 
 
 def detect_vertical(source_text: str) -> str:
     lowered = source_text.casefold()
+    product_type_match = re.search(
+        r'"product_type"\s*:\s*"([^"]+)"', lowered
+    )
+    if product_type_match:
+        return workbench_route(product_type_match.group(1))
     scores = {
         vertical: sum(lowered.count(term) for term in terms)
         for vertical, terms in VERTICAL_TERMS.items()
     }
     best = max(scores, key=scores.get)
     return best if scores[best] else "general_consumer"
+
+
+PRODUCT_TYPE_COVERAGE = {
+    "supplement": (
+        "formula identity, ingredient amounts, serving directions, supply, "
+        "seller-positioned benefits, evidence boundaries, safety, and offer terms"
+    ),
+    "topical": (
+        "active and inactive ingredients, application method, intended use, "
+        "warnings, net contents, seller-positioned benefits, and offer terms"
+    ),
+    "device": (
+        "documented features, specifications, setup, intended operation, "
+        "certifications or clearance status when supplied, warranty, and offer"
+    ),
+    "food": (
+        "ingredients, Nutrition Facts, serving size, allergens, certifications, "
+        "taste or use only when documented, and the complete offer"
+    ),
+    "cannabis": (
+        "cannabinoid and terpene profile, THC/CBD content, supplied laboratory "
+        "results, consumption method, age/state availability, and offer terms"
+    ),
+    "telehealth": (
+        "the provider, platform, prescriber relationship, consultation process, "
+        "states served, medications or services offered, pricing, and limitations"
+    ),
+    "info_product": (
+        "what is included, format, creator credentials, access, practical reader "
+        "fit, pricing, refund terms, and support"
+    ),
+    "financial": (
+        "publication identity, topics covered, thesis, subscription terms, "
+        "documented track-record claims, regulatory context, and investment risk"
+    ),
+    "software": (
+        "core workflows, features, supported platforms, integrations, security "
+        "and privacy facts, pricing tiers, onboarding, and support"
+    ),
+    "service": (
+        "service scope, process, service area, credentials, deliverables, pricing, "
+        "guarantees when documented, and client fit"
+    ),
+    "program": (
+        "program structure, modules or milestones, duration, delivery, instructor "
+        "credentials, pricing, expected participation, and documented outcomes"
+    ),
+    "subscription": (
+        "included items or access, billing frequency, renewal, cancellation, "
+        "trial terms, delivery cadence, pricing, and member fit"
+    ),
+    "professional": (
+        "services offered, professional credentials, experience, service area, "
+        "engagement process, pricing structure, and scope limitations"
+    ),
+    "gaming": (
+        "game or entertainment mechanics, inclusions, access, eligibility, "
+        "randomness or odds limitations, jurisdiction, billing, and refund terms"
+    ),
+    "collectible": (
+        "item identity, materials, dimensions, finish, denomination or legal-"
+        "tender status, edition facts, seller identity, shipping, and offer terms"
+    ),
+    "research_peptide": (
+        "compound identity, sequence, purity, molecular weight, CAS number, form, "
+        "amount, storage, research evidence, and research-use-only restrictions"
+    ),
+}
+
+
+def product_type_execution_contract(vertical: str) -> str:
+    """Return the product-specific reader coverage contract for every route."""
+    coverage = PRODUCT_TYPE_COVERAGE.get(vertical)
+    if not coverage:
+        return ""
+    return (
+        f"Product-type contract ({vertical}): build the strongest supportable, "
+        f"client-positive commercial story around {coverage}. Preserve seller "
+        "attribution where required. State material limitations once, in measured "
+        "language; do not convert the article into a watchdog report."
+    )
 
 
 def generation_prompt(source_text: str, platform: str, vertical: str,
@@ -249,6 +355,7 @@ Operating rules:
   wording only when the result remains on the same intent and is more specific,
   accurate, and compelling than supplied ranking titles.
 - Editorial depth contract: {depth_contract}
+- {product_type_execution_contract(vertical)}
 {barchart_coverage_plan}
 {accesswire_gaming_plan}
 - Keep the opening disclosure concise: “Paid Advertorial: A commission may be
@@ -362,6 +469,7 @@ advertorial. Perform a {scope} on this {vertical} article.
 The objective is compliant publication, not refusal. Identify exact edits that
 preserve the strongest supportable commercial and SEO value. Missing evidence
 means omit or qualify the claim; it does not justify inventing facts.
+{product_type_execution_contract(vertical)}
 
 Decision authority is strict:
 regulator/law > publisher policy > sealed source contract > house policy >
@@ -686,6 +794,7 @@ COMPLIANCE REPORT:
 
 FINAL OUTPUT ACCEPTANCE CONTRACT:
 - Return one complete revised article, not a summary or patch.
+- {product_type_execution_contract(vertical)}
 {final_depth_check}
 """
 
@@ -695,6 +804,7 @@ def seo_prompt(source_text: str, article: str, platform: str,
     return f"""Optimize this already compliant {platform} {vertical} advertorial
 for maximum defensible SEO and conversion performance.
 
+- {product_type_execution_contract(vertical)}
 - Preserve every factual and compliance limitation.
 - Make the client's strongest supportable commercial case. Verified value,
   product identity, differentiators, ideal-reader fit, and next action should

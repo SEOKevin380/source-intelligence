@@ -229,6 +229,7 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
     mappings = []
     attribution_violations = []
     attribution_violation_keys = set()
+    attribution_violation_index = {}
     for sentence_record in _sentence_records(article):
         sentence = sentence_record["text"]
         sentence_tokens = _tokens(sentence)
@@ -279,12 +280,32 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
                 ):
                     violation_key = (sentence, treatment)
                     if violation_key in attribution_violation_keys:
+                        attribution_violations[
+                            attribution_violation_index[violation_key]
+                        ]["claims"].append({
+                            "claim_id": claim["claim_id"],
+                            "claim_text": claim["text"],
+                            "claim_type": claim["claim_type"],
+                            "source_class": claim["source_class"],
+                            "artifact_id": claim["artifact_id"],
+                        })
                         continue
                     attribution_violation_keys.add(violation_key)
+                    attribution_violation_index[violation_key] = len(
+                        attribution_violations
+                    )
                     attribution_violations.append({
                         "article_sentence": sentence,
                         "claim_id": claim["claim_id"],
+                        "claim_text": claim["text"],
                         "required_treatment": treatment,
+                        "claims": [{
+                            "claim_id": claim["claim_id"],
+                            "claim_text": claim["text"],
+                            "claim_type": claim["claim_type"],
+                            "source_class": claim["source_class"],
+                            "artifact_id": claim["artifact_id"],
+                        }],
                     })
 
     used_ids = {

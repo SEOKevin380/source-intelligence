@@ -942,9 +942,9 @@ EDITORIAL PHILOSOPHY (NON-NEGOTIABLE — APPLIES TO ALL CONTENT):
 - These are our clients. Never talk negatively about the brand or product.
   Balance means showing what works well AND where limitations exist — not
   being hostile or accusatory.
-- Never tell the reader to buy. Never tell the reader not to buy. Present
-  sourced facts, ingredient research, dose comparisons, and safety data —
-  then let the reader decide.
+- Give the right reader a clear, accurate next step and strong CTA when the
+  verified offer supports it. Present sourced facts, product-specific research,
+  and measured limitations without pressure, fabricated urgency, or guarantees.
 - If the label says one thing and the sales page markets another, lead with
   what the LABEL actually contains and what those ingredients do per research.
   This is buyer-protection information gain, not an accusation against the brand.
@@ -1802,14 +1802,24 @@ provided for reader awareness, not as a contraindication for the product itself.
                 block += "\n═══ EDITORIAL GUIDANCE ═══\n"
                 block += "VOICE: Write from the verified marketing claims provided.\n"
                 block += "Focus on what the brand states about its product.\n"
-                block += "Use investigative, consumer-protective tone throughout.\n\n"
+                block += (
+                    "Use a client-positive, evidence-led performance-marketing "
+                    "tone. Explain the documented category discrepancy once, "
+                    "then present the strongest supportable product case with "
+                    "measured limitations.\n\n"
+                )
                 block += "\n".join(ref_lines)
                 block += "\n"
             else:
                 block += "\n═══ EDITORIAL GUIDANCE ═══\n"
                 block += "VOICE: Write from the verified marketing claims provided.\n"
                 block += "Focus on what the brand states about its product.\n"
-                block += "Use investigative, consumer-protective tone throughout.\n\n"
+                block += (
+                    "Use a client-positive, evidence-led performance-marketing "
+                    "tone. Explain the documented category discrepancy once, "
+                    "then present the strongest supportable product case with "
+                    "measured limitations.\n\n"
+                )
     else:
         # Normal path: use resolved category if conflict was auto-resolved
         exemplar_category = category
@@ -2385,8 +2395,11 @@ cannibalizes the existing coverage.
         slug_lower = previous.lower()
         if 'same-name' in slug_lower or 'warning' in slug_lower:
             prompt += "NOTE: Previous release included a same-name/confusion warning.\n"
-            prompt += "Carry forward this consumer protection angle. Direct readers to verify\n"
-            prompt += "they are on the correct official URL before purchasing.\n\n"
+            prompt += (
+                "Carry forward the documented identity-clarity angle without "
+                "turning it into an adversarial warning. Help readers confirm "
+                "the correct product and official URL before purchasing.\n\n"
+            )
 
     if competitor:
         prompt += f"""

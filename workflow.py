@@ -329,6 +329,7 @@ class Pipeline:
         """
         stages = job.get_stages()
         job.status = JobStatus.RUNNING
+        job.error = ""
         self._store.save(job)
 
         start_time = time.time()
@@ -455,6 +456,7 @@ class Pipeline:
         # All stages completed
         job.elapsed_seconds = elapsed_before_run + (time.time() - start_time)
         job.status = JobStatus.COMPLETED
+        job.error = ""
         job.completed_at = datetime.now(timezone.utc).isoformat()
         self._store.save(job)
         self._emit(f"\n  Pipeline completed ({job.elapsed_seconds:.1f}s total)")

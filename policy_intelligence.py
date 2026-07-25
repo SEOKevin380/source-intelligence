@@ -13,6 +13,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+from offering_taxonomy import policy_vertical_aliases
 
 ROOT = Path(__file__).resolve().parent
 REGISTRY_PATH = ROOT / "policy_sources.json"
@@ -68,10 +69,16 @@ def load_snapshot(path: Path = SNAPSHOT_PATH) -> dict:
 
 def applicable_sources(vertical: str, registry: dict | None = None) -> list[dict]:
     registry = registry or load_registry()
-    vertical = (vertical or "general_consumer").casefold()
+    aliases = policy_vertical_aliases(vertical or "general_consumer")
     return [
         item for item in registry.get("sources", [])
-        if "all" in item.get("verticals", []) or vertical in item.get("verticals", [])
+        if (
+            "all" in item.get("verticals", [])
+            or aliases.intersection(
+                str(value).casefold()
+                for value in item.get("verticals", [])
+            )
+        )
     ]
 
 

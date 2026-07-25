@@ -6,6 +6,10 @@ import html
 import json
 from datetime import datetime, timezone
 
+from offering_taxonomy import (
+    CANONICAL_PRODUCT_TYPES,
+    normalize_product_type,
+)
 
 CONTRACT_NAME = "mbk.source-intelligence.publication-pack"
 CONTRACT_VERSION = 2
@@ -128,15 +132,52 @@ def _canonical_payload(pack: dict) -> bytes:
     ).encode("utf-8")
 
 
-def _first_artifact_id(pack: dict) -> str:
+def _structured_source_artifact(pack: dict) -> tuple[str, str]:
+    """Resolve provenance for structured facts without laundering context."""
     artifacts = pack.get("all_artifacts") or {}
-    if isinstance(artifacts, dict) and artifacts:
-        return str(next(iter(artifacts)))
-    if isinstance(artifacts, list):
-        for artifact in artifacts:
-            if isinstance(artifact, dict) and artifact.get("artifact_id"):
-                return str(artifact["artifact_id"])
-    return "structured-source-record"
+    if isinstance(artifacts, dict):
+        candidates = [
+            (str(artifact_id), artifact or {})
+            for artifact_id, artifact in artifacts.items()
+        ]
+    else:
+        candidates = [
+            (str(artifact.get("artifact_id", "")), artifact)
+            for artifact in artifacts
+            if isinstance(artifact, dict)
+        ]
+    for preferred in ("official_vendor", "authorized_reseller"):
+        for artifact_id, artifact in candidates:
+            source_class = str(
+                artifact.get("source_class", "")
+            ).strip().casefold()
+            if artifact_id and source_class == preferred:
+                return artifact_id, source_class
+    official_url = str(
+        (pack.get("product") or {}).get("official_url", "")
+    ).strip()
+    official_manifest_ids = {
+        str(item.get("artifact_id", ""))
+        for item in pack.get("source_manifest", []) or []
+        if isinstance(item, dict)
+        and str(item.get("type", "")).casefold()
+        in {"official", "official_page", "vendor_page"}
+    }
+    for artifact_id, artifact in candidates:
+        source_url = str(artifact.get("source_url", "")).strip()
+        if artifact_id and (
+            artifact_id in official_manifest_ids
+            or (official_url and source_url == official_url)
+        ):
+            return artifact_id, "official_vendor"
+    # Older packs may omit source_class. Preserve the missing provenance rather
+    # than falsely promoting the first artifact to an official seller record.
+    for artifact_id, artifact in candidates:
+        if artifact_id:
+            return artifact_id, str(
+                artifact.get("source_class", "")
+            ).strip().casefold()
+    return "", ""
 
 
 def _structured_product_claims(pack: dict) -> dict:
@@ -147,7 +188,7 @@ def _structured_product_claims(pack: dict) -> dict:
     they remain explicitly seller/source-material attributed.
     """
     product = pack.get("product") or {}
-    artifact_id = _first_artifact_id(pack)
+    artifact_id, source_class = _structured_source_artifact(pack)
     migrated = {}
 
     def add(claim_type: str, field: str, text: str):
@@ -159,7 +200,7 @@ def _structured_product_claims(pack: dict) -> dict:
         migrated.setdefault(claim_type, []).append({
             "text": clean,
             "artifact_id": artifact_id,
-            "source_class": "official_vendor",
+            "source_class": source_class,
             "review_status": "needs_verification",
             "publication_treatment": "seller_attribution_required",
             "metadata": {
@@ -191,7 +232,11 @@ def _structured_product_claims(pack: dict) -> dict:
                 else:
                     add(claim_type, field, item)
         elif isinstance(value, dict):
-            for key, item in value.items():
+            # Structured fields can arrive with different insertion orders
+            # after JSON/database round trips. Claim order must not change the
+            # sealed contract identity for otherwise identical facts.
+            for key in sorted(value, key=lambda item: str(item).casefold()):
+                item = value[key]
                 add(
                     claim_type,
                     field,
@@ -342,6 +387,13 @@ def assess_readiness(full_data: dict) -> tuple:
         reasons.append("missing_product_identity")
     if not str(product.get("official_url", "")).strip():
         reasons.append("missing_official_url")
+    declared_product_type = product.get("product_type", "")
+    product_type = normalize_product_type(declared_product_type)
+    if declared_product_type and product_type not in CANONICAL_PRODUCT_TYPES:
+        reasons.append(
+            "unsupported_product_type:"
+            + (product_type or "missing")
+        )
     captured_manifest = any(
         str(item.get("status", "")).lower()
         in {"captured", "success", "fetched", "available", "reused"}
@@ -372,8 +424,23 @@ def assess_readiness(full_data: dict) -> tuple:
 def seal_source_pack(full_data: dict) -> dict:
     """Return an immutable-style copy with contract metadata and content hash."""
     pack = copy.deepcopy(full_data)
+    product = pack.setdefault("product", {})
+    normalized_product_type = normalize_product_type(
+        product.get("product_type", "")
+    )
+    if normalized_product_type:
+        product["product_type"] = normalized_product_type
     compliance = pack.get("compliance") or {}
     blocked_texts = set()
+    blocked_fragments = set()
+    for result in compliance.get("results", []) or []:
+        if not isinstance(result, dict):
+            continue
+        if str(result.get("state", "")).casefold() != "blocked":
+            continue
+        matched = str(result.get("matched_text", "")).strip().casefold()
+        if matched:
+            blocked_fragments.add(matched)
     for key in (
         "cvd9_blocked_claims", "deceptive_blocked_claims",
     ):
@@ -421,7 +488,16 @@ def seal_source_pack(full_data: dict) -> dict:
                 or artifact.get("source_class")
                 or ""
             ).strip().casefold()
-            compliance_blocked = str(claim.get("text", "")).strip().casefold() in blocked_texts
+            normalized_claim_text = str(
+                claim.get("text", "")
+            ).strip().casefold()
+            compliance_blocked = (
+                normalized_claim_text in blocked_texts
+                or any(
+                    fragment in normalized_claim_text
+                    for fragment in blocked_fragments
+                )
+            )
             seller_attribution_required = bool(
                 claim_type in DEVICE_ATTRIBUTABLE_CLAIM_TYPES
                 and (

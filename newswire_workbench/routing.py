@@ -7,6 +7,7 @@ beats the current route on MBK's regression corpus.
 from dataclasses import dataclass
 import os
 
+from offering_taxonomy import RISK_TIERS, risk_tier
 
 @dataclass(frozen=True)
 class ModelRoute:
@@ -16,23 +17,6 @@ class ModelRoute:
     max_calls: int
     input_per_million: float
     output_per_million: float
-
-
-RISK_TIERS = {
-    "general_consumer": 0,
-    "device": 0,
-    "collectible": 0,
-    "software": 0,
-    "gaming": 1,
-    "health": 2,
-    "telehealth": 2,
-    "financial": 3,
-    "political": 3,
-}
-
-
-def risk_tier(vertical: str) -> int:
-    return RISK_TIERS.get((vertical or "").strip().lower(), 1)
 
 
 def route_for(stage: str, vertical: str = "general_consumer") -> ModelRoute:

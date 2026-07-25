@@ -1,5 +1,6 @@
 """Durable, hash-bound Claude/OpenAI editorial workflow engine."""
 
+import copy
 import hashlib
 import json
 import os
@@ -13,6 +14,7 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup
 
+from offering_taxonomy import exemplar_vertical
 from .prompts import (
     compliance_prompt,
     detect_vertical,
@@ -44,7 +46,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v34-closed-loop-action-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "product-first-blueprint-owner-20260725-r22"
+WORKBENCH_RUNTIME_REVISION = "product-first-blueprint-owner-20260725-r23"
 
 STAGES = (
     "source_ready",
@@ -84,17 +86,49 @@ def _hash(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _pack_fact_source_hash(pack):
+    """Return an order-insensitive identity for the facts in a sealed pack.
+
+    The contract SHA remains the integrity proof for the exact serialized
+    package. Project identity has a different job: equivalent fact ledgers
+    must converge even when harmless array ordering changes during resealing.
+    """
+    payload = copy.deepcopy(pack or {})
+    contract = payload.get("source_pack_contract") or {}
+    contract.pop("sha256", None)
+    contract.pop("generated_at", None)
+
+    def normalize(value):
+        if isinstance(value, dict):
+            return {
+                key: normalize(item)
+                for key, item in sorted(
+                    value.items(), key=lambda pair: str(pair[0]).casefold()
+                )
+            }
+        if isinstance(value, list):
+            normalized = [normalize(item) for item in value]
+            return sorted(
+                normalized,
+                key=lambda item: json.dumps(
+                    item, sort_keys=True, separators=(",", ":"), default=str
+                ),
+            )
+        return value
+
+    payload = normalize(payload)
+    return _hash(json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), default=str
+    ))
+
+
 def _fact_source_hash(source_text):
     """Stable current-product identity across rebuild UUIDs and workflow versions."""
     marker = "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══"
     if marker in str(source_text or ""):
         try:
             pack = json.loads(str(source_text).split(marker, 1)[1].strip())
-            sealed = str(
-                (pack.get("source_pack_contract") or {}).get("sha256") or ""
-            )
-            if re.fullmatch(r"[a-f0-9]{64}", sealed, re.I):
-                return sealed.lower()
+            return _pack_fact_source_hash(pack)
         except (TypeError, ValueError, json.JSONDecodeError):
             pass
     stable = re.sub(
@@ -292,15 +326,20 @@ class WorkbenchEngine:
                 add_column_if_missing(
                     "projects", "fact_source_hash", "TEXT DEFAULT ''"
                 )
+            # Recompute every durable project because r23 intentionally
+            # replaces exact-contract identity with semantic fact identity.
+            # This one-time-compatible backfill also repairs future legacy
+            # rows whose stored fingerprint is blank or stale.
             rows = conn.execute(
-                "SELECT id,source_text FROM projects "
-                "WHERE fact_source_hash='' OR fact_source_hash IS NULL"
+                "SELECT id,source_text,fact_source_hash FROM projects"
             ).fetchall()
             for row in rows:
-                conn.execute(
-                    "UPDATE projects SET fact_source_hash=? WHERE id=?",
-                    (_fact_source_hash(row["source_text"]), row["id"]),
-                )
+                stable_hash = _fact_source_hash(row["source_text"])
+                if stable_hash != str(row["fact_source_hash"] or ""):
+                    conn.execute(
+                        "UPDATE projects SET fact_source_hash=? WHERE id=?",
+                        (stable_hash, row["id"]),
+                    )
             wordpress_columns = {
                 r[1] for r in conn.execute(
                     "PRAGMA table_info(wordpress_drafts)"
@@ -389,7 +428,10 @@ class WorkbenchEngine:
         exemplars = retrieve_exemplars(
             product_name=title,
             platform=platform,
-            vertical=resolved_vertical,
+            # Historical corpus labels are coarser than the live product
+            # taxonomy. Translate only for retrieval; persist and review the
+            # exact product-specific route everywhere else.
+            vertical=exemplar_vertical(resolved_vertical),
             source_url=str(product.get("official_url") or ""),
             previous_releases=str(
                 manifest.get("previous_releases") or "FIRST RELEASE"
@@ -433,9 +475,7 @@ class WorkbenchEngine:
         # Claim the one active project for this exact pack/platform/workflow
         # inside a write transaction. Multiple Streamlit tabs must converge on
         # the same run instead of creating competing "authoritative" projects.
-        fact_source_hash = str(
-            (pack.get("source_pack_contract") or {}).get("sha256") or ""
-        ).strip()
+        fact_source_hash = _pack_fact_source_hash(pack)
         pid = ""
         created = False
         now = _now()
@@ -496,7 +536,8 @@ class WorkbenchEngine:
         article = p.get("article_text") or ""
         plain = re.sub(r"<[^>]+>", " ", article)
         findings = deterministic_findings(
-            article, p["platform"], p["vertical"]
+            article, p["platform"], p["vertical"],
+            _source_affiliate_link(p["source_text"]),
         )
         blockers, recommendations = partition_findings(findings)
         version_match = re.search(
@@ -731,14 +772,26 @@ class WorkbenchEngine:
         return data
 
     def latest_project_from_pack(self, pack, platform, workflow_version=""):
-        """Return the newest durable project for this exact product source."""
-        fact_source_hash = str(
-            (pack.get("source_pack_contract") or {}).get("sha256") or ""
-        ).strip()
+        """Return the authoritative durable project for this product source."""
+        sealed = str(
+            ((pack or {}).get("source_pack_contract") or {}).get("sha256") or ""
+        )
+        if not re.fullmatch(r"[a-f0-9]{64}", sealed, re.I):
+            return None
+        fact_source_hash = _pack_fact_source_hash(pack)
         if not fact_source_hash:
             return None
+        return self._authoritative_project_id(
+            fact_source_hash, platform, workflow_version
+        )
+
+    def _authoritative_project_id(
+        self, fact_source_hash, platform, workflow_version=""
+    ):
+        """Prefer an exact valid completion over later failed duplicate runs."""
         query = (
-            "SELECT id FROM projects WHERE fact_source_hash=? AND platform=?"
+            "SELECT id,stage FROM projects "
+            "WHERE fact_source_hash=? AND platform=?"
         )
         params = [fact_source_hash, platform]
         if workflow_version:
@@ -746,10 +799,25 @@ class WorkbenchEngine:
             params.append(
                 f"%AUTOMATION CONTEXT VERSION: {workflow_version}%"
             )
-        query += " ORDER BY created_at DESC, updated_at DESC, rowid DESC LIMIT 1"
+        query += " ORDER BY created_at DESC, updated_at DESC, rowid DESC"
         with self._connect() as conn:
-            row = conn.execute(query, params).fetchone()
-        return row["id"] if row else None
+            rows = conn.execute(query, params).fetchall()
+        if not rows:
+            return None
+        for row in rows:
+            if row["stage"] != "package_ready":
+                continue
+            try:
+                # Editorial/package authority is independent of a transient
+                # WordPress delivery. Keep the approved exact-hash package
+                # visible and expose delivery as a retryable downstream action.
+                if self.offline_preflight(row["id"])["ready_for_packaging"]:
+                    return row["id"]
+            except (KeyError, TypeError, ValueError, sqlite3.Error):
+                # A corrupt historical completion must not prevent selection
+                # of the newest diagnosable transaction below.
+                continue
+        return rows[0]["id"]
 
     def is_authoritative_run_target(
         self, project_id, pack, platform, workflow_version,
@@ -765,20 +833,19 @@ class WorkbenchEngine:
         """Recheck durable authority during a run, not only at button click."""
         if not self._uses_locked_call_path(project):
             return True
-        with self._connect() as conn:
-            row = conn.execute(
-                """SELECT id FROM projects
-                WHERE fact_source_hash=? AND platform=?
-                AND source_text LIKE ?
-                ORDER BY created_at DESC, updated_at DESC, rowid DESC
-                LIMIT 1""",
-                (
-                    project["fact_source_hash"],
-                    project["platform"],
-                    "%═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══%",
-                ),
-            ).fetchone()
-        return bool(row and row["id"] == project["id"])
+        version_match = re.search(
+            r"(?m)^AUTOMATION CONTEXT VERSION:\s*(\S+)",
+            project["source_text"],
+        )
+        workflow_version = (
+            version_match.group(1) if version_match else ""
+        )
+        authoritative = self._authoritative_project_id(
+            project["fact_source_hash"],
+            project["platform"],
+            workflow_version,
+        )
+        return authoritative == project["id"]
 
     def events(self, project_id):
         with self._connect() as conn:
@@ -970,7 +1037,10 @@ class WorkbenchEngine:
                 "WordPress handoff requires a purpose-bound independent "
                 "editorial approval."
             )
-        findings = deterministic_findings(p["article_text"], p["platform"], p["vertical"])
+        findings = deterministic_findings(
+            p["article_text"], p["platform"], p["vertical"],
+            _source_affiliate_link(p["source_text"]),
+        )
         blockers, _ = partition_findings(findings)
         if blockers:
             raise RuntimeError(
@@ -1191,6 +1261,20 @@ class WorkbenchEngine:
                     "The engine owns a deterministic recovery before the "
                     "remaining independent review."
                 ),
+            }
+        stranded_calls = self._stranded_required_calls(project_id)
+        if stranded_calls:
+            return {
+                **action,
+                "action": "rebuild_corrected_transaction",
+                "label": "Start Corrected Transaction",
+                "reason": (
+                    "A required provider call returned an unusable or rejected "
+                    "artifact and cannot be replayed safely. Preserve its "
+                    "ledger, then start a zero-usage corrected transaction: "
+                    + ", ".join(stranded_calls)
+                ),
+                "may_start_paid_call": True,
             }
         semantic = preflight["semantic_review"]
         repair_route = route_for("compliance_repair", project["vertical"])
@@ -1414,6 +1498,9 @@ class WorkbenchEngine:
                 )
                 self._set_stage(project_id, "admin_review")
         project = self.get(project_id)
+        if project["stage"] == "package_ready":
+            self._ensure_package_export(project)
+            return self.get(project_id)
         self._event(
             project_id, "workflow_step_limit_reached", project["stage"],
             project["article_hash"], {
@@ -2354,7 +2441,8 @@ class WorkbenchEngine:
         elif stage == "drafted":
             report = self._openai_review(p, final=False)
             draft_findings = deterministic_findings(
-                p["article_text"], p["platform"], p["vertical"]
+                p["article_text"], p["platform"], p["vertical"],
+                _source_affiliate_link(p["source_text"]),
             )
             draft_blockers, _ = partition_findings(draft_findings)
             if report.get("verdict") == "approved" and not draft_blockers:
@@ -2806,7 +2894,14 @@ class WorkbenchEngine:
                 messages=[{"role": "user", "content": prompt}],
             )
         except Exception as exc:
-            self._record_llm_call(project_id, purpose, route, status="failed", error=str(exc))
+            self._record_llm_call(
+                project_id, purpose, route, status="failed", error=str(exc),
+                lifecycle="ambiguous_provider_failure",
+                request_hash=request_hash,
+            )
+            project = self.get(project_id)
+            if self._uses_locked_call_path(project):
+                self._set_stage(project_id, "admin_review")
             error_text = str(exc).lower()
             if "authentication" in error_text or "api key is invalid" in error_text or "401" in error_text:
                 raise RuntimeError(
@@ -2826,6 +2921,9 @@ class WorkbenchEngine:
         )
         if getattr(msg, "stop_reason", None) == "max_tokens":
             self._mark_llm_call_lifecycle(call_id, "invalid")
+            project = self.get(project_id)
+            if self._uses_locked_call_path(project):
+                self._set_stage(project_id, "admin_review")
             raise RuntimeError("Claude output was truncated at the token limit; no partial article was saved")
         return text
 
@@ -2932,8 +3030,12 @@ class WorkbenchEngine:
                 )
             except Exception as exc:
                 self._record_llm_call(
-                    p["id"], purpose, route, status="failed", error=str(exc)
+                    p["id"], purpose, route, status="failed", error=str(exc),
+                    lifecycle="ambiguous_provider_failure",
+                    request_hash=request_hash,
                 )
+                if self._uses_locked_call_path(p):
+                    self._set_stage(p["id"], "admin_review")
                 error_text = str(exc).lower()
                 if (
                     "authentication" in error_text
@@ -2966,6 +3068,8 @@ class WorkbenchEngine:
             report = json.loads(text)
         except (TypeError, json.JSONDecodeError) as exc:
             self._mark_llm_call_lifecycle(call_id, "invalid")
+            if self._uses_locked_call_path(p):
+                self._set_stage(p["id"], "admin_review")
             self._event(
                 p["id"],
                 "reviewer_output_invalid",
@@ -2987,6 +3091,8 @@ class WorkbenchEngine:
             self._validate_report(report)
         except ValueError as exc:
             self._mark_llm_call_lifecycle(call_id, "invalid")
+            if self._uses_locked_call_path(p):
+                self._set_stage(p["id"], "admin_review")
             self._event(
                 p["id"],
                 "reviewer_report_invalid",
@@ -3024,7 +3130,8 @@ class WorkbenchEngine:
         )
         report = self._remove_house_rule_conflicts(report, p["article_text"])
         deterministic = deterministic_findings(
-            p["article_text"], p["platform"], p["vertical"]
+            p["article_text"], p["platform"], p["vertical"],
+            _source_affiliate_link(p["source_text"]),
         )
         if deterministic:
             existing = report.setdefault("mandatory_edits", [])
@@ -3076,6 +3183,16 @@ class WorkbenchEngine:
                     continue
                 sentence = violation["article_sentence"]
                 treatment = violation["required_treatment"]
+                claim_texts = [
+                    str(item.get("claim_text") or "").strip()
+                    for item in violation.get("claims") or []
+                    if str(item.get("claim_text") or "").strip()
+                ]
+                attribution_lead = (
+                    "According to the seller,"
+                    if treatment == "seller_attribution_required"
+                    else "According to the recorded source,"
+                )
                 existing.append({
                     "id": finding_id,
                     "category": "Claim provenance",
@@ -3088,8 +3205,10 @@ class WorkbenchEngine:
                     # prefixing attribution to the entire sentence. The repair
                     # model must reconstruct from isolated ledger claims.
                     "replacement": (
-                        "Reconstruct this sentence from isolated permitted "
-                        "claim text and add claim-local attribution."
+                        "Delete the mixed sentence. Write a standalone sentence "
+                        f"beginning “{attribution_lead}” and use only these "
+                        "permitted claim texts, without adding a bridge fact: "
+                        + " | ".join(claim_texts)
                     ),
                 })
             report["mandatory_count"] = len(existing)
@@ -3158,6 +3277,8 @@ class WorkbenchEngine:
         if exact_input:
             return pending
         self._mark_llm_call_lifecycle(pending["id"], "stale_input")
+        if self._uses_locked_call_path(project):
+            self._set_stage(project_id, "admin_review")
         self._event(
             project_id,
             "paid_response_input_mismatch",
@@ -3275,6 +3396,27 @@ class WorkbenchEngine:
                 "review instead of repeating paid work"
             )
 
+    def _stranded_required_calls(self, project_id):
+        """Return consumed locked-path calls that cannot advance or replay."""
+        project = self.get(project_id)
+        if not self._uses_locked_call_path(project):
+            return []
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT stage,lifecycle FROM llm_calls
+                WHERE project_id=? AND stage IN (?,?,?,?)
+                AND status='success'
+                AND lifecycle IN (
+                    'invalid','candidate_rejected','stale_input',
+                    'ambiguous_provider_failure'
+                )
+                ORDER BY id""",
+                (project_id, *REQUIRED_CALL_PATH),
+            ).fetchall()
+        return [
+            f"{row['stage']}:{row['lifecycle']}" for row in rows
+        ]
+
     def _purpose_call_limit(self, project, purpose, route):
         """Return the authoritative per-purpose limit for this project."""
         if self._uses_locked_call_path(project):
@@ -3312,7 +3454,10 @@ class WorkbenchEngine:
             return conn.execute(
                 """SELECT COUNT(*) FROM llm_calls
                 WHERE project_id=? AND stage=?
-                AND (status='success' OR estimated_cost>0)""",
+                AND (
+                    status='success' OR estimated_cost>0
+                    OR lifecycle='ambiguous_provider_failure'
+                )""",
                 (project_id, stage),
             ).fetchone()[0]
 
@@ -3321,6 +3466,7 @@ class WorkbenchEngine:
             row = conn.execute(
                 """SELECT
                 COALESCE(SUM(CASE WHEN status='success' OR estimated_cost>0
+                    OR lifecycle='ambiguous_provider_failure'
                     THEN 1 ELSE 0 END),0) calls,
                 COUNT(*) attempts,
                 COALESCE(SUM(input_tokens),0) input_tokens,
@@ -3490,6 +3636,26 @@ class WorkbenchEngine:
                 article, p["source_text"], p["vertical"]
             )
         if not article:
+            if call_purpose:
+                pending = self._latest_pending_call(p["id"], call_purpose)
+                if pending:
+                    self._mark_llm_call_lifecycle(
+                        pending["id"], "candidate_rejected"
+                    )
+                if self._uses_locked_call_path(p):
+                    self._set_stage(p["id"], "admin_review")
+                    self._event(
+                        p["id"],
+                        "empty_provider_candidate_rejected",
+                        "admin_review",
+                        p["article_hash"],
+                        {
+                            "purpose": call_purpose,
+                            "paid_call_consumed": True,
+                            "operator_decision_required": False,
+                        },
+                    )
+                    return False
             raise ValueError("Model returned an empty article")
         title = p.get("release_title") or p["title"]
         title_match = re.search(r"<h1\b[^>]*>(.*?)</h1>", article, re.I | re.S)

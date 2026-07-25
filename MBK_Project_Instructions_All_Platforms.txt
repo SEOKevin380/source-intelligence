@@ -396,9 +396,11 @@ amounts" instead of "fully disclosed."
 These principles apply to every release produced from Source Intelligence
 submissions:
 
-- Present verified facts, ingredient research, dose comparisons, and
-  safety data. Let the reader make their own decision.
-- Never tell the reader to buy. Never tell the reader not to buy.
+- Present verified facts, product-specific research, practical comparisons,
+  and safety or material limitations when relevant.
+- Give the right reader a clear, accurate next step and strong CTA when the
+  verified offer supports it. Never pressure an unsuitable reader or fabricate
+  urgency, outcomes, or scarcity.
 - Balance means showing what works well AND where limitations exist.
 - Never fabricate information or republish unverified marketing claims
   as editorial positions.

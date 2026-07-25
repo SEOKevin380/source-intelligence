@@ -139,8 +139,12 @@ def _apply_offering_type_guard(product_data: dict, job: Job) -> dict:
     Ambiguous inputs remain UNKNOWN and therefore stop for human review.
     """
     import re
+    from offering_taxonomy import normalize_product_type
 
     data = dict(product_data or {})
+    declared_type = normalize_product_type(data.get("product_type", ""))
+    if declared_type:
+        data["product_type"] = declared_type
     sf = data.get("supplement_facts", {}) or {}
     ingredients = sf.get("ingredients", []) or []
     identity_text = " ".join(str(value or "") for value in (
@@ -254,7 +258,26 @@ def handle_identify(job: Job) -> dict:
         _cleanup_browser(browser_session)
 
     if not product_data:
-        raise ValueError("Could not extract product data from URL")
+        # Identity is allowed to remain evidence-limited while ACQUIRE tries
+        # every submitted source. This is not a factual promotion: only the
+        # operator-supplied name/URL/type are retained with an audit marker.
+        product_data = {
+            "product_name": job.product_name or "",
+            "official_url": job.url,
+            "product_type": job.metadata.get("product_type", "unknown"),
+            "category": job.metadata.get("category", ""),
+            "description": "",
+            "_identity_fallback": {
+                "status": "primary_extraction_unavailable",
+                "source": "intake_manifest",
+                "requires_downstream_evidence": True,
+            },
+        }
+        if not product_data["product_name"] or not product_data["official_url"]:
+            raise ValueError(
+                "Could not establish product identity from the primary page "
+                "or intake manifest"
+            )
 
     product_data = _apply_offering_type_guard(product_data, job)
 
@@ -1034,6 +1057,7 @@ def handle_extract(job: Job) -> dict:
     is_update = identify_result.get("is_update", False)
     claims_stored = 0
     extraction_errors = []
+    source_artifact_id = None
 
     try:
         from claims import ClaimsLedger, Claim, ClaimType, ReviewStatus
@@ -1041,7 +1065,6 @@ def handle_extract(job: Job) -> dict:
 
         # Determine the source artifact ID (official page stored in ACQUIRE)
         # and load its real properties for authority scoring
-        source_artifact_id = None
         source_artifact = None
         for art in acquire_result.get("artifacts", []):
             if art.get("type") == "official_page":
@@ -1609,7 +1632,7 @@ def handle_extract(job: Job) -> dict:
         try:
             from intelligence_packs import get_pack
             from entities import OfferingType
-            offering_type_str = identify_result.get("offering_type", "supplement")
+            offering_type_str = identify_result.get("offering_type", "unknown")
             try:
                 ot = OfferingType(offering_type_str)
                 pack = get_pack(ot)
@@ -2835,7 +2858,13 @@ def handle_source_pack(job: Job) -> dict:
 
     # Prefer merged product from EXTRACT (includes new ingredients/prices
     # from update mode) over stale IDENTIFY data
-    product_data = _canonical_product_for_job(job)
+    product_data = dict(_canonical_product_for_job(job) or {})
+    product_data.setdefault("product_name", job.product_name or "Unknown Product")
+    product_data.setdefault("official_url", job.url)
+    product_data.setdefault(
+        "product_type",
+        identify_result.get("offering_type", ""),
+    )
     product_name = product_data.get("product_name", "Unknown Product")
 
     # Load claims and evidence
@@ -3292,8 +3321,11 @@ def handle_source_pack(job: Job) -> dict:
         "total_artifacts": len(all_artifacts),
         "required_facts": required_facts_result,
     }
-    from source_pack_contract import seal_source_pack
+    from source_pack_contract import seal_source_pack, validate_source_pack
     full_data = seal_source_pack(full_data)
+    # Never persist a blocked contract as "Research complete" and defer the
+    # failure to the paid workbench. Limited packs are intentionally valid.
+    validate_source_pack(full_data, allow_limited=True)
 
     return {
         "doc_text": doc_text,
@@ -3360,11 +3392,16 @@ def create_update_pipeline(existing_data: dict,
         the same ledger as the original run.
         """
         from entities import OfferingType
-        offering_type_str = product.get("offering_type", "supplement")
+        from offering_taxonomy import normalize_product_type
+        offering_type_str = normalize_product_type(
+            product.get("product_type")
+            or product.get("offering_type")
+            or ""
+        )
         try:
             OfferingType(offering_type_str)
         except ValueError:
-            offering_type_str = "supplement"
+            offering_type_str = "unknown"
 
         # Preserve original offering_id — critical for update provenance
         original_offering_id = existing_data.get("offering_id", "")
