@@ -469,3 +469,23 @@ def test_structured_claim_never_inherits_false_official_provenance():
     }
     pack = seal_source_pack(raw)
     assert not pack["publication_claims"]
+
+
+def test_structured_company_dictionary_skips_blank_and_placeholder_cells():
+    raw = _pack()
+    raw["all_artifacts"]["art-1"]["source_class"] = "official_vendor"
+    raw["product"]["company"] = {
+        "name": "[OPERATOR LEGAL NAME]",
+        "address": "[ADDRESS]",
+        "phone": "",
+        "website": "https://example.com/product",
+    }
+    pack = seal_source_pack(raw)
+    company_claims = [
+        item["text"]
+        for item in pack["publication_claims"].get("company_info", [])
+    ]
+    assert "phone:" not in company_claims
+    assert not any("[OPERATOR LEGAL NAME]" in item for item in company_claims)
+    assert not any("[ADDRESS]" in item for item in company_claims)
+    assert "website: https://example.com/product" in company_claims

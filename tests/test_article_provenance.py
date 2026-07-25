@@ -1,5 +1,6 @@
 from article_provenance import (
     build_article_claim_ledger,
+    ensure_structured_contact_block,
     extract_sealed_pack,
     prune_unattributed_claim_blocks,
 )
@@ -349,3 +350,163 @@ def test_mapped_claim_cannot_smuggle_an_extra_number():
         "<p>The seller lists one unit at $49.99 and promises 50% savings.</p>",
     )
     assert ledger["used_claim_count"] == 0
+
+
+def test_seller_is_clear_is_valid_local_attribution():
+    pack = {
+        "publication_claims": {
+            "feature": [{
+                "claim_id": "limits",
+                "text": "Fortune Numbers are not a prediction",
+                "publication_treatment": "seller_attribution_required",
+            }]
+        }
+    }
+    ledger = build_article_claim_ledger(
+        pack,
+        "<p>The seller is clear: Fortune Numbers are not a prediction.</p>",
+    )
+    assert ledger["used_claim_count"] == 1
+    assert ledger["attribution_violations"] == []
+
+
+def test_generic_support_copy_does_not_map_to_clickbank_claim():
+    pack = {
+        "publication_claims": {
+            "feature": [{
+                "claim_id": "clickbank-support",
+                "text": "ClickBank customer support for billing/refund issues",
+                "publication_treatment": "seller_attribution_required",
+            }]
+        }
+    }
+    ledger = build_article_claim_ledger(
+        pack,
+        "<p>This separation of support is common in digital product sales: "
+        "the vendor handles content issues while a payment processor handles "
+        "billing matters.</p>",
+    )
+    assert ledger["used_claim_count"] == 0
+    assert ledger["attribution_violations"] == []
+
+
+def test_email_at_product_domain_does_not_map_to_website_claim():
+    pack = {
+        "publication_claims": {
+            "company_info": [{
+                "claim_id": "website",
+                "text": "website: https://scratch-fortune.com/",
+                "publication_treatment": "seller_attribution_required",
+            }]
+        }
+    }
+    ledger = build_article_claim_ledger(
+        pack,
+        "<p>Email: support@scratch-fortune.com</p>",
+    )
+    assert ledger["used_claim_count"] == 0
+    assert ledger["attribution_violations"] == []
+
+
+def test_empty_dictionary_label_is_not_a_publication_claim():
+    pack = {
+        "publication_claims": {
+            "company_info": [{
+                "claim_id": "empty-phone",
+                "text": "phone:",
+                "publication_treatment": "seller_attribution_required",
+            }]
+        }
+    }
+    ledger = build_article_claim_ledger(
+        pack,
+        "<p>The direct support phone numbers are appropriate.</p>",
+    )
+    assert ledger["publication_claim_count"] == 0
+    assert ledger["attribution_violations"] == []
+
+
+def test_split_support_headings_form_one_valid_contact_block():
+    pack = {
+        "product": {
+            "product_name": "Scratch Off Fortune",
+            "official_url": "https://scratch-fortune.com/",
+        },
+        "intake_manifest": {
+            "contact_information": {
+                "support_email": "support@scratch-fortune.com",
+                "support_phone_us": "1-800-390-6035",
+                "support_phone_international": "1-208-345-4245",
+                "order_support_provider": "ClickBank",
+                "order_support_url": "https://www.clkbank.com/#!/?",
+            },
+            "refund_terms": "60-Day Refund Guarantee",
+        },
+        "publication_claims": {},
+    }
+    article = """
+    <h2>The Bottom Line</h2><p>Reader conclusion.</p>
+    <h3>Product Support</h3>
+    <ul>
+      <li>Email: support@scratch-fortune.com</li>
+      <li>United States Phone: 1-800-390-6035</li>
+      <li>International Phone: 1-208-345-4245</li>
+      <li>Official Website:
+        <a href="https://scratch-fortune.com/">Current offer</a>
+      </li>
+    </ul>
+    <h3>Order Support and Billing</h3>
+    <ul>
+      <li>Provider: ClickBank</li>
+      <li><a href="https://www.clkbank.com/#!/?">ClickBank Support</a></li>
+    </ul>
+    <h3>Refund Terms</h3>
+    <p>According to the seller, purchases carry a 60-Day Refund Guarantee.</p>
+    """
+    ledger = build_article_claim_ledger(pack, article)
+    assert ledger["coverage_violations"] == []
+
+
+def test_structured_contact_renderer_is_exact_and_idempotent():
+    pack = {
+        "product": {
+            "product_name": "Scratch Off Fortune",
+            "official_url": "https://scratch-fortune.com/",
+        },
+        "intake_manifest": {
+            "contact_information": {
+                "support_email": "support@scratch-fortune.com",
+                "support_phone_us": "1-800-390-6035",
+                "support_phone_international": "1-208-345-4245",
+                "order_support_provider": "ClickBank",
+                "order_support_url": "https://www.clkbank.com/#!/?",
+            },
+            "refund_terms": "60-Day Refund Guarantee",
+        },
+        "publication_claims": {},
+    }
+    initial = (
+        "<h2>Product Support</h2><p>Email omitted.</p>"
+        "<h3>Order Support and Billing</h3><p>Details omitted.</p>"
+    )
+    rendered, report = ensure_structured_contact_block(pack, initial)
+    rerendered, second_report = ensure_structured_contact_block(pack, rendered)
+
+    assert report["changed"] is True
+    assert report["replaced_existing_block"] is True
+    assert second_report["replaced_existing_block"] is True
+    assert rerendered == rendered
+    for exact in (
+        "support@scratch-fortune.com",
+        "1-800-390-6035",
+        "1-208-345-4245",
+        "ClickBank",
+        "https://www.clkbank.com/#!/?",
+        "https://scratch-fortune.com/",
+        "60-Day Refund Guarantee",
+    ):
+        assert exact in rendered
+    assert "Email omitted" not in rendered
+    assert build_article_claim_ledger(pack, rendered)[
+        "coverage_violations"
+    ] == []

@@ -396,10 +396,19 @@ def _structured_product_claims(pack: dict) -> dict:
             # sealed contract identity for otherwise identical facts.
             for key in sorted(value, key=lambda item: str(item).casefold()):
                 item = value[key]
+                clean_item = str(item or "").strip()
+                if (
+                    not clean_item
+                    or clean_item.casefold() in {
+                        "not established", "unknown", "none", "n/a",
+                    }
+                    or re.search(r"\[[^\]]+\]", clean_item)
+                ):
+                    continue
                 add(
                     claim_type,
                     field,
-                    f"{str(key).replace('_', ' ')}: {item}",
+                    f"{str(key).replace('_', ' ')}: {clean_item}",
                 )
         else:
             add(claim_type, field, value)

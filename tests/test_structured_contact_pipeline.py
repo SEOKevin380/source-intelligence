@@ -1,6 +1,11 @@
 import json
 
-from article_provenance import build_article_claim_ledger
+import pytest
+
+from article_provenance import (
+    build_article_claim_ledger,
+    ensure_structured_contact_block,
+)
 from newswire_workbench.prompts import writer_evidence_view
 from prompt_builders import build_l6_press_release_prompt
 from source_pack_contract import (
@@ -179,4 +184,29 @@ def test_contact_coverage_gate_accepts_complete_clickable_contact_block():
         or item["id"] == "P-COVERAGE-REFUND-TERMS"
     ]
 
+    assert contact_violations == []
+
+
+@pytest.mark.parametrize(
+    "product_type",
+    ["topical", "food", "cannabis", "telehealth", "research_peptide"],
+)
+def test_structured_contact_contract_is_vertical_agnostic(product_type):
+    raw = _legacy_pack()
+    raw["product"]["product_type"] = product_type
+    raw["product"]["category"] = product_type
+    sealed = seal_source_pack(raw)
+    rendered, report = ensure_structured_contact_block(
+        sealed,
+        "<h2>Offer Overview</h2><p>According to the seller, this offer is "
+        "described in the supplied record.</p>",
+    )
+    ledger = build_article_claim_ledger(sealed, rendered)
+    contact_violations = [
+        item for item in ledger["coverage_violations"]
+        if item["id"].startswith("P-COVERAGE-CONTACT")
+        or item["id"] == "P-COVERAGE-REFUND-TERMS"
+    ]
+
+    assert report["field_count"] == 5
     assert contact_violations == []

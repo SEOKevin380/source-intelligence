@@ -30,11 +30,26 @@ def _tokens(value: str) -> set[str]:
     stop = {
         "and", "the", "that", "this", "with", "from", "for", "are", "was",
         "were", "has", "have", "its", "into", "may", "seller", "materials",
+        "described", "reported", "stated", "presented", "listed",
+        # Transport/domain furniture is not claim meaning. Treating these as
+        # ordinary tokens allowed an email at one domain to map to that
+        # domain's website claim.
+        "http", "https", "www", "com", "org", "net", "html",
     }
-    return {
-        token for token in re.findall(r"[a-z0-9]+", value.casefold())
-        if len(token) > 2 and token not in stop
-    }
+    tokens = set()
+    for token in re.findall(r"[a-z0-9]+", value.casefold()):
+        if len(token) <= 2 or token in stop:
+            continue
+        if len(token) > 5 and token.endswith("ing"):
+            token = token[:-3]
+        elif len(token) > 4 and token.endswith("ies"):
+            token = token[:-3] + "y"
+        elif len(token) > 4 and token.endswith("ed"):
+            token = token[:-2]
+        elif len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
+            token = token[:-1]
+        tokens.add(token)
+    return tokens
 
 
 def _numbers(value: str) -> set[str]:
@@ -90,6 +105,11 @@ def _attribution_signals(value: str) -> tuple[bool, bool]:
         r"presented|offered|confirmed|specified)\s+(?:by|in)\s+"
         r"(?:the\s+)?(?:seller|vendor|manufacturer|brand|offer|"
         r"product page|sales page|materials?)\b",
+        lowered,
+    ))
+    seller_attributed = seller_attributed or bool(re.search(
+        r"\b(?:the\s+)?(?:seller|vendor|manufacturer|brand|offer)\s+"
+        r"(?:is|was)\s+(?:clear|explicit|specific|transparent)\b",
         lowered,
     ))
     source_attributed = seller_attributed or bool(re.search(
@@ -209,26 +229,80 @@ def _sentences(article: str) -> list[str]:
     return [record["text"] for record in _sentence_records(article)]
 
 
-def _contact_section(article: str) -> tuple[str, list[str]]:
-    """Return visible contact-section text and its link destinations."""
-    soup = BeautifulSoup(html.unescape(article or ""), "html.parser")
-    heading = None
-    for candidate in reversed(soup.find_all(["h1", "h2", "h3"])):
-        if "contact" in candidate.get_text(" ", strip=True).casefold():
-            heading = candidate
-            break
-    if heading is None:
-        return "", []
-    heading_level = int(heading.name[1])
-    nodes = [heading]
-    for sibling in heading.next_siblings:
+def _contact_heading_kind(value: str) -> tuple[bool, bool]:
+    """Return (belongs_to_contact_block, anchors_contact_block)."""
+    folded = re.sub(r"\s+", " ", str(value or "")).strip().casefold()
+    anchor = bool(
+        "contact" in folded
+        or re.search(r"\b(?:product|customer|order|media)\s+support\b", folded)
+        or folded in {"support", "support information"}
+    )
+    family = bool(
+        anchor
+        or re.search(r"\b(?:billing|refund|guarantee)\s+(?:support|terms?)\b", folded)
+        or folded in {
+            "billing",
+            "refund",
+            "refund terms",
+            "guarantee",
+            "guarantee terms",
+        }
+    )
+    return family, anchor
+
+
+def _contact_section_nodes(soup: BeautifulSoup) -> list:
+    """Return the final contiguous contact/support heading family.
+
+    Valid newswire copy commonly splits the final block into ``Product
+    Support``, ``Order Support and Billing``, and ``Refund Terms`` H3s. The
+    earlier gate required the literal word ``Contact`` and therefore reported
+    every exact value as missing even when all of them were visibly present.
+    """
+    headings = list(soup.find_all(["h1", "h2", "h3"]))
+    runs = []
+    current = []
+    for heading in headings:
+        family, _ = _contact_heading_kind(
+            heading.get_text(" ", strip=True)
+        )
+        if family:
+            current.append(heading)
+        else:
+            if current:
+                runs.append(current)
+                current = []
+    if current:
+        runs.append(current)
+    eligible = [
+        run for run in runs
+        if any(
+            _contact_heading_kind(
+                heading.get_text(" ", strip=True)
+            )[1]
+            for heading in run
+        )
+    ]
+    if not eligible:
+        return []
+    run = eligible[-1]
+    start = run[0]
+    allowed_headings = {id(heading) for heading in run}
+    nodes = [start]
+    for sibling in start.next_siblings:
         name = getattr(sibling, "name", None)
-        if (
-            name in {"h1", "h2", "h3"}
-            and int(name[1]) <= heading_level
-        ):
+        if name in {"h1", "h2", "h3"} and id(sibling) not in allowed_headings:
             break
         nodes.append(sibling)
+    return nodes
+
+
+def _contact_section(article: str) -> tuple[str, list[str]]:
+    """Return visible final contact/support-block text and link destinations."""
+    soup = BeautifulSoup(html.unescape(article or ""), "html.parser")
+    nodes = _contact_section_nodes(soup)
+    if not nodes:
+        return "", []
     text = " ".join(
         node.get_text(" ", strip=True)
         if hasattr(node, "get_text")
@@ -244,6 +318,156 @@ def _contact_section(article: str) -> tuple[str, list[str]]:
         if str(anchor.get("href") or "").strip()
     ]
     return re.sub(r"\s+", " ", text).strip(), links
+
+
+def _safe_href(value: str, schemes=("http", "https")) -> str:
+    clean = str(value or "").strip()
+    parsed = urlparse(clean)
+    if parsed.scheme.casefold() not in schemes:
+        return ""
+    return clean
+
+
+def _tel_href(value: str) -> str:
+    clean = str(value or "").strip()
+    digits = re.sub(r"\D", "", clean)
+    if not digits:
+        return ""
+    return ("+" if clean.startswith("+") else "") + digits
+
+
+def ensure_structured_contact_block(
+    pack: dict, article: str
+) -> tuple[str, dict]:
+    """Render submitted contact facts mechanically instead of asking a model.
+
+    The source pack owns these exact values. A model may shape the editorial
+    body, but it must not be the component responsible for copying phone
+    numbers, email addresses, support destinations, or the official URL.
+    """
+    manifest = normalized_intake_manifest(pack)
+    contact = normalize_contact_information(
+        manifest.get("contact_information")
+    )
+    if not contact:
+        return article, {
+            "changed": False,
+            "field_count": 0,
+            "replaced_existing_block": False,
+        }
+
+    soup = BeautifulSoup(html.unescape(article or ""), "html.parser")
+    prior_nodes = _contact_section_nodes(soup)
+    replaced_existing = bool(prior_nodes)
+    for node in prior_nodes:
+        if getattr(node, "parent", None) is not None:
+            node.extract()
+
+    product = pack.get("product") or {}
+    product_name = str(product.get("product_name") or "").strip()
+    official_url = str(product.get("official_url") or "").strip()
+    refund_terms = str(manifest.get("refund_terms") or "").strip()
+    parts = ["<h2><strong>Contact Information</strong></h2>", "<ul>"]
+    if product_name:
+        parts.append(
+            "<li><strong>Product / Brand:</strong> "
+            + html.escape(product_name)
+            + "</li>"
+        )
+    media_name = str(contact.get("media_contact_name") or "").strip()
+    if media_name:
+        parts.append(
+            "<li><strong>Media Contact:</strong> "
+            + html.escape(media_name)
+            + "</li>"
+        )
+    support_email = str(contact.get("support_email") or "").strip()
+    if support_email:
+        escaped_email = html.escape(support_email)
+        parts.append(
+            '<li><strong>Product Support Email:</strong> <a href="mailto:'
+            + html.escape(support_email, quote=True)
+            + '">'
+            + escaped_email
+            + "</a></li>"
+        )
+    for field, label in (
+        ("support_phone_us", "U.S. Support Phone"),
+        ("support_phone_international", "International Support Phone"),
+    ):
+        value = str(contact.get(field) or "").strip()
+        if not value:
+            continue
+        tel = _tel_href(value)
+        rendered = html.escape(value)
+        if tel:
+            rendered = (
+                '<a href="tel:'
+                + html.escape(tel, quote=True)
+                + '">'
+                + rendered
+                + "</a>"
+            )
+        parts.append(
+            f"<li><strong>{label}:</strong> {rendered}</li>"
+        )
+    provider = str(contact.get("order_support_provider") or "").strip()
+    if provider:
+        parts.append(
+            "<li><strong>Order Support Provider:</strong> "
+            + html.escape(provider)
+            + "</li>"
+        )
+    order_url = str(contact.get("order_support_url") or "").strip()
+    safe_order_url = _safe_href(order_url)
+    if order_url:
+        rendered = html.escape(order_url)
+        if safe_order_url:
+            rendered = (
+                '<a href="'
+                + html.escape(safe_order_url, quote=True)
+                + '">'
+                + rendered
+                + "</a>"
+            )
+        parts.append(
+            "<li><strong>Order Support URL:</strong> "
+            + rendered
+            + "</li>"
+        )
+    safe_official_url = _safe_href(official_url)
+    if official_url:
+        rendered = html.escape(official_url)
+        if safe_official_url:
+            rendered = (
+                '<a href="'
+                + html.escape(safe_official_url, quote=True)
+                + '">'
+                + rendered
+                + "</a>"
+            )
+        parts.append(
+            "<li><strong>Official Product Website:</strong> "
+            + rendered
+            + "</li>"
+        )
+    parts.append("</ul>")
+    if refund_terms:
+        parts.append(
+            "<p><strong>Refund / Guarantee Terms:</strong> According to the "
+            "seller, "
+            + html.escape(refund_terms)
+            + ".</p>"
+        )
+    fragment = BeautifulSoup("".join(parts), "html.parser")
+    for node in list(fragment.contents):
+        soup.append(node)
+    rendered_article = str(soup)
+    return rendered_article, {
+        "changed": rendered_article != article,
+        "field_count": len(contact),
+        "replaced_existing_block": replaced_existing,
+    }
 
 
 def _phone_digits(value: str) -> str:
@@ -399,15 +623,30 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
             claim_id = str(item.get("claim_id") or hashlib.sha256(
                 f"{claim_type}:{text}".encode()
             ).hexdigest()[:16])
+            # Empty extracted dictionary cells such as ``phone:`` are labels,
+            # not publication claims. Historical sealed packs can contain
+            # them, so audit defensively as well as fixing future sealing.
+            if re.fullmatch(r"[\w /&().-]+:\s*", text):
+                continue
+            treatment = item.get(
+                "publication_treatment", "direct_fact_allowed"
+            )
+            # Exact public contact destinations are directly reproducible
+            # facts. Requiring "according to the seller" before an email,
+            # phone number, or URL produces unnatural contact blocks and adds
+            # no provenance value; exact-value coverage is enforced below.
+            if claim_type == "company_info" and (
+                re.search(r"https?://|[\w.+-]+@[\w.-]+\.[a-z]{2,}", text, re.I)
+                or len(_phone_digits(text)) >= 7
+            ):
+                treatment = "direct_fact_allowed"
             claims.append({
                 "claim_id": claim_id,
                 "claim_type": claim_type,
                 "text": text,
                 "artifact_id": item.get("artifact_id", ""),
                 "source_class": item.get("source_class", ""),
-                "publication_treatment": item.get(
-                    "publication_treatment", "direct_fact_allowed"
-                ),
+                "publication_treatment": treatment,
                 "tokens": _tokens(text),
             })
 
@@ -440,6 +679,15 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
             if (
                 claim_token_count
                 and overlap >= required_overlap
+                # Precision matters more than fuzzy recall here. The previous
+                # denominator compared against the shorter sentence and mapped
+                # generic "support/billing/issues" copy to a ClickBank claim,
+                # and a generic digital-product sentence to a much richer
+                # Fortune Numbers claim.
+                and (
+                    claim_token_count <= 3
+                    or overlap / claim_token_count >= 0.65
+                )
                 and overlap / denominator >= 0.45
                 # A mapped clause may not smuggle in additional quantities.
                 # Every numeric atom must be supported by the same claim.

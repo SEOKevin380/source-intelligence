@@ -46,7 +46,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v34-closed-loop-action-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "structured-contact-contract-20260725-r25"
+WORKBENCH_RUNTIME_REVISION = "deterministic-provenance-contact-20260725-r26"
 
 STAGES = (
     "source_ready",
@@ -3694,6 +3694,13 @@ class WorkbenchEngine:
             article = ensure_affiliate_links(
                 article, affiliate_href, target=target
             )
+        from article_provenance import (
+            ensure_structured_contact_block,
+            extract_sealed_pack,
+        )
+        article, structured_contact_report = ensure_structured_contact_block(
+            extract_sealed_pack(p["source_text"]), article
+        )
         provenance_prune = {
             "changed": False,
             "removed_block_count": 0,
@@ -3803,6 +3810,18 @@ class WorkbenchEngine:
             json.dumps(diagnostics, indent=2, ensure_ascii=False),
         )
         self._event(p["id"], "article_created", stage, digest, {"filename": filename})
+        if structured_contact_report["changed"]:
+            self._event(
+                p["id"],
+                "structured_contact_block_rendered",
+                stage,
+                digest,
+                {
+                    **structured_contact_report,
+                    "paid_calls_added": 0,
+                    "runtime_revision": WORKBENCH_RUNTIME_REVISION,
+                },
+            )
         if provenance_prune["changed"]:
             self._event(
                 p["id"],
