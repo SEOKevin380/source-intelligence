@@ -1028,7 +1028,10 @@ elif show_form:
             "New data will be MERGED with existing research."
         )
     else:
-        st.caption("Enter product details below to generate a research-backed prompt.")
+        st.caption(
+            "Add the core product details. Source Intelligence will crawl, "
+            "extract, reconcile, and structure the rest."
+        )
 
     fk = st.session_state.form_key
     saved_form = st.session_state.get("form_values", {}) if is_update else {}
@@ -1038,8 +1041,11 @@ elif show_form:
 
     with st.form(f"research_form_{fk}", border=True):
 
-        # ── Required Fields ──
-        st.markdown('<p class="form-section-header">Required</p>', unsafe_allow_html=True)
+        # ── Core operator inputs ──
+        st.markdown(
+            '<p class="form-section-header">Start Here</p>',
+            unsafe_allow_html=True,
+        )
 
         req_col1, req_col2 = st.columns(2)
         with req_col1:
@@ -1086,116 +1092,117 @@ elif show_form:
                 key=f"rd_platform_{fk}",
             )
 
-        # ── Source and editorial inputs — always visible ──
+        # One free-text intake is the normal path. The pipeline converts
+        # labeled contacts, terms, and source URLs into its internal schema.
         st.markdown(
-            '<p class="form-section-header">Source & Editorial Details</p>',
+            '<p class="form-section-header">Anything Else?</p>',
             unsafe_allow_html=True,
         )
-        opt_col1, opt_col2 = st.columns(2)
-        with opt_col1:
-            vsl_url = st.text_input(
-                "VSL URL",
-                value=saved_form.get("vsl_url", ""),
-                placeholder="https://product.com/vsl-page",
-                help="Video sales letter page if separate from main product page",
-                key=f"vsl_url_{fk}",
-            )
-            label_url = st.text_input(
-                "Label Image URL",
-                value=saved_form.get("label_url", ""),
-                placeholder="https://example.com/supplement-facts-label.png",
-                help="Direct URL to a product or supplement facts label image",
-                key=f"label_url_{fk}",
-            )
-            rd_previous = st.text_input(
-                "Previous Release(s)",
-                value=saved_form.get("rd_previous", "FIRST RELEASE"),
-                help="URLs of your previous articles about this product (comma-separated)",
-                key=f"rd_previous_{fk}",
-            )
-        with opt_col2:
-            rd_competitor = st.text_input(
-                "Competitor Release(s)",
-                value=saved_form.get("rd_competitor", ""),
-                placeholder="https://competitor.com/their-review",
-                help="URLs of competitor articles about this product",
-                key=f"rd_competitor_{fk}",
-            )
-            rd_client_title = st.text_input(
-                "Client Locked Title",
-                value=saved_form.get("rd_client_title", ""),
-                placeholder="Leave blank unless client requires a specific title",
-                help="If the client mandates a specific headline",
-                key=f"rd_client_title_{fk}",
-            )
-            rd_notes = st.text_area(
-                "Notes",
-                value=saved_form.get("rd_notes", ""),
-                placeholder="Verified contact info, special instructions, extra context...",
-                height=100,
-                help="Any additional context for the research engine",
-                key=f"rd_notes_{fk}",
-            )
-
-        st.markdown(
-            '<p class="form-section-header">Support, Contact & Terms</p>',
-            unsafe_allow_html=True,
+        rd_notes = st.text_area(
+            "Additional Sources, Contacts, Terms, or Instructions",
+            value=saved_form.get("rd_notes", ""),
+            placeholder=(
+                "Paste whatever the client supplied: source URLs, previous "
+                "releases, label/reference pages, contacts, refund terms, "
+                "billing details, or special instructions. Labeled or plain "
+                "text is fine."
+            ),
+            height=150,
+            help=(
+                "The system extracts structured facts from this text. You do "
+                "not need to copy them into separate fields."
+            ),
+            key=f"rd_notes_{fk}",
         )
         st.caption(
-            "Structured values here are preserved in the sealed source pack "
-            "and required in the final contact block."
+            "That is enough for the normal workflow. Open the section below "
+            "only when you need to override how a specific item is classified."
         )
-        contact_col1, contact_col2 = st.columns(2)
-        with contact_col1:
-            rd_media_contact_name = st.text_input(
-                "Media Contact Name",
-                value=saved_form.get("rd_media_contact_name", ""),
-                placeholder="Required for Newswire.com; optional for product advertorials",
-                key=f"rd_media_contact_name_{fk}",
+
+        with st.expander(
+            "Optional source classification and structured overrides",
+            expanded=False,
+        ):
+            st.caption(
+                "Usually leave this closed. Values here override automatic "
+                "classification when a client requires an exact correction."
             )
-            rd_support_email = st.text_input(
-                "Product Support Email",
-                value=saved_form.get("rd_support_email", ""),
-                placeholder="support@product.com",
-                key=f"rd_support_email_{fk}",
-            )
-            rd_order_support_provider = st.text_input(
-                "Order Support Provider",
-                value=saved_form.get("rd_order_support_provider", ""),
-                placeholder="ClickBank",
-                key=f"rd_order_support_provider_{fk}",
-            )
-            rd_order_support_url = st.text_input(
-                "Order Support URL",
-                value=saved_form.get("rd_order_support_url", ""),
-                placeholder="https://www.clkbank.com/",
-                key=f"rd_order_support_url_{fk}",
-            )
-        with contact_col2:
-            rd_support_phone_us = st.text_input(
-                "U.S. Support Phone",
-                value=saved_form.get("rd_support_phone_us", ""),
-                placeholder="1-800-390-6035",
-                key=f"rd_support_phone_us_{fk}",
-            )
-            rd_support_phone_international = st.text_input(
-                "International Support Phone",
-                value=saved_form.get(
-                    "rd_support_phone_international", ""
-                ),
-                placeholder="1-208-345-4245",
-                key=f"rd_support_phone_international_{fk}",
-            )
-            rd_refund_terms = st.text_area(
-                "Refund / Guarantee Terms",
-                value=saved_form.get("rd_refund_terms", ""),
-                placeholder=(
-                    "60-day refund guarantee; refunds handled under "
-                    "ClickBank's current return policy"
-                ),
-                height=100,
-                key=f"rd_refund_terms_{fk}",
-            )
+            opt_col1, opt_col2 = st.columns(2)
+            with opt_col1:
+                vsl_url = st.text_input(
+                    "VSL URL Override",
+                    value=saved_form.get("vsl_url", ""),
+                    placeholder="https://product.com/vsl-page",
+                    key=f"vsl_url_{fk}",
+                )
+                label_url = st.text_input(
+                    "Label / References URL Override",
+                    value=saved_form.get("label_url", ""),
+                    placeholder="https://product.com/references/",
+                    key=f"label_url_{fk}",
+                )
+                rd_previous = st.text_input(
+                    "Previous Release URL Override(s)",
+                    value=saved_form.get("rd_previous", "FIRST RELEASE"),
+                    key=f"rd_previous_{fk}",
+                )
+            with opt_col2:
+                rd_competitor = st.text_input(
+                    "Competitor Release URL Override(s)",
+                    value=saved_form.get("rd_competitor", ""),
+                    key=f"rd_competitor_{fk}",
+                )
+                rd_client_title = st.text_input(
+                    "Client-Locked Title Override",
+                    value=saved_form.get("rd_client_title", ""),
+                    placeholder="Leave blank unless the client mandates it",
+                    key=f"rd_client_title_{fk}",
+                )
+
+            st.markdown("**Structured contact and terms overrides**")
+            contact_col1, contact_col2 = st.columns(2)
+            with contact_col1:
+                rd_media_contact_name = st.text_input(
+                    "Media Contact Name Override",
+                    value=saved_form.get("rd_media_contact_name", ""),
+                    key=f"rd_media_contact_name_{fk}",
+                )
+                rd_support_email = st.text_input(
+                    "Product Support Email Override",
+                    value=saved_form.get("rd_support_email", ""),
+                    key=f"rd_support_email_{fk}",
+                )
+                rd_order_support_provider = st.text_input(
+                    "Order Support Provider Override",
+                    value=saved_form.get(
+                        "rd_order_support_provider", ""
+                    ),
+                    key=f"rd_order_support_provider_{fk}",
+                )
+                rd_order_support_url = st.text_input(
+                    "Order Support URL Override",
+                    value=saved_form.get("rd_order_support_url", ""),
+                    key=f"rd_order_support_url_{fk}",
+                )
+            with contact_col2:
+                rd_support_phone_us = st.text_input(
+                    "U.S. Support Phone Override",
+                    value=saved_form.get("rd_support_phone_us", ""),
+                    key=f"rd_support_phone_us_{fk}",
+                )
+                rd_support_phone_international = st.text_input(
+                    "International Support Phone Override",
+                    value=saved_form.get(
+                        "rd_support_phone_international", ""
+                    ),
+                    key=f"rd_support_phone_international_{fk}",
+                )
+                rd_refund_terms = st.text_area(
+                    "Refund / Guarantee Override",
+                    value=saved_form.get("rd_refund_terms", ""),
+                    height=100,
+                    key=f"rd_refund_terms_{fk}",
+                )
 
         # ── Update Mode: Additional Data Fields ──
         if is_update and "result_data" in st.session_state:
@@ -1236,6 +1243,66 @@ elif show_form:
         # Input validation
         errors = []
         warnings = []
+
+        from source_pack_contract import (
+            extract_labeled_source_inputs,
+            resolve_intake_contact_terms,
+        )
+
+        inferred_sources = extract_labeled_source_inputs(rd_notes)
+        vsl_url = (
+            str(vsl_url or "").strip()
+            or inferred_sources.get("vsl_url", "")
+        )
+        label_url = (
+            str(label_url or "").strip()
+            or inferred_sources.get("label_source_url", "")
+        )
+        if (
+            inferred_sources.get("previous_releases")
+            and str(rd_previous or "").strip().casefold()
+            in {"", "first release"}
+        ):
+            rd_previous = inferred_sources["previous_releases"]
+        if (
+            inferred_sources.get("competitor_releases")
+            and not str(rd_competitor or "").strip()
+        ):
+            rd_competitor = inferred_sources["competitor_releases"]
+
+        resolved_contact, resolved_refund_terms = (
+            resolve_intake_contact_terms(
+                rd_notes,
+                {
+                    "media_contact_name": rd_media_contact_name,
+                    "support_email": rd_support_email,
+                    "support_phone_us": rd_support_phone_us,
+                    "support_phone_international":
+                        rd_support_phone_international,
+                    "order_support_provider":
+                        rd_order_support_provider,
+                    "order_support_url": rd_order_support_url,
+                },
+                rd_refund_terms,
+            )
+        )
+        rd_media_contact_name = resolved_contact.get(
+            "media_contact_name", ""
+        )
+        rd_support_email = resolved_contact.get("support_email", "")
+        rd_support_phone_us = resolved_contact.get(
+            "support_phone_us", ""
+        )
+        rd_support_phone_international = resolved_contact.get(
+            "support_phone_international", ""
+        )
+        rd_order_support_provider = resolved_contact.get(
+            "order_support_provider", ""
+        )
+        rd_order_support_url = resolved_contact.get(
+            "order_support_url", ""
+        )
+        rd_refund_terms = resolved_refund_terms
 
         if not product_url and not product_name:
             errors.append("Provide at least a **Product URL** or **Product Name**.")

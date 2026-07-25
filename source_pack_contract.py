@@ -116,10 +116,21 @@ def extract_legacy_intake_terms(operator_notes: str) -> tuple[dict, str]:
         return {}, ""
 
     contact = {}
+    product_support_block = re.search(
+        r"(?ims)^\s*Product\s+Support\s*:?\s*(.*?)"
+        r"(?=^\s*[A-Za-z0-9 .&'-]+\s+Order\s+Support\s*:|"
+        r"^\s*(?:Refund|Guarantee|Return)\b|\Z)",
+        notes,
+    )
+    product_support_text = (
+        product_support_block.group(1)
+        if product_support_block else notes
+    )
+
     email_match = re.search(
         r"(?im)^\s*(?:product\s+support\s+)?email\s*:\s*"
         r"([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})\s*$",
-        notes,
+        product_support_text,
     )
     if email_match:
         contact["support_email"] = email_match.group(1)
@@ -131,12 +142,20 @@ def extract_legacy_intake_terms(operator_notes: str) -> tuple[dict, str]:
     if media_match:
         contact["media_contact_name"] = media_match.group(1)
 
+    product_phone = re.search(
+        r"(?im)^\s*(?:product\s+support\s+)?phone(?:\s+number)?\s*:\s*"
+        r"(\+?[\d().\s-]{7,})\s*$",
+        product_support_text,
+    )
+    if product_phone:
+        contact["support_phone_us"] = product_phone.group(1).strip()
+
     us_phone = re.search(
         r"(?im)^\s*(?:U\.?S\.?|USA|United\s+States)\s*:\s*"
         r"(\+?[\d().\s-]{7,})\s*$",
         notes,
     )
-    if us_phone:
+    if us_phone and "support_phone_us" not in contact:
         contact["support_phone_us"] = us_phone.group(1).strip()
 
     international_phone = re.search(
@@ -181,24 +200,85 @@ def extract_legacy_intake_terms(operator_notes: str) -> tuple[dict, str]:
     return normalize_contact_information(contact), refund_terms
 
 
+def resolve_intake_contact_terms(
+    operator_notes: str,
+    explicit_contact=None,
+    explicit_refund_terms: str = "",
+) -> tuple[dict, str]:
+    """Turn free-text intake into structured facts; explicit overrides win."""
+    inferred_contact, inferred_refund = extract_legacy_intake_terms(
+        operator_notes
+    )
+    merged = dict(inferred_contact)
+    merged.update(normalize_contact_information(explicit_contact))
+    refund_terms = " ".join(
+        str(explicit_refund_terms or inferred_refund).split()
+    ).strip()
+    return normalize_contact_information(merged), refund_terms
+
+
+def extract_labeled_source_inputs(operator_notes: str) -> dict:
+    """Recover optional source URLs from ordinary labeled team notes."""
+    notes = str(operator_notes or "")
+    if not notes.strip():
+        return {}
+    result = {}
+    previous = []
+    competitors = []
+    active_label = ""
+    for raw_line in notes.splitlines():
+        line = raw_line.strip()
+        if not line:
+            active_label = ""
+            continue
+        folded = line.casefold()
+        if re.search(r"\b(?:vsl|video sales letter)\b", folded):
+            active_label = "vsl_url"
+        elif re.search(
+            r"\b(?:label|supplement facts|product facts|references page)\b",
+            folded,
+        ):
+            active_label = "label_source_url"
+        elif re.search(r"\b(?:previous|prior)\s+releases?\b", folded):
+            active_label = "previous_releases"
+        elif re.search(r"\bcompetitor\s+releases?\b", folded):
+            active_label = "competitor_releases"
+        elif (
+            not re.match(r"https?://", line, re.I)
+            and re.match(r"^[A-Za-z][A-Za-z /&'-]{2,40}:\s*", line)
+        ):
+            active_label = ""
+        urls = re.findall(r"https?://[^\s,]+", line)
+        if not urls or not active_label:
+            continue
+        urls = [url.rstrip(").,;") for url in urls]
+        if active_label == "previous_releases":
+            previous.extend(urls)
+        elif active_label == "competitor_releases":
+            competitors.extend(urls)
+        else:
+            result.setdefault(active_label, urls[0])
+    if previous:
+        result["previous_releases"] = ", ".join(dict.fromkeys(previous))
+    if competitors:
+        result["competitor_releases"] = ", ".join(
+            dict.fromkeys(competitors)
+        )
+    return result
+
+
 def normalized_intake_manifest(pack: dict) -> dict:
     """Return a manifest with structured public contact/terms migration."""
     manifest = copy.deepcopy((pack or {}).get("intake_manifest") or {})
-    structured = normalize_contact_information(
-        manifest.get("contact_information")
+    structured, refund_terms = resolve_intake_contact_terms(
+        manifest.get("operator_notes", ""),
+        manifest.get("contact_information"),
+        manifest.get("refund_terms", ""),
     )
-    legacy_contact, legacy_refund = extract_legacy_intake_terms(
-        manifest.get("operator_notes", "")
-    )
-    for key, value in legacy_contact.items():
-        structured.setdefault(key, value)
     if structured:
         manifest["contact_information"] = structured
     else:
         manifest.pop("contact_information", None)
-    refund_terms = " ".join(
-        str(manifest.get("refund_terms") or legacy_refund).split()
-    ).strip()
     if refund_terms:
         manifest["refund_terms"] = refund_terms
     else:

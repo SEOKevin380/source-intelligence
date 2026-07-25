@@ -11,7 +11,9 @@ from newswire_workbench.prompts import writer_evidence_view
 from newswire_workbench.formatting import repair_publication_gates
 from prompt_builders import build_l6_press_release_prompt
 from source_pack_contract import (
+    extract_labeled_source_inputs,
     form_values_from_pack,
+    resolve_intake_contact_terms,
     seal_source_pack,
 )
 
@@ -84,6 +86,59 @@ def test_legacy_notes_migrate_into_structured_manifest_without_research():
     assert "United States support phone: 1-800-390-6035" in claim_text
     assert "International support phone: 1-208-345-4245" in claim_text
     assert "Order support provider: ClickBank" in claim_text
+
+
+def test_free_text_intake_sorts_product_support_and_order_provider():
+    notes = """Product Support:
+Email: contact@getCogniHoney.com
+Phone: +1 (323) 237-8559
+
+PagAmerican Order Support:
+Email: support@pagamerican.app Phone: +1-888-407-0627
+
+The product includes a 60-day money-back guarantee."""
+    contact, refund = resolve_intake_contact_terms(notes)
+
+    assert contact["support_email"] == "contact@getCogniHoney.com"
+    assert contact["support_phone_us"] == "+1 (323) 237-8559"
+    assert contact["order_support_provider"] == "PagAmerican"
+    assert refund == "The product includes a 60-day money-back guarantee."
+
+
+def test_explicit_contact_override_wins_over_automatic_note_sorting():
+    contact, refund = resolve_intake_contact_terms(
+        SCRATCH_NOTES,
+        {
+            "support_email": "current@example.com",
+            "order_support_provider": "Current Processor",
+        },
+        "30-day refund guarantee",
+    )
+
+    assert contact["support_email"] == "current@example.com"
+    assert contact["order_support_provider"] == "Current Processor"
+    assert contact["support_phone_us"] == "1-800-390-6035"
+    assert refund == "30-day refund guarantee"
+
+
+def test_labeled_optional_source_urls_are_sorted_from_one_notes_box():
+    inputs = extract_labeled_source_inputs(
+        """VSL: https://example.com/watch
+Label / references: https://example.com/references/
+Previous releases:
+https://news.example.com/one, https://news.example.com/two
+Competitor release: https://competitor.example.com/review
+Product Support: support@example.com"""
+    )
+
+    assert inputs == {
+        "vsl_url": "https://example.com/watch",
+        "label_source_url": "https://example.com/references/",
+        "previous_releases": (
+            "https://news.example.com/one, https://news.example.com/two"
+        ),
+        "competitor_releases": "https://competitor.example.com/review",
+    }
 
 
 def test_saved_pack_restores_dedicated_contact_controls():
