@@ -103,6 +103,10 @@ NON_HEALTH_PRIMARY_SITES = {
     "info_product": {"totalhealthrd", "hollyherman"},
     "professional_service": {"totalhealthrd"},
     "general": {"totalhealthrd", "hollyherman"},
+    # None of the ten primary sites has a lottery/gaming editorial mandate.
+    # An explicit empty allowlist is intentional: it prevents these products
+    # from falling through to the broad health-archetype defaults.
+    "gaming": set(),
 }
 
 
@@ -118,6 +122,11 @@ def get_relevant_primary_sites(product_type: str, category: str = ""):
         return NON_HEALTH_PRIMARY_SITES[normalized_type]
     if "financial" in normalized_category or "invest" in normalized_category:
         return NON_HEALTH_PRIMARY_SITES["financial"]
+    if any(
+        term in normalized_category
+        for term in ("gaming", "lottery", "sweepstakes")
+    ):
+        return NON_HEALTH_PRIMARY_SITES["gaming"]
     return None
 
 # Site key → archetype loaded from wp-sites.json (source of truth)
@@ -324,7 +333,16 @@ def get_serp_strategy(product_key: str, db: ProductDatabase = None) -> dict:
 
     # Strategy notes
     used_angle_set = {a["angle"] for a in used_angles}
-    if len(used_angles) == 0:
+    if (
+        len(used_angles) == 0
+        and len(available_angles) == 0
+        and coverage["total_relevant"] == 0
+    ):
+        notes.append(
+            "No topically eligible primary-site destination is configured for "
+            "this product. Do not publish it across the medical/wellness network."
+        )
+    elif len(used_angles) == 0:
         notes.append("No publications yet — all angles available for SERP stacking")
     elif len(used_angles) >= 5:
         notes.append(
