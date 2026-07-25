@@ -206,6 +206,66 @@ def test_attribution_scope_does_not_cross_html_blocks():
     assert ledger["attribution_violations"]
 
 
+def test_seller_offers_and_confirms_are_valid_reporting_verbs():
+    pack = {
+        "publication_claims": {
+            "feature": [{
+                "claim_id": "free-reading",
+                "text": "Free initial reading no card required",
+                "publication_treatment": "seller_attribution_required",
+            }]
+        }
+    }
+    for article in (
+        "<p>The seller offers a free initial reading with no card required.</p>",
+        "<p>The seller confirms a free initial reading needs no card.</p>",
+    ):
+        ledger = build_article_claim_ledger(pack, article)
+        assert ledger["used_claim_count"] == 1
+        assert not ledger["attribution_violations"]
+
+
+def test_product_question_is_not_treated_as_an_asserted_claim():
+    pack = {
+        "publication_claims": {
+            "feature": [{
+                "claim_id": "fortune-numbers",
+                "text": "Fortune Numbers",
+                "publication_treatment": "seller_attribution_required",
+            }]
+        }
+    }
+    ledger = build_article_claim_ledger(
+        pack, "<p>Will the Fortune Numbers predict my future?</p>"
+    )
+    assert ledger["used_claim_count"] == 0
+    assert not ledger["attribution_violations"]
+
+
+def test_duplicate_claim_matches_create_one_attribution_edit_per_sentence():
+    pack = {
+        "publication_claims": {
+            "feature": [
+                {
+                    "claim_id": "free-game-1",
+                    "text": "Free scratch game",
+                    "publication_treatment": "seller_attribution_required",
+                },
+                {
+                    "claim_id": "free-game-2",
+                    "text": "Free initial scratch game",
+                    "publication_treatment": "seller_attribution_required",
+                },
+            ]
+        }
+    }
+    ledger = build_article_claim_ledger(
+        pack, "<p>The free initial scratch game is available.</p>"
+    )
+    assert ledger["used_claim_count"] == 2
+    assert len(ledger["attribution_violations"]) == 1
+
+
 def test_mapped_claim_cannot_smuggle_an_extra_number():
     pack = {
         "publication_claims": {

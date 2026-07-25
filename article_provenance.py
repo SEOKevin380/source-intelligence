@@ -52,7 +52,8 @@ def _attribution_signals(value: str) -> tuple[bool, bool]:
         r"sales page|source materials?|materials?)\b.{0,50}"
         r"\b(?:states?|says?|describes?|lists?|reports?|claims?|"
         r"calls?|presents?|identif(?:y|ies)|connects?|uses?|includes?|"
-        r"provides?|positions?)\b",
+        r"provides?|positions?|offers?|confirms?|explains?|notes?|"
+        r"indicates?|specifies?|shows?)\b",
         lowered,
     ))
     # A seller/source noun phrase can govern a later reporting verb in a long
@@ -62,7 +63,8 @@ def _attribution_signals(value: str) -> tuple[bool, bool]:
         r"product page|sales page|source materials?|materials?)\b"
         r".*\b(?:states?|says?|describes?|lists?|reports?|claims?|"
         r"calls?|presents?|identif(?:y|ies)|connects?|uses?|includes?|"
-        r"provides?|positions?)\b",
+        r"provides?|positions?|offers?|confirms?|explains?|notes?|"
+        r"indicates?|specifies?|shows?)\b",
         lowered,
     ))
     seller_attributed = seller_attributed or bool(re.search(
@@ -76,6 +78,13 @@ def _attribution_signals(value: str) -> tuple[bool, bool]:
     seller_attributed = seller_attributed or bool(re.search(
         r"\baccording to (?:the )?(?:seller|vendor|manufacturer|"
         r"product page|sales page|offer)\b",
+        lowered,
+    ))
+    seller_attributed = seller_attributed or bool(re.search(
+        r"\b(?:is|are|was|were)\s+(?:described|listed|reported|stated|"
+        r"presented|offered|confirmed|specified)\s+(?:by|in)\s+"
+        r"(?:the\s+)?(?:seller|vendor|manufacturer|brand|offer|"
+        r"product page|sales page|materials?)\b",
         lowered,
     ))
     source_attributed = seller_attributed or bool(re.search(
@@ -151,6 +160,7 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
 
     mappings = []
     attribution_violations = []
+    attribution_violation_keys = set()
     for sentence_record in _sentence_records(article):
         sentence = sentence_record["text"]
         sentence_tokens = _tokens(sentence)
@@ -164,7 +174,7 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
             )
             claim_numbers = _numbers(claim["text"])
             sentence_numbers = _numbers(sentence)
-            hypothetical = bool(re.search(
+            hypothetical = sentence.rstrip().endswith("?") or bool(re.search(
                 r"\b(?:ask whether|check whether|verify whether|"
                 r"if the seller|whether the product|could it|does it)\b",
                 sentence.casefold(),
@@ -199,6 +209,10 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
                     treatment == "source_attribution_required"
                     and not source_attributed
                 ):
+                    violation_key = (sentence, treatment)
+                    if violation_key in attribution_violation_keys:
+                        continue
+                    attribution_violation_keys.add(violation_key)
                     attribution_violations.append({
                         "article_sentence": sentence,
                         "claim_id": claim["claim_id"],

@@ -192,6 +192,12 @@ Operating rules:
   seller” may govern the related sentences that follow in that same paragraph.
   Attribution never flows backward from a later sentence or forward into
   another paragraph.
+- Before returning HTML, audit every paragraph and list item that states the
+  product's identity, game mechanics, features, inclusions, access, delivery,
+  support, trial, billing, cancellation, or refund terms. If its first factual
+  product claim lacks attribution, rewrite the opening before output.
+  Invalid: “The free game is the entry point. According to the seller...”
+  Valid: “According to the seller, the free game is the entry point...”
 - For device specifications, setup, placement, operation, optimization time,
   and functions taken from seller or third-party descriptions, use explicit
   attribution such as “seller materials state” or “the offer describes.”
@@ -576,6 +582,12 @@ compliance report below.
   or list item. One natural paragraph-opening attribution may govern related
   sentences that follow in that same paragraph, but it never flows backward
   or into another HTML block.
+- Before returning HTML, audit every paragraph and list item that states the
+  product's identity, game mechanics, features, inclusions, access, delivery,
+  support, trial, billing, cancellation, or refund terms. Rewrite any block
+  whose first factual product claim is not already governed by attribution.
+  Do not place attribution in the second sentence and expect it to cover the
+  first.
 - Return the complete revised article HTML only.
 - Apply reviewer replacements as editorial directions; never paste their
   instructional wording into the article. Every reader-facing sentence must
