@@ -46,7 +46,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v34-closed-loop-action-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "deterministic-provenance-contact-20260725-r26"
+WORKBENCH_RUNTIME_REVISION = "conditional-exact-patch-signoff-20260725-r27"
 
 STAGES = (
     "source_ready",
@@ -882,6 +882,8 @@ class WorkbenchEngine:
         p = self.get(project_id)
         if p["stage"] != "admin_review" or not self._uses_locked_call_path(p):
             return False
+        if self._can_apply_locked_conditional_exact_signoff(p):
+            return True
         # The canonical artifact may already be clean even when the event
         # history records an earlier D18 stop. Recovery decisions must follow
         # current state, not a stale blocker payload.
@@ -1595,6 +1597,8 @@ class WorkbenchEngine:
     def _recover_locked_pre_signoff(self, project_id):
         """Apply owned deterministic repairs without opening a paid rescue path."""
         p = self.get(project_id)
+        if self._complete_locked_conditional_exact_signoff(project_id):
+            return True
         if not self.can_recover_locked_pre_signoff(project_id):
             return False
         current_preflight = audit_article(
@@ -1726,6 +1730,291 @@ class WorkbenchEngine:
             },
         )
         return True
+
+    @staticmethod
+    def _conditional_exact_patch_declared(report):
+        """Return whether the reviewer explicitly made approval conditional."""
+        if "conditional_approval_after_exact_edits" in report:
+            return bool(
+                report.get("conditional_approval_after_exact_edits")
+            )
+        # Backward compatibility for reports produced before the typed boolean
+        # was added. This must be an explicit publishability statement, not a
+        # generic "revise and resubmit" note.
+        notes = " ".join(
+            str(item or "") for item in report.get("notes") or []
+        )
+        return bool(re.search(
+            r"\b(?:article|draft)\s+is\s+publishable\s+after\s+(?:the\s+)?"
+            r"mandatory\s+edits?\b|"
+            r"\bpublishable\s+once\s+(?:the\s+)?(?:mandatory|required)\s+"
+            r"edits?\s+(?:are|have been)\s+(?:made|applied)\b",
+            notes,
+            re.I,
+        ))
+
+    def _can_apply_locked_conditional_exact_signoff(
+        self, project, report=None
+    ):
+        """Validate that a rejected final report is a closed exact patch set."""
+        report = report or project.get("last_report") or {}
+        edits = list(report.get("mandatory_edits") or [])
+        if (
+            not self._uses_locked_call_path(project)
+            or report.get("verdict") != "not_approved"
+            or report.get("approval_purpose") != "final_signoff"
+            or report.get("reviewed_article_hash") != project["article_hash"]
+            or not edits
+            or len(edits) > 8
+            or not self._conditional_exact_patch_declared(report)
+            or self._report_has_true_source_conflict(report)
+        ):
+            return False
+
+        article = project["article_text"]
+        release_title = project.get("release_title") or project["title"]
+        total_patch_size = 0
+        for item in edits:
+            finding_id = str(item.get("id") or "")
+            exact = str(item.get("exact_text") or "")
+            replacement = str(item.get("replacement") or "")
+            total_patch_size += len(exact) + len(replacement)
+            if (
+                finding_id.startswith(("P-ATTR-", "P-COVERAGE-", "D"))
+                or not exact.strip()
+                or not replacement.strip()
+                or total_patch_size > 12000
+                or self._unsafe_reviewer_replacement(replacement)
+                or re.search(
+                    r"<\s*(?:script|iframe|object|embed|style)\b",
+                    replacement,
+                    re.I,
+                )
+                or (
+                    replacement.strip().casefold()
+                    not in {"[remove]", "remove", "delete"}
+                    and re.match(
+                        r"^\s*(?:delete|remove|rewrite|replace|add|use|ensure|"
+                        r"clarify|revise|keep|reconstruct)\b",
+                        replacement,
+                        re.I,
+                    )
+                )
+            ):
+                return False
+            effective_replacement = (
+                ""
+                if replacement.strip().casefold()
+                in {"[remove]", "remove", "delete"}
+                else replacement
+            )
+            title_match = bool(
+                exact.strip() == release_title.strip()
+                or re.sub(r"<[^>]+>", "", exact).strip()
+                == release_title.strip()
+            )
+            if title_match:
+                release_title = re.sub(
+                    r"<[^>]+>", "", effective_replacement
+                ).strip()
+                if not release_title:
+                    return False
+                continue
+            if exact in article:
+                article = article.replace(
+                    exact, effective_replacement, 1
+                )
+                continue
+            article, replaced = self._replace_plain_text_in_semantic_block(
+                article, exact, effective_replacement
+            )
+            if not replaced:
+                return False
+        return True
+
+    def _complete_locked_conditional_exact_signoff(
+        self, project_id, report=None
+    ):
+        """Apply a final reviewer's closed patch set with exact-hash lineage.
+
+        This is not a writer or a semantic inference. The independent reviewer
+        has already supplied every final reader-facing replacement and declared
+        the article publishable after those exact edits. The engine applies all
+        or none, reruns every deterministic and source-provenance gate, then
+        binds the new hash to the reviewed hash and the exact edit IDs.
+        """
+        p = self.get(project_id)
+        report = copy.deepcopy(report or p.get("last_report") or {})
+        if not self._can_apply_locked_conditional_exact_signoff(p, report):
+            return False
+
+        reviewed_hash = p["article_hash"]
+        if p.get("last_report") != report:
+            self._set_report(
+                p, report, p["stage"], "04-openai-signoff.json"
+            )
+            p = self.get(project_id)
+        snapshot = {
+            "release_title": p.get("release_title") or p["title"],
+            "article_text": p["article_text"],
+            "article_hash": p["article_hash"],
+            "stage": p["stage"],
+            "last_report": copy.deepcopy(p.get("last_report") or {}),
+        }
+        if not self._adjudicate_current(
+            p, report, target_stage="revised"
+        ):
+            return False
+
+        with self._connect() as conn:
+            adjudication = conn.execute(
+                "SELECT applied_count,skipped_count,payload "
+                "FROM adjudications WHERE project_id=? "
+                "AND source_article_hash=? ORDER BY rowid DESC LIMIT 1",
+                (project_id, reviewed_hash),
+            ).fetchone()
+        expected_ids = [
+            str(item.get("id") or "")
+            for item in report.get("mandatory_edits") or []
+        ]
+        adjudication_payload = (
+            json.loads(adjudication["payload"] or "{}")
+            if adjudication
+            else {}
+        )
+        if (
+            not adjudication
+            or int(adjudication["applied_count"]) != len(expected_ids)
+            or int(adjudication["skipped_count"]) != 0
+            or adjudication_payload.get("applied") != expected_ids
+        ):
+            candidate_hash = self.get(project_id)["article_hash"]
+            self._restore_conditional_exact_patch_snapshot(
+                project_id, snapshot
+            )
+            self._event(
+                project_id,
+                "conditional_exact_patch_incomplete",
+                "admin_review",
+                snapshot["article_hash"],
+                {
+                    "reviewed_hash": reviewed_hash,
+                    "rejected_candidate_hash": candidate_hash,
+                    "expected_edit_ids": expected_ids,
+                    "adjudication": adjudication_payload,
+                    "operator_decision_required": False,
+                },
+            )
+            return False
+
+        current = self.get(project_id)
+        preflight = audit_article(
+            current["article_text"],
+            current["platform"],
+            current["vertical"],
+            _source_affiliate_link(current["source_text"]),
+        )
+        if preflight["article"] != current["article_text"]:
+            self._persist_preflight_article(
+                current, preflight, "revised"
+            )
+            current = self.get(project_id)
+            preflight = audit_article(
+                current["article_text"],
+                current["platform"],
+                current["vertical"],
+                _source_affiliate_link(current["source_text"]),
+            )
+        from article_provenance import (
+            build_article_claim_ledger,
+            extract_sealed_pack,
+        )
+        provenance = build_article_claim_ledger(
+            extract_sealed_pack(current["source_text"]),
+            current["article_text"],
+        )
+        if (
+            preflight["blockers"]
+            or provenance.get("coverage_violations")
+            or provenance.get("attribution_violations")
+        ):
+            candidate_hash = current["article_hash"]
+            self._restore_conditional_exact_patch_snapshot(
+                project_id, snapshot
+            )
+            self._event(
+                project_id,
+                "conditional_exact_patch_failed_preflight",
+                "admin_review",
+                snapshot["article_hash"],
+                {
+                    "reviewed_hash": reviewed_hash,
+                    "rejected_candidate_hash": candidate_hash,
+                    "blockers": preflight["blockers"],
+                    "coverage_violations": provenance.get(
+                        "coverage_violations"
+                    ) or [],
+                    "attribution_violations": provenance.get(
+                        "attribution_violations"
+                    ) or [],
+                    "operator_decision_required": False,
+                },
+            )
+            return False
+
+        resolved_edits = copy.deepcopy(
+            report.get("mandatory_edits") or []
+        )
+        approval = copy.deepcopy(report)
+        approval["verdict"] = "approved"
+        approval["mandatory_count"] = 0
+        approval["mandatory_edits"] = []
+        approval["conditional_approval_after_exact_edits"] = True
+        approval["reviewed_article_hash"] = current["article_hash"]
+        approval["resolved_mandatory_edits"] = resolved_edits
+        approval["conditional_exact_patch_lineage"] = {
+            "source_reviewed_article_hash": reviewed_hash,
+            "result_article_hash": current["article_hash"],
+            "applied_edit_ids": expected_ids,
+            "paid_calls_added": 0,
+        }
+        approval.setdefault("notes", []).append(
+            "Approved by applying the independent final reviewer's complete "
+            "conditional exact-patch set; no model-authored rewrite was used."
+        )
+        self._set_report(
+            current,
+            approval,
+            "signed_off",
+            "04-adjudicated-signoff.json",
+        )
+        self._event(
+            project_id,
+            "conditional_exact_patch_signed_off",
+            "signed_off",
+            current["article_hash"],
+            approval["conditional_exact_patch_lineage"],
+        )
+        return True
+
+    def _restore_conditional_exact_patch_snapshot(
+        self, project_id, snapshot
+    ):
+        """Atomically restore the reviewed artifact after a failed patch set."""
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE projects SET release_title=?,article_text=?,"
+                "article_hash=?,stage='admin_review',last_report=?,"
+                "updated_at=? WHERE id=?",
+                (
+                    snapshot["release_title"],
+                    snapshot["article_text"],
+                    snapshot["article_hash"],
+                    json.dumps(snapshot["last_report"]),
+                    _now(),
+                    project_id,
+                ),
+            )
 
     def _recover_rejected_draft_candidate(self, project_id):
         """Normalize a paid draft before spending its reserved review calls."""
@@ -2716,6 +3005,10 @@ class WorkbenchEngine:
             report = self._openai_review(p, final=True, purpose="final_signoff")
             if report.get("verdict") != "approved":
                 if self._uses_locked_call_path(p):
+                    if self._complete_locked_conditional_exact_signoff(
+                        p["id"], report
+                    ):
+                        return self.get(project_id)
                     self._set_report(
                         p, report, "admin_review",
                         "04-openai-signoff.json",
@@ -3021,6 +3314,9 @@ class WorkbenchEngine:
                     "properties": {
                         "verdict": {"type": "string", "enum": ["approved", "not_approved"]},
                         "mandatory_count": {"type": "integer"},
+                        "conditional_approval_after_exact_edits": {
+                            "type": "boolean"
+                        },
                         "source_accuracy": {
                             "type": "object", "additionalProperties": False,
                             "properties": {"verified": {"type": "integer"}, "checked": {"type": "integer"}},
@@ -3046,7 +3342,9 @@ class WorkbenchEngine:
                         "approved_elements": {"type": "array", "items": {"type": "string"}},
                         "notes": {"type": "array", "items": {"type": "string"}},
                     },
-                    "required": ["verdict", "mandatory_count", "source_accuracy", "mandatory_edits",
+                    "required": ["verdict", "mandatory_count",
+                                 "conditional_approval_after_exact_edits",
+                                 "source_accuracy", "mandatory_edits",
                                  "recommended_edits", "approved_elements", "notes"],
                     },
                     }},

@@ -2812,6 +2812,209 @@ def test_safe_rejected_paid_candidate_is_recovered_without_another_paid_call(
     )
 
 
+def test_locked_final_conditional_exact_patches_complete_without_new_call(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    exact = "Access remains active forever."
+    replacement = "Access terms were not supplied in the available record."
+    article = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be "
+        "received.</p>"
+        f"<p>{exact}</p>"
+        "<p>Seller materials state Literal product fact 0.</p>"
+        "<p>Seller materials state Literal product fact 1.</p>"
+        "<p>Seller materials state Literal product fact 2.</p>"
+    )
+    engine._set_article(
+        engine.get(pid), article, "revised", "candidate.html"
+    )
+    p = engine.get(pid)
+    report = {
+        "verdict": "not_approved",
+        "mandatory_count": 1,
+        "conditional_approval_after_exact_edits": True,
+        "source_accuracy": {"verified": 3, "checked": 4},
+        "mandatory_edits": [{
+            "id": "M1",
+            "category": "factual_traceability",
+            "issue": "Ongoing access is not supplied.",
+            "exact_text": exact,
+            "replacement": replacement,
+        }],
+        "recommended_edits": [],
+        "approved_elements": ["The sourced feature statements are usable."],
+        "notes": [
+            "The article is publishable after the mandatory edit."
+        ],
+        "reviewed_article_hash": p["article_hash"],
+        "approval_purpose": "final_signoff",
+    }
+    clean_ledger = {
+        "coverage_violations": [],
+        "attribution_violations": [],
+    }
+    with patch(
+        "newswire_workbench.engine.audit_article",
+        side_effect=lambda value, *_args, **_kwargs: {
+            "article": value,
+            "blockers": [],
+        },
+    ), patch(
+        "article_provenance.build_article_claim_ledger",
+        return_value=clean_ledger,
+    ):
+        assert engine._complete_locked_conditional_exact_signoff(
+            pid, report
+        ) is True
+
+    completed = engine.get(pid)
+    assert completed["stage"] == "signed_off"
+    assert exact not in completed["article_text"]
+    assert replacement in completed["article_text"]
+    assert completed["last_report"]["verdict"] == "approved"
+    assert completed["last_report"]["reviewed_article_hash"] == (
+        completed["article_hash"]
+    )
+    lineage = completed["last_report"][
+        "conditional_exact_patch_lineage"
+    ]
+    assert lineage["source_reviewed_article_hash"] == p["article_hash"]
+    assert lineage["result_article_hash"] == completed["article_hash"]
+    assert lineage["applied_edit_ids"] == ["M1"]
+    assert engine.usage_summary(pid)["calls"] == 0
+
+
+def test_locked_conditional_signoff_rejects_rewrite_instructions(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    engine._set_article(
+        engine.get(pid),
+        "<p>Unsupported section.</p>",
+        "revised",
+        "candidate.html",
+    )
+    p = engine.get(pid)
+    report = {
+        "verdict": "not_approved",
+        "mandatory_count": 1,
+        "conditional_approval_after_exact_edits": True,
+        "mandatory_edits": [{
+            "id": "M1",
+            "category": "source",
+            "issue": "The section must be rebuilt.",
+            "exact_text": "Unsupported section.",
+            "replacement": "Rewrite this section using supported facts.",
+        }],
+        "recommended_edits": [],
+        "approved_elements": [],
+        "notes": [],
+        "reviewed_article_hash": p["article_hash"],
+        "approval_purpose": "final_signoff",
+    }
+    assert engine._can_apply_locked_conditional_exact_signoff(
+        p, report
+    ) is False
+
+
+def test_locked_conditional_signoff_rolls_back_failed_post_patch_gate(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "Barchart Advertorial", force_new=True
+    )
+    exact = "Access remains active forever."
+    article = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be "
+        "received.</p>"
+        f"<p>{exact}</p>"
+    )
+    engine._set_article(
+        engine.get(pid), article, "revised", "candidate.html"
+    )
+    p = engine.get(pid)
+    report = {
+        "verdict": "not_approved",
+        "mandatory_count": 1,
+        "conditional_approval_after_exact_edits": True,
+        "mandatory_edits": [{
+            "id": "M1",
+            "category": "factual_traceability",
+            "issue": "Ongoing access is not supplied.",
+            "exact_text": exact,
+            "replacement": (
+                "Access terms were not supplied in the available record."
+            ),
+        }],
+        "recommended_edits": [],
+        "approved_elements": [],
+        "notes": [
+            "The article is publishable after the mandatory edit."
+        ],
+        "reviewed_article_hash": p["article_hash"],
+        "approval_purpose": "final_signoff",
+    }
+    with patch(
+        "newswire_workbench.engine.audit_article",
+        side_effect=lambda value, *_args, **_kwargs: {
+            "article": value,
+            "blockers": [{"id": "D17", "message": "Rejected after patch."}],
+        },
+    ), patch(
+        "article_provenance.build_article_claim_ledger",
+        return_value={
+            "coverage_violations": [],
+            "attribution_violations": [],
+        },
+    ):
+        assert engine._complete_locked_conditional_exact_signoff(
+            pid, report
+        ) is False
+
+    restored = engine.get(pid)
+    assert restored["stage"] == "admin_review"
+    assert restored["article_text"] == p["article_text"]
+    assert restored["article_hash"] == p["article_hash"]
+    assert restored["last_report"]["verdict"] == "not_approved"
+    assert restored["last_report"]["mandatory_edits"][0]["id"] == "M1"
+
+
 def test_publishable_repair_prunes_unsafe_unattributed_block_at_zero_cost(
     tmp_path,
 ):

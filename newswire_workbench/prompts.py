@@ -576,11 +576,19 @@ Review all applicable categories:
     support and order support must remain distinct. When structured refund
     terms are supplied, require their accurate seller-attributed inclusion
     without inventing additional conditions.
+22. Conditional exact-patch authority: set
+    `conditional_approval_after_exact_edits` to true only when every mandatory
+    edit supplies complete reader-facing `exact_text` and a complete final
+    replacement, and applying those replacements exactly would make the article
+    publishable without another judgment call. Set it to false for rewrites,
+    reconstruction instructions, missing exact text, source conflicts, or edits
+    that require choosing among alternatives.
 
 Return JSON only matching this shape:
 {{
   "verdict": "approved" or "not_approved",
   "mandatory_count": integer,
+  "conditional_approval_after_exact_edits": true or false,
   "source_accuracy": {{"verified": integer, "checked": integer}},
   "mandatory_edits": [{{"id":"M1","category":"...","issue":"...","exact_text":"...","replacement":"..."}}],
   "recommended_edits": [{{"id":"R1","category":"...","issue":"...","replacement":"..."}}],
