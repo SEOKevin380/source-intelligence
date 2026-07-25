@@ -647,6 +647,7 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
                 "artifact_id": item.get("artifact_id", ""),
                 "source_class": item.get("source_class", ""),
                 "publication_treatment": treatment,
+                "metadata": item.get("metadata") or {},
                 "tokens": _tokens(text),
             })
 
@@ -772,13 +773,33 @@ def build_article_claim_ledger(pack: dict, article: str) -> dict:
     pricing_claim_ids = {
         claim["claim_id"] for claim in claims
         if claim.get("claim_type") == "pricing"
+        and (
+            re.search(
+                r"(?:[$£€¥]\s*\d)|"
+                r"(?:\b\d[\d,.]*\s*(?:USD|CAD|AUD|GBP|EUR)\b)",
+                claim.get("text") or "",
+                re.I,
+            )
+            or (
+                str(
+                    (claim.get("metadata") or {}).get(
+                        "source_pack_field"
+                    ) or ""
+                ).casefold() == "pricing"
+                and not re.search(
+                    r"\b(?:not specified|not provided|unavailable|unknown)\b",
+                    claim.get("text") or "",
+                    re.I,
+                )
+            )
+        )
     }
     if pricing_claim_ids and not (pricing_claim_ids & used_ids):
         coverage_violations.append({
             "id": "P-COVERAGE-PRICING",
             "issue": (
-                "The sealed record contains publishable pricing, but the "
-                "article does not state any seller-attributed price."
+                "The sealed record contains publishable monetary pricing, "
+                "but the article does not state any seller-attributed price."
             ),
             "required": 1,
             "actual": 0,

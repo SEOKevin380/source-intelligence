@@ -202,6 +202,23 @@ def test_bidirectional_claim_ledger_fails_when_required_claims_are_present_but_a
     assert ledger["passed"] is False
 
 
+def test_billing_options_do_not_masquerade_as_available_monetary_price():
+    pack = _pack()
+    article = (
+        _disclosure()
+        + "<p>According to the seller, one-time or monthly recurring options "
+          "are available.</p>"
+        + "<p>According to the seller, a free scratch game lets users uncover "
+          "six of nine crystal balls to reveal Fortune Numbers.</p>"
+        + "<p>A secure digital link is provided after purchase.</p>"
+    )
+    ledger = build_article_claim_ledger(pack, article)
+    assert not any(
+        item["id"] == "P-COVERAGE-PRICING"
+        for item in ledger["coverage_violations"]
+    )
+
+
 def test_offline_preflight_surfaces_truth_and_cta_false_passes(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     pack = seal_source_pack({

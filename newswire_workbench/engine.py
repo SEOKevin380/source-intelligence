@@ -46,7 +46,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v34-closed-loop-action-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "bidirectional-editorial-truth-20260725-r28"
+WORKBENCH_RUNTIME_REVISION = "bidirectional-editorial-truth-20260725-r29"
 
 STAGES = (
     "source_ready",
