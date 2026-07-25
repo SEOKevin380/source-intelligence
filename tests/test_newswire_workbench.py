@@ -3799,6 +3799,34 @@ def test_adjudicator_applies_visible_quote_split_by_inline_emphasis(tmp_path):
     assert "Additional context remains." in updated
 
 
+def test_adjudicator_treats_generic_delete_instruction_as_deletion(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Test", "AccessNewsWire", "gaming source", "gaming"
+    )
+    engine.import_manual_article(
+        pid,
+        "<p><strong>Paid Advertorial:</strong> Compensation may be received.</p>"
+        "<p>An unsupported bridge claim appears here.</p>"
+        "<p>Supported context remains.</p>",
+    )
+    project = engine.get(pid)
+    report = {"mandatory_edits": [{
+        "id": "E-REVIEW-S-1",
+        "exact_text": "An unsupported bridge claim appears here.",
+        "replacement": (
+            "Delete this sentence or replace it with complete reader-facing "
+            "copy directly entailed by the sealed source record."
+        ),
+    }]}
+    assert engine._adjudicate_current(project, report) is True
+    updated = engine.get(pid)["article_text"]
+    assert "unsupported bridge claim" not in updated
+    assert "Delete this sentence" not in updated
+    assert "sealed source record" not in updated
+    assert "Supported context remains." in updated
+
+
 def test_adjudicator_can_repair_separately_stored_release_title(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     pid = engine.create_project(

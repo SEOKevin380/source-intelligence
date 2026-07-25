@@ -46,7 +46,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v34-closed-loop-action-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "bidirectional-editorial-truth-20260725-r31"
+WORKBENCH_RUNTIME_REVISION = "bidirectional-editorial-truth-20260725-r32"
 
 STAGES = (
     "source_ready",
@@ -4860,7 +4860,17 @@ class WorkbenchEngine:
             if re.fullmatch(r"Priority code\s+[A-Z0-9-]+\s+may apply\.", exact, re.I):
                 skipped.append({"id": item.get("id"), "reason": "source_supplied_priority_code_is_not_internal_language"})
                 continue
-            if replacement.strip().casefold() in {"[remove]", "remove", "delete"}:
+            if (
+                replacement.strip().casefold()
+                in {"[remove]", "remove", "delete"}
+                or re.fullmatch(
+                    r"\s*(?:delete|remove)\s+(?:this\s+)?"
+                    r"(?:sentence|paragraph|claim|passage|text|copy)"
+                    r"(?:\s+or\s+replace\s+it\s+with\b.*)?[.!]?\s*",
+                    replacement,
+                    re.I | re.S,
+                )
+            ):
                 replacement = ""
             if self._unsafe_reviewer_replacement(replacement):
                 skipped.append({"id": item.get("id"), "reason": "replacement_conflicts_with_house_rules"})

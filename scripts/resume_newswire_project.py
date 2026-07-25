@@ -58,8 +58,9 @@ def main() -> None:
         "--article-file",
         help=(
             "Publication-ready HTML to import at zero model cost. Valid only "
-            "with --action import; all deterministic and provenance gates "
-            "still run before final sign-off."
+            "with --action import; use '-' to read HTML from standard input. "
+            "All deterministic and provenance gates still run before final "
+            "sign-off."
         ),
     )
     args = parser.parse_args()
@@ -195,13 +196,20 @@ def main() -> None:
     elif args.action == "import":
         if not args.article_file:
             raise RuntimeError("--action import requires --article-file")
-        article_path = Path(args.article_file).resolve()
-        article = article_path.read_text(encoding="utf-8")
+        if args.article_file == "-":
+            article = sys.stdin.read()
+            imported_from = "stdin"
+        else:
+            article_path = Path(args.article_file).resolve()
+            article = article_path.read_text(encoding="utf-8")
+            imported_from = str(article_path)
+        if not article.strip():
+            raise RuntimeError("Imported article HTML is empty.")
         engine.import_manual_article(
             args.project_id, article, final_candidate=True
         )
         print(json.dumps({
-            "imported_from": str(article_path),
+            "imported_from": imported_from,
             "after": snapshot(engine, args.project_id),
         }, indent=2))
     elif args.action == "deliver":
