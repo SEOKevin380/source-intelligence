@@ -63,6 +63,21 @@ def main() -> None:
             "sign-off."
         ),
     )
+    parser.add_argument(
+        "--inherit-draft-from",
+        help=(
+            "Existing project whose held WordPress draft should be reused "
+            "before --action deliver. This prevents duplicate posts."
+        ),
+    )
+    parser.add_argument(
+        "--confirmed-post-id",
+        type=int,
+        help=(
+            "Operator-confirmed WordPress post ID required when inheriting a "
+            "held draft."
+        ),
+    )
     args = parser.parse_args()
     engine = WorkbenchEngine()
     print(json.dumps({"before": snapshot(engine, args.project_id)}, indent=2))
@@ -213,6 +228,16 @@ def main() -> None:
             "after": snapshot(engine, args.project_id),
         }, indent=2))
     elif args.action == "deliver":
+        if args.inherit_draft_from:
+            if not args.confirmed_post_id:
+                raise RuntimeError(
+                    "--inherit-draft-from requires --confirmed-post-id"
+                )
+            engine.inherit_wordpress_draft(
+                args.project_id,
+                args.inherit_draft_from,
+                confirmed_post_id=args.confirmed_post_id,
+            )
         result = engine.send_to_wordpress_draft(args.project_id)
         print(json.dumps({
             "wordpress_draft": result,
