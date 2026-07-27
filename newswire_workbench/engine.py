@@ -5387,6 +5387,85 @@ class WorkbenchEngine:
         block.string = rewritten
         return str(soup), True
 
+    @staticmethod
+    def _replace_text_across_semantic_blocks(
+        article, exact_text, replacement
+    ):
+        """Replace one unique reviewer quote spanning consecutive HTML blocks.
+
+        Reviewers see rendered paragraphs and quote them with newlines, while
+        the stored article separates those paragraphs with ``</p><p>``. Raw
+        replacement and the single-block fallback cannot match that form. This
+        helper accepts only a complete, unique sequence of sibling semantic
+        blocks, so it cannot jump across headings or alter an ambiguous copy.
+        """
+        def visible_text(value):
+            parsed = BeautifulSoup(str(value or ""), "html.parser")
+            normalized = re.sub(
+                r"\s+", " ", parsed.get_text(" ", strip=True)
+            ).strip()
+            return re.sub(r"\s+([.,;:!?])", r"\1", normalized)
+
+        quoted_blocks = [
+            visible_text(part)
+            for part in re.split(r"\r?\n+", str(exact_text or ""))
+            if visible_text(part)
+        ]
+        if len(quoted_blocks) < 2:
+            return article, False
+
+        soup = BeautifulSoup(article, "html.parser")
+        semantic_names = {"p", "li", "td", "th", "figcaption"}
+        matches = []
+        for first in soup.find_all(semantic_names):
+            if visible_text(first) != quoted_blocks[0]:
+                continue
+            sequence = [first]
+            current = first
+            for expected in quoted_blocks[1:]:
+                current = current.find_next_sibling()
+                if (
+                    current is None
+                    or current.name not in semantic_names
+                    or visible_text(current) != expected
+                ):
+                    break
+                sequence.append(current)
+            if len(sequence) == len(quoted_blocks):
+                matches.append(sequence)
+        if len(matches) != 1:
+            return article, False
+
+        sequence = matches[0]
+        first = sequence[0]
+        if replacement:
+            fragment = BeautifulSoup(
+                str(replacement).strip(), "html.parser"
+            )
+            block_tags = {
+                "address", "article", "aside", "blockquote", "div", "dl",
+                "fieldset", "figure", "footer", "form", "h1", "h2", "h3",
+                "h4", "h5", "h6", "header", "hr", "main", "nav", "ol", "p",
+                "pre", "section", "table", "ul",
+            }
+            top_tags = [
+                child for child in fragment.contents
+                if getattr(child, "name", None)
+            ]
+            if top_tags and any(tag.name in block_tags for tag in top_tags):
+                for child in list(fragment.contents):
+                    first.insert_before(child)
+                first.decompose()
+            else:
+                first.clear()
+                for child in list(fragment.contents):
+                    first.append(child)
+        else:
+            first.decompose()
+        for block in sequence[1:]:
+            block.decompose()
+        return str(soup), True
+
     def _adjudicate_current(self, p, report, target_stage="revised"):
         """Apply safe exact reviewer edits while rejecting stale/contradictory ones."""
         article = p["article_text"]
@@ -5448,6 +5527,12 @@ class WorkbenchEngine:
                         article, exact, replacement
                     )
                 )
+                if not block_replaced:
+                    article, block_replaced = (
+                        self._replace_text_across_semantic_blocks(
+                            article, exact, replacement
+                        )
+                    )
                 if not block_replaced:
                     # A reviewer can emit both a paragraph replacement and a
                     # nested sentence deletion for the same defect. If the

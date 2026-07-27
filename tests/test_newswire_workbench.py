@@ -663,12 +663,13 @@ def test_complete_exact_reviewer_patch_accepts_nested_delete_already_satisfied(
     pid = engine.create_project_from_pack(
         pack, "AccessNewsWire", vertical="device"
     )
-    paragraph = (
-        "Users inflate the cushion manually. "
-        "Users can adjust firmness at any time by adding or removing air. "
-        "The cushion does not require electronic power."
-    )
-    article = f"<p>{paragraph}</p>"
+    paragraphs = [
+        "Users inflate the cushion manually.",
+        "Users can adjust firmness at any time by adding or removing air.",
+        "The cushion does not require electronic power.",
+    ]
+    paragraph = "\n".join(paragraphs)
+    article = "".join(f"<p>{item}</p>" for item in paragraphs)
     digest = hashlib.sha256(
         ("Nested Device\n" + article).encode("utf-8")
     ).hexdigest()
