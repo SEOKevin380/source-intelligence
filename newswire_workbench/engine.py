@@ -77,7 +77,7 @@ LOCKED_STAGE_PURPOSE = {
     "compliance_reviewed": "compliance_repair",
     "revised": "final_signoff",
 }
-CORRECTED_FINAL_CANDIDATE_HANDOFF_LIMIT = 2
+CORRECTED_FINAL_CANDIDATE_HANDOFF_LIMIT = 3
 
 
 def _now():

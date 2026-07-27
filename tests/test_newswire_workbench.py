@@ -154,10 +154,10 @@ def test_every_publisher_has_a_nonzero_depth_contract(platform):
 def test_accesswire_device_depth_rewards_grounding_over_padding():
     profile = publication_profile("AccessNewsWire", "device")
     assert profile == {
-        "hard_floor": 1200,
-        "target_min": 1400,
-        "target_max": 1900,
-        "recovery_target": 1600,
+        "hard_floor": 1000,
+        "target_min": 1200,
+        "target_max": 1800,
+        "recovery_target": 1400,
         "label": "device AccessNewsWire",
     }
 
@@ -275,8 +275,8 @@ def test_accesswire_device_prompts_build_a_depth_buffer_before_compliance():
         "device",
     )
     for prompt in (draft_prompt, repair_prompt):
-        assert "1,600" in prompt
-        assert "1,200" in prompt
+        assert "1,400" in prompt
+        assert "1,000" in prompt
         assert "AccessNewsWire device" in prompt
         assert "source-grounded" in prompt
         assert "hands-on" in prompt
@@ -563,7 +563,7 @@ def test_exhausted_adjudicated_hash_hands_off_to_review_only_transaction(
         "corrected_final_candidate_received",
         "admin_review",
         replacement["article_hash"],
-        {"generation": 2},
+        {"generation": 3},
     )
     assert not engine.can_handoff_corrected_final_candidate(replacement_id)
 
