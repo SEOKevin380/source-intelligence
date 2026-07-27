@@ -151,6 +151,17 @@ def test_every_publisher_has_a_nonzero_depth_contract(platform):
     assert profile["recovery_target"] >= profile["target_min"]
 
 
+def test_accesswire_device_depth_rewards_grounding_over_padding():
+    profile = publication_profile("AccessNewsWire", "device")
+    assert profile == {
+        "hard_floor": 1200,
+        "target_min": 1400,
+        "target_max": 1900,
+        "recovery_target": 1600,
+        "label": "device AccessNewsWire",
+    }
+
+
 def test_generation_prompt_preserves_client_advocacy_without_invention():
     prompt = generation_prompt(
         "verified product source", "Barchart Advertorial", "device", ""
@@ -264,8 +275,8 @@ def test_accesswire_device_prompts_build_a_depth_buffer_before_compliance():
         "device",
     )
     for prompt in (draft_prompt, repair_prompt):
-        assert "1,900" in prompt
-        assert "1,400" in prompt
+        assert "1,600" in prompt
+        assert "1,200" in prompt
         assert "AccessNewsWire device" in prompt
         assert "source-grounded" in prompt
         assert "hands-on" in prompt
@@ -422,6 +433,113 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     assert any(
         e["event_type"] == "sealed_source_pack_imported"
         for e in engine.events(first)
+    )
+
+
+def test_exhausted_adjudicated_hash_hands_off_to_review_only_transaction(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    exhausted_id = engine.create_project_from_pack(
+        pack, "AccessNewsWire", vertical="device"
+    )
+    article = "<h2>Corrected Device Release</h2><p>Corrected copy.</p>"
+    article_hash = hashlib.sha256(
+        ("Corrected Device Headline\n" + article).encode("utf-8")
+    ).hexdigest()
+    with engine._connect() as conn:
+        conn.execute(
+            "UPDATE projects SET release_title=?,article_text=?,"
+            "article_hash=?,stage='admin_review' WHERE id=?",
+            (
+                "Corrected Device Headline",
+                article,
+                article_hash,
+                exhausted_id,
+            ),
+        )
+    engine._event(
+        exhausted_id,
+        "adjudicated_revision",
+        "admin_review",
+        article_hash,
+        {"applied": ["M1"]},
+    )
+    for purpose in (
+        "draft", "compliance", "compliance_repair", "final_signoff"
+    ):
+        engine._record_llm_call(
+            exhausted_id,
+            purpose,
+            route_for(purpose, "device"),
+            10,
+            10,
+        )
+
+    action = engine.run_action(
+        exhausted_id, WORKBENCH_SOURCE_CONTEXT_VERSION
+    )
+    assert action["action"] == "handoff_corrected_final_candidate"
+
+    imported = {}
+
+    def accept_final_candidate(project_id, candidate, *, final_candidate):
+        imported["candidate"] = candidate
+        assert final_candidate is True
+        digest = hashlib.sha256(
+            ("Corrected Device Headline\n" + article).encode("utf-8")
+        ).hexdigest()
+        with engine._connect() as conn:
+            conn.execute(
+                "UPDATE projects SET release_title=?,article_text=?,"
+                "article_hash=?,stage='revised' WHERE id=?",
+                (
+                    "Corrected Device Headline",
+                    article,
+                    digest,
+                    project_id,
+                ),
+            )
+        engine._event(
+            project_id,
+            "manual_final_candidate_imported",
+            "revised",
+            digest,
+            {"paid_calls_added": 0},
+        )
+
+    with patch.object(
+        engine,
+        "import_manual_article",
+        side_effect=accept_final_candidate,
+    ):
+        replacement_id = (
+            engine.create_corrected_final_candidate_transaction(
+                exhausted_id
+            )
+        )
+
+    assert replacement_id != exhausted_id
+    assert engine.get(replacement_id)["stage"] == "revised"
+    assert engine.usage_summary(replacement_id)["calls"] == 0
+    assert "<h1>Corrected Device Headline</h1>" in imported["candidate"]
+    assert any(
+        event["event_type"] == "corrected_final_candidate_handed_off"
+        for event in engine.events(exhausted_id)
+    )
+    assert any(
+        event["event_type"] == "corrected_final_candidate_received"
+        for event in engine.events(replacement_id)
     )
 
 

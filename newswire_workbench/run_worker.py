@@ -166,6 +166,44 @@ class RunQueueWorker:
                     job.project_id,
                     WORKBENCH_SOURCE_CONTEXT_VERSION,
                 )
+                if (
+                    action.get("action")
+                    == "handoff_corrected_final_candidate"
+                ):
+                    failed = engine.get(job.project_id)
+                    replacement_id = (
+                        engine.create_corrected_final_candidate_transaction(
+                            job.project_id
+                        )
+                    )
+                    replacement = engine.get(replacement_id)
+                    replacement_job, _ = submit_project_run(
+                        engine,
+                        replacement_id,
+                        idempotency_key=(
+                            "corrected-final-candidate:" + job.id
+                        ),
+                    )
+                    return self.repo.finish(
+                        job.id,
+                        job.lease_token,
+                        status="completed",
+                        terminal_code="corrected_final_candidate_queued",
+                        result={
+                            "project_id": replacement_id,
+                            "replaces_project_id": job.project_id,
+                            "replacement_queue_job_id": replacement_job.id,
+                            "stage": replacement["stage"],
+                            "paid_calls": engine.usage_summary(
+                                job.project_id
+                            )["calls"],
+                            "replacement_paid_calls": 0,
+                            "source_article_hash": failed["article_hash"],
+                            "replacement_article_hash": replacement[
+                                "article_hash"
+                            ],
+                        },
+                    )
                 generation = _automatic_correction_generation(
                     engine, job.project_id
                 )

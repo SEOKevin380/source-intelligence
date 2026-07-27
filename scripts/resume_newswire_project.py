@@ -42,7 +42,7 @@ def main() -> None:
         "--action",
         choices=(
             "inspect", "recover", "continue", "rebuild", "adjudicate",
-            "import", "deliver"
+            "handoff", "import", "deliver"
         ),
         default="inspect",
     )
@@ -207,6 +207,16 @@ def main() -> None:
             ),
             "after": snapshot(engine, args.project_id),
             "corrected_article_hash": corrected["article_hash"],
+        }, indent=2))
+    elif args.action == "handoff":
+        replacement_id = (
+            engine.create_corrected_final_candidate_transaction(
+                args.project_id
+            )
+        )
+        print(json.dumps({
+            "source_project_id": args.project_id,
+            "replacement_project": snapshot(engine, replacement_id),
         }, indent=2))
     elif args.action == "import":
         if not args.article_file:

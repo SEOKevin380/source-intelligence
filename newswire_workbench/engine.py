@@ -2,6 +2,7 @@
 
 import copy
 import hashlib
+import html
 import json
 import os
 import re
@@ -46,7 +47,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "serp-differentiation-depth-v35-self-healing-editorial-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "self-healing-depth-contact-20260727-r35"
+WORKBENCH_RUNTIME_REVISION = "corrected-candidate-handoff-20260727-r36"
 
 STAGES = (
     "source_ready",
@@ -1261,6 +1262,100 @@ class WorkbenchEngine:
             "admin_review": "Kevin review queue",
         }[project["stage"]]
 
+    def _has_current_adjudicated_revision(self, project_id):
+        """Return whether the current hash is an exact reviewer-corrected artifact."""
+        project = self.get(project_id)
+        return any(
+            event.get("event_type") == "adjudicated_revision"
+            and event.get("article_hash") == project["article_hash"]
+            for event in self.events(project_id)
+        )
+
+    def can_handoff_corrected_final_candidate(self, project_id):
+        """Allow one review-only transaction after an exhausted adjudication."""
+        project = self.get(project_id)
+        if project["stage"] != "admin_review" or not project["article_hash"]:
+            return False
+        if not self._uses_locked_call_path(project):
+            return False
+        if not self._has_current_adjudicated_revision(project_id):
+            return False
+        if self._billable_call_count(project_id, "final_signoff") != 1:
+            return False
+        return (
+            self.usage_summary(project_id)["calls"]
+            >= execution_budget()["calls"]
+        )
+
+    def create_corrected_final_candidate_transaction(self, project_id):
+        """Move a corrected exact artifact to a zero-usage final-review owner."""
+        if not self.can_handoff_corrected_final_candidate(project_id):
+            raise RuntimeError(
+                "Corrected final-candidate handoff requires an exhausted "
+                "locked transaction with a current adjudicated article hash."
+            )
+        from article_provenance import extract_sealed_pack
+
+        source = self.get(project_id)
+        pack = extract_sealed_pack(source["source_text"])
+        if not pack:
+            raise RuntimeError(
+                "The exhausted project has no sealed source pack to hand off."
+            )
+        replacement_id = self.create_project_from_pack(
+            pack,
+            source["platform"],
+            vertical=source["vertical"],
+            force_new=True,
+        )
+        if replacement_id == project_id:
+            raise RuntimeError(
+                "Corrected final-candidate handoff reused the exhausted project."
+            )
+        if self.usage_summary(replacement_id)["calls"] != 0:
+            raise RuntimeError(
+                "Corrected final-candidate transaction inherited paid usage."
+            )
+        title = source.get("release_title") or source["title"]
+        candidate = (
+            f"<h1>{html.escape(title)}</h1>"
+            + source["article_text"]
+        )
+        self.import_manual_article(
+            replacement_id,
+            candidate,
+            final_candidate=True,
+        )
+        replacement = self.get(replacement_id)
+        self._event(
+            project_id,
+            "corrected_final_candidate_handed_off",
+            source["stage"],
+            source["article_hash"],
+            {
+                "replacement_project_id": replacement_id,
+                "replacement_article_hash": replacement["article_hash"],
+                "paid_calls_added_to_source_project": 0,
+                "replacement_paid_calls": 0,
+                "next_action": "reserved_final_signoff",
+                "operator_click_required": False,
+            },
+        )
+        self._event(
+            replacement_id,
+            "corrected_final_candidate_received",
+            replacement["stage"],
+            replacement["article_hash"],
+            {
+                "source_project_id": project_id,
+                "source_article_hash": source["article_hash"],
+                "paid_calls_inherited": 0,
+                "next_action": "reserved_final_signoff",
+                "operator_click_required": False,
+            },
+        )
+        return replacement_id
+
     def run_action(self, project_id, current_workflow_version=""):
         """Return the single engine-owned action for the durable project.
 
@@ -1380,6 +1475,19 @@ class WorkbenchEngine:
                     "The engine owns a deterministic recovery before the "
                     "remaining independent review."
                 ),
+            }
+        if self.can_handoff_corrected_final_candidate(project_id):
+            return {
+                **action,
+                "action": "handoff_corrected_final_candidate",
+                "label": "Review Corrected Article",
+                "reason": (
+                    "The exact independent-review edits are applied and this "
+                    "four-call ledger is exhausted. The engine will validate "
+                    "the corrected artifact in a zero-usage transaction and "
+                    "spend only one fresh exact-hash final review."
+                ),
+                "may_start_paid_call": True,
             }
         stranded_calls = self._stranded_required_calls(project_id)
         if stranded_calls:

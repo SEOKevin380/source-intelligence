@@ -412,3 +412,52 @@ def test_worker_automatically_queues_one_corrected_transaction(tmp_path):
     assert completed.status == "completed"
     assert completed.terminal_code == "package_ready"
     assert completed.result["project_id"] == "project-2"
+
+
+class FakeFinalCandidateWorkerEngine(FakeCorrectedWorkerEngine):
+    def run_action(self, project_id, current_workflow_version):
+        assert project_id == "project-1"
+        return {"action": "handoff_corrected_final_candidate"}
+
+    def create_corrected_final_candidate_transaction(self, project_id):
+        assert project_id == "project-1"
+        self.projects["project-2"] = {
+            "id": "project-2",
+            "source_hash": "source-2",
+            "source_text": self.projects["project-1"]["source_text"],
+            "platform": "AccessNewsWire",
+            "vertical": "device",
+            "stage": "revised",
+            "article_hash": "corrected-hash",
+        }
+        self.event_rows.setdefault("project-2", [])
+        return "project-2"
+
+    def usage_summary(self, project_id):
+        return {"calls": 4 if project_id == "project-1" else 0}
+
+
+def test_worker_queues_corrected_artifact_for_one_fresh_review(tmp_path):
+    fake = FakeFinalCandidateWorkerEngine(tmp_path)
+    repo = RunJobRepository(queue_path(tmp_path))
+    parent, _ = repo.submit(
+        idempotency_key="adjudicated-parent",
+        project_id="project-1",
+        source_hash="source-1",
+        workflow_version="workflow-v1",
+    )
+    worker = RunQueueWorker(
+        tmp_path,
+        "rules",
+        engine_factory=lambda root: fake,
+    )
+
+    handed_off = worker.run_once()
+
+    assert handed_off.id == parent.id
+    assert handed_off.terminal_code == "corrected_final_candidate_queued"
+    assert handed_off.result["project_id"] == "project-2"
+    assert handed_off.result["replacement_paid_calls"] == 0
+    replacement = repo.latest_for_project("project-2")
+    assert replacement.status == "pending"
+    assert replacement.desired_action == "run_to_completion"

@@ -2232,6 +2232,9 @@ else:
             _is_resume = _action_name in {
                 "resume", "resume_zero_cost", "resume_paid_reserved"
             }
+            _is_final_candidate_handoff = (
+                _action_name == "handoff_corrected_final_candidate"
+            )
             _is_complete = _action_name == "complete"
             _action_requires_models = _action_name in {
                 "build",
@@ -2240,6 +2243,7 @@ else:
                 "resume_paid_reserved",
                 "rebuild_obsolete_workflow",
                 "rebuild_corrected_transaction",
+                "handoff_corrected_final_candidate",
             }
             _action_prerequisite_missing = bool(
                 _action_requires_models and not _ready_to_run
@@ -2474,6 +2478,13 @@ else:
                     st.rerun()
                 elif _is_resume:
                     _project_id = _prior_project_id
+                elif _is_final_candidate_handoff:
+                    _project_id = (
+                        _workbench
+                        .create_corrected_final_candidate_transaction(
+                            _prior_project_id
+                        )
+                    )
                 else:
                     _project_id = _workbench.create_project_from_pack(
                         _publication_pack, _newswire_platform, vertical="auto",
@@ -2484,7 +2495,11 @@ else:
                         "Rebuild transaction did not create a new project."
                     )
                 _created = _workbench.get(_project_id)
-                if not _is_resume and _created["stage"] != "source_ready":
+                if (
+                    not _is_resume
+                    and not _is_final_candidate_handoff
+                    and _created["stage"] != "source_ready"
+                ):
                     raise RuntimeError(
                         "New project did not begin at source_ready."
                     )
