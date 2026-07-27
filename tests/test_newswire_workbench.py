@@ -563,9 +563,145 @@ def test_exhausted_adjudicated_hash_hands_off_to_review_only_transaction(
         "corrected_final_candidate_received",
         "admin_review",
         replacement["article_hash"],
-        {"generation": 4},
+        {"generation": 5},
     )
     assert not engine.can_handoff_corrected_final_candidate(replacement_id)
+
+
+def test_complete_exact_reviewer_patch_is_all_or_nothing(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Atomic Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "AccessNewsWire", vertical="device"
+    )
+    article = "<p>Old first sentence.</p><p>Old second sentence.</p>"
+    digest = hashlib.sha256(
+        ("Atomic Device\n" + article).encode("utf-8")
+    ).hexdigest()
+    report = {
+        "verdict": "not_approved",
+        "mandatory_count": 2,
+        "mandatory_edits": [
+            {
+                "id": "M1",
+                "exact_text": "Old first sentence.",
+                "replacement": "Corrected first sentence.",
+            },
+            {
+                "id": "M2",
+                "exact_text": "Old second sentence.",
+                "replacement": "Corrected second sentence.",
+            },
+        ],
+        "recommended_edits": [],
+        "approved_elements": [],
+        "notes": [],
+        "reviewed_article_hash": digest,
+        "approval_purpose": "final_signoff",
+    }
+    with engine._connect() as conn:
+        conn.execute(
+            "UPDATE projects SET article_text=?,article_hash=?,"
+            "stage='admin_review',last_report=? WHERE id=?",
+            (article, digest, json.dumps(report), pid),
+        )
+    clean_preflight = {
+        "article": (
+            "<p>Corrected first sentence.</p>"
+            "<p>Corrected second sentence.</p>"
+        ),
+        "blockers": [],
+    }
+    clean_ledger = {
+        "coverage_violations": [],
+        "attribution_violations": [],
+        "grounding_violations": [],
+        "cta_integrity_violations": [],
+    }
+    with patch(
+        "newswire_workbench.engine.audit_article",
+        return_value=clean_preflight,
+    ), patch(
+        "article_provenance.build_article_claim_ledger",
+        return_value=clean_ledger,
+    ):
+        assert engine.apply_complete_exact_reviewer_patch(pid)
+    updated = engine.get(pid)
+    assert "Corrected first sentence." in updated["article_text"]
+    assert "Corrected second sentence." in updated["article_text"]
+    assert updated["last_report"] == {}
+    assert any(
+        event["event_type"]
+        == "complete_exact_reviewer_patch_applied"
+        for event in engine.events(pid)
+    )
+
+
+def test_incomplete_exact_reviewer_patch_restores_hash_and_report(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Atomic Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "AccessNewsWire", vertical="device"
+    )
+    article = "<p>Old first sentence.</p>"
+    digest = hashlib.sha256(
+        ("Atomic Device\n" + article).encode("utf-8")
+    ).hexdigest()
+    report = {
+        "verdict": "not_approved",
+        "mandatory_count": 2,
+        "mandatory_edits": [
+            {
+                "id": "M1",
+                "exact_text": "Old first sentence.",
+                "replacement": "Corrected first sentence.",
+            },
+            {
+                "id": "M2",
+                "exact_text": "Missing sentence.",
+                "replacement": "Never partially insert this.",
+            },
+        ],
+        "recommended_edits": [],
+        "approved_elements": [],
+        "notes": [],
+        "reviewed_article_hash": digest,
+        "approval_purpose": "final_signoff",
+    }
+    with engine._connect() as conn:
+        conn.execute(
+            "UPDATE projects SET article_text=?,article_hash=?,"
+            "stage='admin_review',last_report=? WHERE id=?",
+            (article, digest, json.dumps(report), pid),
+        )
+
+    assert not engine.apply_complete_exact_reviewer_patch(pid)
+    restored = engine.get(pid)
+    assert restored["article_hash"] == digest
+    assert restored["article_text"] == article
+    assert restored["last_report"] == report
+    assert any(
+        event["event_type"] == "complete_exact_patch_rolled_back"
+        for event in engine.events(pid)
+    )
 
 
 def test_reviewer_style_preference_cannot_block_approval(tmp_path):

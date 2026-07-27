@@ -42,7 +42,7 @@ def main() -> None:
         "--action",
         choices=(
             "inspect", "recover", "continue", "rebuild", "adjudicate",
-            "handoff", "import", "deliver"
+            "patch", "handoff", "import", "deliver"
         ),
         default="inspect",
     )
@@ -207,6 +207,19 @@ def main() -> None:
             ),
             "after": snapshot(engine, args.project_id),
             "corrected_article_hash": corrected["article_hash"],
+        }, indent=2))
+    elif args.action == "patch":
+        applied = engine.apply_complete_exact_reviewer_patch(
+            args.project_id
+        )
+        if not applied:
+            raise RuntimeError(
+                "The complete exact reviewer patch could not be applied "
+                "atomically; the original hash and report were preserved."
+            )
+        print(json.dumps({
+            "complete_exact_patch_applied": True,
+            "after": snapshot(engine, args.project_id),
         }, indent=2))
     elif args.action == "handoff":
         replacement_id = (

@@ -461,3 +461,44 @@ def test_worker_queues_corrected_artifact_for_one_fresh_review(tmp_path):
     replacement = repo.latest_for_project("project-2")
     assert replacement.status == "pending"
     assert replacement.desired_action == "run_to_completion"
+
+
+class FakeAtomicPatchWorkerEngine(FakeFinalCandidateWorkerEngine):
+    def __init__(self, root):
+        super().__init__(root)
+        self.patch_applied = False
+
+    def run_action(self, project_id, current_workflow_version):
+        assert project_id == "project-1"
+        if not self.patch_applied:
+            return {"action": "apply_complete_exact_reviewer_patch"}
+        return {"action": "handoff_corrected_final_candidate"}
+
+    def apply_complete_exact_reviewer_patch(self, project_id):
+        assert project_id == "project-1"
+        self.patch_applied = True
+        self.projects[project_id]["article_hash"] = "fully-patched-hash"
+        return True
+
+
+def test_worker_applies_entire_exact_patch_before_handoff(tmp_path):
+    fake = FakeAtomicPatchWorkerEngine(tmp_path)
+    repo = RunJobRepository(queue_path(tmp_path))
+    repo.submit(
+        idempotency_key="atomic-patch-parent",
+        project_id="project-1",
+        source_hash="source-1",
+        workflow_version="workflow-v1",
+    )
+    worker = RunQueueWorker(
+        tmp_path,
+        "rules",
+        engine_factory=lambda root: fake,
+    )
+
+    handed_off = worker.run_once()
+
+    assert fake.patch_applied is True
+    assert handed_off.terminal_code == "corrected_final_candidate_queued"
+    assert handed_off.result["source_article_hash"] == "fully-patched-hash"
+    assert repo.latest_for_project("project-2").status == "pending"

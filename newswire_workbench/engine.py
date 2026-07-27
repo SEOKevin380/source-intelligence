@@ -77,7 +77,7 @@ LOCKED_STAGE_PURPOSE = {
     "compliance_reviewed": "compliance_repair",
     "revised": "final_signoff",
 }
-CORRECTED_FINAL_CANDIDATE_HANDOFF_LIMIT = 4
+CORRECTED_FINAL_CANDIDATE_HANDOFF_LIMIT = 5
 
 
 def _now():
@@ -1272,6 +1272,165 @@ class WorkbenchEngine:
             for event in self.events(project_id)
         )
 
+    def can_apply_complete_exact_reviewer_patch(self, project_id):
+        """Return whether the final reviewer supplied a closed literal patch set."""
+        project = self.get(project_id)
+        report = project.get("last_report") or {}
+        edits = list(report.get("mandatory_edits") or [])
+        if (
+            project["stage"] != "admin_review"
+            or not self._uses_locked_call_path(project)
+            or report.get("verdict") != "not_approved"
+            or report.get("approval_purpose") != "final_signoff"
+            or report.get("reviewed_article_hash") != project["article_hash"]
+            or not edits
+            or len(edits) > 16
+            or self._report_has_true_source_conflict(report)
+        ):
+            return False
+        total_patch_size = 0
+        for item in edits:
+            finding_id = str(item.get("id") or "")
+            exact = str(item.get("exact_text") or "")
+            replacement = str(item.get("replacement") or "")
+            total_patch_size += len(exact) + len(replacement)
+            if (
+                finding_id.startswith(("P-ATTR-", "P-COVERAGE-", "D"))
+                or not exact.strip()
+                or not replacement.strip()
+                or total_patch_size > 24000
+                or self._unsafe_reviewer_replacement(replacement)
+                or re.search(
+                    r"<\s*(?:script|iframe|object|embed|style)\b",
+                    replacement,
+                    re.I,
+                )
+            ):
+                return False
+        return True
+
+    def apply_complete_exact_reviewer_patch(self, project_id):
+        """Atomically apply all exact edits, never a misleading partial subset."""
+        if not self.can_apply_complete_exact_reviewer_patch(project_id):
+            return False
+        project = self.get(project_id)
+        report = copy.deepcopy(project["last_report"])
+        reviewed_hash = project["article_hash"]
+        snapshot = {
+            "release_title": project.get("release_title") or project["title"],
+            "article_text": project["article_text"],
+            "article_hash": project["article_hash"],
+            "stage": project["stage"],
+            "last_report": copy.deepcopy(project["last_report"]),
+        }
+        expected_ids = [
+            str(item.get("id") or "")
+            for item in report.get("mandatory_edits") or []
+        ]
+        if not self._adjudicate_current(
+            project, report, target_stage="admin_review"
+        ):
+            return False
+        with self._connect() as conn:
+            adjudication = conn.execute(
+                "SELECT payload FROM adjudications WHERE project_id=? "
+                "AND source_article_hash=? ORDER BY rowid DESC LIMIT 1",
+                (project_id, reviewed_hash),
+            ).fetchone()
+        payload = (
+            json.loads(adjudication["payload"] or "{}")
+            if adjudication
+            else {}
+        )
+        applied = [str(item or "") for item in payload.get("applied") or []]
+        skipped = list(payload.get("skipped") or [])
+        if skipped or any(applied.count(item) != 1 for item in expected_ids):
+            candidate_hash = self.get(project_id)["article_hash"]
+            self._restore_conditional_exact_patch_snapshot(
+                project_id, snapshot
+            )
+            self._event(
+                project_id,
+                "complete_exact_patch_rolled_back",
+                "admin_review",
+                snapshot["article_hash"],
+                {
+                    "reviewed_hash": reviewed_hash,
+                    "rejected_candidate_hash": candidate_hash,
+                    "expected_edit_ids": expected_ids,
+                    "adjudication": payload,
+                    "operator_decision_required": False,
+                },
+            )
+            return False
+
+        current = self.get(project_id)
+        affiliate_href = _source_platform_link(
+            current["source_text"], current["platform"]
+        )
+        preflight = audit_article(
+            current["article_text"],
+            current["platform"],
+            current["vertical"],
+            affiliate_href,
+        )
+        if preflight["article"] != current["article_text"]:
+            self._persist_preflight_article(
+                current, preflight, "admin_review"
+            )
+            current = self.get(project_id)
+            preflight = audit_article(
+                current["article_text"],
+                current["platform"],
+                current["vertical"],
+                affiliate_href,
+            )
+        from article_provenance import (
+            build_article_claim_ledger,
+            extract_sealed_pack,
+        )
+        provenance = build_article_claim_ledger(
+            extract_sealed_pack(current["source_text"]),
+            current["article_text"],
+        )
+        provenance_blockers = _provenance_findings(provenance)
+        if preflight["blockers"] or provenance_blockers:
+            candidate_hash = current["article_hash"]
+            self._restore_conditional_exact_patch_snapshot(
+                project_id, snapshot
+            )
+            self._event(
+                project_id,
+                "complete_exact_patch_failed_preflight",
+                "admin_review",
+                snapshot["article_hash"],
+                {
+                    "reviewed_hash": reviewed_hash,
+                    "rejected_candidate_hash": candidate_hash,
+                    "blockers": (
+                        list(preflight["blockers"]) + provenance_blockers
+                    ),
+                    "operator_decision_required": False,
+                },
+            )
+            return False
+        current = self.get(project_id)
+        self._event(
+            project_id,
+            "complete_exact_reviewer_patch_applied",
+            "admin_review",
+            current["article_hash"],
+            {
+                "reviewed_hash": reviewed_hash,
+                "result_hash": current["article_hash"],
+                "applied_edit_ids": expected_ids,
+                "paid_calls_added": 0,
+                "next_action": "corrected_final_candidate_handoff",
+                "operator_click_required": False,
+            },
+        )
+        return True
+
     def _corrected_final_candidate_generation(self, project_id):
         """Count bounded review-only handoffs without trusting browser state."""
         generation = 0
@@ -1501,6 +1660,18 @@ class WorkbenchEngine:
                 "reason": (
                     "The engine owns a deterministic recovery before the "
                     "remaining independent review."
+                ),
+            }
+        if self.can_apply_complete_exact_reviewer_patch(project_id):
+            return {
+                **action,
+                "action": "apply_complete_exact_reviewer_patch",
+                "label": "Apply Reviewer Corrections",
+                "reason": (
+                    "The final reviewer supplied a closed exact patch set. "
+                    "The engine will apply every edit atomically, rerun all "
+                    "gates, and hand only the complete corrected hash to the "
+                    "next bounded independent review."
                 ),
             }
         if self.can_handoff_corrected_final_candidate(project_id):

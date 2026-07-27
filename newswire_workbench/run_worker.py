@@ -168,6 +168,21 @@ class RunQueueWorker:
                 )
                 if (
                     action.get("action")
+                    == "apply_complete_exact_reviewer_patch"
+                ):
+                    if not engine.apply_complete_exact_reviewer_patch(
+                        job.project_id
+                    ):
+                        raise RuntimeError(
+                            "The complete exact reviewer patch could not be "
+                            "applied atomically."
+                        )
+                    action = engine.run_action(
+                        job.project_id,
+                        WORKBENCH_SOURCE_CONTEXT_VERSION,
+                    )
+                if (
+                    action.get("action")
                     == "handoff_corrected_final_candidate"
                 ):
                     failed = engine.get(job.project_id)
