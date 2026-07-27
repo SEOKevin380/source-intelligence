@@ -5393,7 +5393,7 @@ class WorkbenchEngine:
         original = article
         release_title = p.get("release_title") or p["title"]
         original_title = release_title
-        applied, skipped = [], []
+        applied, skipped, applied_edits = [], [], []
         for item in report.get("mandatory_edits", []) or []:
             finding_id = str(item.get("id") or "")
             exact = str(item.get("exact_text", "") or "")
@@ -5449,12 +5449,32 @@ class WorkbenchEngine:
                     )
                 )
                 if not block_replaced:
+                    # A reviewer can emit both a paragraph replacement and a
+                    # nested sentence deletion for the same defect. If the
+                    # broader edit already removed that exact sentence, the
+                    # nested deletion is fully satisfied rather than skipped.
+                    superseded_by = next(
+                        (
+                            prior_id
+                            for prior_id, prior_exact, _prior_replacement
+                            in applied_edits
+                            if exact in prior_exact
+                        ),
+                        "",
+                    )
+                    if superseded_by and not replacement:
+                        applied.append(item.get("id"))
+                        applied_edits.append(
+                            (item.get("id"), exact, replacement)
+                        )
+                        continue
                     skipped.append({
                         "id": item.get("id"),
                         "reason": "exact_text_not_current",
                     })
                     continue
                 applied.append(item.get("id"))
+                applied_edits.append((item.get("id"), exact, replacement))
                 continue
             if title_match:
                 cleaned_title = re.sub(r"<[^>]+>", "", replacement).strip()
@@ -5468,6 +5488,7 @@ class WorkbenchEngine:
             else:
                 article = article.replace(exact, replacement, 1)
             applied.append(item.get("id"))
+            applied_edits.append((item.get("id"), exact, replacement))
 
         # Remove source-advertiser urgency wording even when a reviewer points
         # at the wrong exact sentence. This is a safe, meaning-preserving edit.

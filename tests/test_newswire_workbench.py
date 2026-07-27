@@ -646,6 +646,91 @@ def test_complete_exact_reviewer_patch_is_all_or_nothing(tmp_path):
     )
 
 
+def test_complete_exact_reviewer_patch_accepts_nested_delete_already_satisfied(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Nested Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "AccessNewsWire", vertical="device"
+    )
+    paragraph = (
+        "Users inflate the cushion manually. "
+        "Users can adjust firmness at any time by adding or removing air. "
+        "The cushion does not require electronic power."
+    )
+    article = f"<p>{paragraph}</p>"
+    digest = hashlib.sha256(
+        ("Nested Device\n" + article).encode("utf-8")
+    ).hexdigest()
+    report = {
+        "verdict": "not_approved",
+        "mandatory_count": 2,
+        "mandatory_edits": [
+            {
+                "id": "M1",
+                "exact_text": paragraph,
+                "replacement": (
+                    "According to the seller, users inflate the cushion "
+                    "manually and adjust its firmness."
+                ),
+            },
+            {
+                "id": "M2",
+                "exact_text": (
+                    "Users can adjust firmness at any time by adding or "
+                    "removing air."
+                ),
+                "replacement": "Delete this sentence.",
+            },
+        ],
+        "recommended_edits": [],
+        "approved_elements": [],
+        "notes": [],
+        "reviewed_article_hash": digest,
+        "approval_purpose": "final_signoff",
+    }
+    with engine._connect() as conn:
+        conn.execute(
+            "UPDATE projects SET article_text=?,article_hash=?,"
+            "stage='admin_review',last_report=? WHERE id=?",
+            (article, digest, json.dumps(report), pid),
+        )
+    clean_preflight = {
+        "article": (
+            "<p>According to the seller, users inflate the cushion manually "
+            "and adjust its firmness.</p>"
+        ),
+        "blockers": [],
+    }
+    clean_ledger = {
+        "coverage_violations": [],
+        "attribution_violations": [],
+        "grounding_violations": [],
+        "cta_integrity_violations": [],
+    }
+    with patch(
+        "newswire_workbench.engine.audit_article",
+        return_value=clean_preflight,
+    ), patch(
+        "article_provenance.build_article_claim_ledger",
+        return_value=clean_ledger,
+    ):
+        assert engine.apply_complete_exact_reviewer_patch(pid)
+    updated = engine.get(pid)
+    assert "adding or removing air" not in updated["article_text"]
+    assert updated["last_report"] == {}
+
+
 def test_incomplete_exact_reviewer_patch_restores_hash_and_report(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     pack = seal_source_pack({
