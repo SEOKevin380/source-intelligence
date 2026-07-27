@@ -26,6 +26,8 @@ _STAGE_PROGRESS = {
     "admin_review": (5, 5, "Stopped at a typed review boundary"),
 }
 
+_AUTOMATIC_CORRECTED_TRANSACTION_LIMIT = 1
+
 
 def queue_path(root: str | Path) -> Path:
     return Path(root) / "run-queue.db"
@@ -46,6 +48,25 @@ def submit_project_run(
         workflow_version=WORKBENCH_SOURCE_CONTEXT_VERSION,
         desired_action="run_to_completion",
     )
+
+
+def _automatic_correction_generation(
+    engine: WorkbenchEngine,
+    project_id: str,
+) -> int:
+    generation = 0
+    for event in engine.events(project_id):
+        if event.get("event_type") != "automatic_corrected_transaction_started":
+            continue
+        payload = event.get("payload") or {}
+        if isinstance(payload, str):
+            try:
+                import json
+                payload = json.loads(payload)
+            except (TypeError, ValueError):
+                payload = {}
+        generation = max(generation, int(payload.get("generation") or 0))
+    return generation
 
 
 class RunQueueWorker:
@@ -140,6 +161,105 @@ class RunQueueWorker:
                     job, str(message)
                 ),
             )
+            if result.get("stage") == "admin_review":
+                action = engine.run_action(
+                    job.project_id,
+                    WORKBENCH_SOURCE_CONTEXT_VERSION,
+                )
+                generation = _automatic_correction_generation(
+                    engine, job.project_id
+                )
+                if (
+                    action.get("action") in {
+                        "rebuild_corrected_transaction",
+                        "rebuild_obsolete_workflow",
+                    }
+                    and generation
+                    < _AUTOMATIC_CORRECTED_TRANSACTION_LIMIT
+                ):
+                    from article_provenance import extract_sealed_pack
+
+                    failed = engine.get(job.project_id)
+                    pack = extract_sealed_pack(failed.get("source_text") or "")
+                    if pack:
+                        replacement_id = engine.create_project_from_pack(
+                            pack,
+                            failed["platform"],
+                            vertical=failed["vertical"],
+                            force_new=True,
+                        )
+                        if replacement_id == job.project_id:
+                            raise RuntimeError(
+                                "Automatic corrected transaction reused the "
+                                "failed project instead of creating a new owner."
+                            )
+                        replacement = engine.get(replacement_id)
+                        next_generation = generation + 1
+                        engine._event(
+                            job.project_id,
+                            "automatic_corrected_transaction_queued",
+                            failed["stage"],
+                            failed["article_hash"],
+                            {
+                                "replacement_project_id": replacement_id,
+                                "generation": next_generation,
+                                "queue_job_id": job.id,
+                                "paid_calls_added_to_failed_project": 0,
+                                "operator_click_required": False,
+                                "trigger_action": action.get("action"),
+                            },
+                        )
+                        if not any(
+                            event.get("event_type")
+                            == "automatic_corrected_transaction_started"
+                            for event in engine.events(replacement_id)
+                        ):
+                            engine._event(
+                                replacement_id,
+                                "automatic_corrected_transaction_started",
+                                replacement["stage"],
+                                replacement["article_hash"],
+                                {
+                                    "replaces_project_id": job.project_id,
+                                    "generation": next_generation,
+                                    "queue_job_id": job.id,
+                                    "operator_click_required": False,
+                                    "prior_terminal_action": action.get(
+                                        "action"
+                                    ),
+                                },
+                            )
+                        replacement_job, _ = submit_project_run(
+                            engine,
+                            replacement_id,
+                            idempotency_key=(
+                                "automatic-corrected:"
+                                f"{job.id}:{next_generation}"
+                            ),
+                        )
+                        return self.repo.finish(
+                            job.id,
+                            job.lease_token,
+                            status="completed",
+                            terminal_code=(
+                                "automatic_corrected_transaction_queued"
+                            ),
+                            result={
+                                "project_id": replacement_id,
+                                "replaces_project_id": job.project_id,
+                                "replacement_queue_job_id": (
+                                    replacement_job.id
+                                ),
+                                "stage": replacement["stage"],
+                                "paid_calls": engine.usage_summary(
+                                    job.project_id
+                                )["calls"],
+                                "replacement_paid_calls": 0,
+                                "automatic_correction_generation": (
+                                    next_generation
+                                ),
+                            },
+                        )
             delivery_result = {}
             if (
                 result.get("stage") == "package_ready"

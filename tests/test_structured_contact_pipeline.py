@@ -129,6 +129,47 @@ USA"""
     assert refund == "60-Day Money-Back Guarantee"
 
 
+def test_one_box_intake_classifies_international_phone_and_bounds_inline_address():
+    notes = """Email: support@sondurtravel.com
+Phone: +61 423 733 680
+Company Address: Sondur Travel 102 E BAILIE ST, Kentland, IN, USA, 47951
+First we generate to get client sign off to publish and get our affiliate links."""
+    contact, refund = resolve_intake_contact_terms(notes)
+
+    assert contact["support_email"] == "support@sondurtravel.com"
+    assert "support_phone_us" not in contact
+    assert contact["support_phone_international"] == "+61 423 733 680"
+    assert contact["business_address"] == (
+        "Sondur Travel 102 E BAILIE ST, Kentland, IN, USA, 47951"
+    )
+    assert "client sign off" not in contact["business_address"]
+    assert refund == ""
+
+
+def test_reseal_repairs_historical_sondur_contact_parser_contamination():
+    notes = """Email: support@sondurtravel.com
+Phone: +61 423 733 680
+Company Address: Sondur Travel 102 E BAILIE ST, Kentland, IN, USA, 47951
+First we generate to get client sign off to publish and get our affiliate links."""
+    contact, _ = resolve_intake_contact_terms(
+        notes,
+        {
+            "support_phone_us": "+61 423 733 680",
+            "business_address": (
+                "Sondur Travel 102 E BAILIE ST, Kentland, IN, USA, 47951 "
+                "First we generate to get client sign off to publish and get "
+                "our affiliate links."
+            ),
+        },
+    )
+
+    assert "support_phone_us" not in contact
+    assert contact["support_phone_international"] == "+61 423 733 680"
+    assert contact["business_address"] == (
+        "Sondur Travel 102 E BAILIE ST, Kentland, IN, USA, 47951"
+    )
+
+
 def test_masked_contact_placeholders_never_become_publication_fields():
     contact = normalize_contact_information({
         "media_contact_name": "[OPERATOR LEGAL NAME]",

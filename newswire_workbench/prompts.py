@@ -379,6 +379,29 @@ def generation_prompt(source_text: str, platform: str, vertical: str,
         if platform == "AccessNewsWire" and vertical == "gaming"
         else ""
     )
+    accesswire_device_plan = (
+        f"""
+- AccessNewsWire device execution plan: produce
+  {profile['recovery_target']:,}–{profile['target_max']:,} useful,
+  source-grounded words on the first attempt. This buffer protects the
+  {profile['hard_floor']:,}-word publication floor during compliance editing.
+  Allocate distinct coverage to: buyer orientation and exact product identity
+  (120–170 words); attributed design, materials, dimensions, portability, and
+  setup (300–420); seller-described mechanism and permitted intended-use
+  positioning without converting marketing language into medical fact
+  (180–260); adjustment, care, documented fit, and practical use details
+  (220–300); current packages, per-unit math, shipping, warranty, refund, and
+  support terms (320–430); best-fit and not-fit readers grounded only in
+  documented features and limitations (160–220); independent-evidence limits
+  stated once (90–140); and reader questions, contact information, and sourced
+  close (260–340). These are coverage budgets, not mandatory headings.
+  Never invent hands-on testing, clinical outcomes, safety certification,
+  contraindications, or user groups. Complete a silent visible-word and
+  reader-coverage check before returning HTML.
+"""
+        if platform == "AccessNewsWire" and vertical == "device"
+        else ""
+    )
     editorial_context, sealed_facts = split_editorial_context(source_text)
     sealed_facts = writer_evidence_view(sealed_facts)
     return f"""You are the first-draft writer in a multi-stage editorial system.
@@ -462,6 +485,7 @@ Operating rules:
 - {product_type_execution_contract(vertical)}
 {barchart_coverage_plan}
 {accesswire_gaming_plan}
+{accesswire_device_plan}
 {conversion_rules}
 - A client-supplied priority, offer, coupon, or reference code is public offer
   data, not internal production terminology. It may appear when useful.
@@ -807,6 +831,24 @@ def revision_prompt(source_text: str, article: str, report: dict,
         if platform == "AccessNewsWire" and vertical == "gaming"
         else ""
     )
+    accesswire_device_repair_plan = (
+        f"""
+- AccessNewsWire device repair plan: preserve every compliant,
+  source-grounded paragraph and return at least
+  {profile['recovery_target']:,} useful words, with
+  {profile['target_max']:,} as the upper target. Rebuild missing depth from
+  distinct permitted facts about product identity, design/specifications,
+  seller-described operation, setup and adjustment, packages and per-unit
+  pricing, shipping, warranty, refund, support, reader fit, not-fit,
+  evidence limits, FAQs, and the sourced close. State an unavailable fact once
+  and move on. Do not shorten the article to solve a claim issue, repeat
+  caveats, add generic buying advice, or invent medical outcomes, product
+  testing, safety certification, or hands-on experience. Count visible words
+  after all deletions and rewrites before returning the complete HTML.
+"""
+        if platform == "AccessNewsWire" and vertical == "device"
+        else ""
+    )
     final_depth_check = (
         f"""- For this {profile['label']}, the saved body must contain at least
   {profile['hard_floor']:,} useful words; target
@@ -906,6 +948,7 @@ LINK/DISCLOSURE CONTRACT:
   contact facts, buyer questions, and clearly labeled verification gaps.
 {barchart_repair_plan}
 {accesswire_gaming_repair_plan}
+{accesswire_device_repair_plan}
 - Do not invent connective factual claims. In particular, do not infer risks
   to appliances, compatibility with existing electrical systems, available
   customer support, return rights, or comparative value unless those exact

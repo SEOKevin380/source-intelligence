@@ -44,9 +44,9 @@ from .execution_budget import (
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v34-closed-loop-action-contract"
+    "serp-differentiation-depth-v35-self-healing-editorial-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "publisher-contract-durability-audit-20260725-r34"
+WORKBENCH_RUNTIME_REVISION = "self-healing-depth-contact-20260727-r35"
 
 STAGES = (
     "source_ready",
@@ -1043,6 +1043,7 @@ class WorkbenchEngine:
         # review call.
         if (
             current_blocker_ids == {"D18"}
+            and not zero_cost_candidate_failed
             and not current_provenance.get("coverage_violations")
             and not current_provenance.get("attribution_violations")
             and not current_provenance.get("grounding_violations")
@@ -1070,6 +1071,7 @@ class WorkbenchEngine:
         blocker_ids = {item.get("id") for item in blockers}
         depth_recoverable = (
             blocker_ids == {"D18"}
+            and not zero_cost_candidate_failed
             and self.usage_summary(project_id)["calls"] == 3
             and self._billable_call_count(project_id, "final_signoff") == 0
             and self._latest_successful_call_output(project_id, "draft")
@@ -2226,6 +2228,18 @@ class WorkbenchEngine:
             current_ledger.get("attribution_violations")
             or current_ledger.get("grounding_violations")
         ):
+            self._record_depth_reconciliation_failure(
+                p,
+                reason="normalized_base_failed_provenance",
+                assembled_words=self._article_word_count(base_html),
+                target_words=publication_profile(
+                    p["platform"], p["vertical"]
+                )["recovery_target"],
+                remaining_blockers=(
+                    list(current_ledger.get("attribution_violations") or [])
+                    + list(current_ledger.get("grounding_violations") or [])
+                ),
+            )
             return False
         report_path = project_dir / "02-openai-review.json"
         try:
@@ -2315,9 +2329,23 @@ class WorkbenchEngine:
         # corrected owner. Word count is not recoverable with reader-facing
         # audit language.
         if assembled_words < target_words:
+            self._record_depth_reconciliation_failure(
+                p,
+                reason="insufficient_safe_paid_artifact_depth",
+                assembled_words=assembled_words,
+                target_words=target_words,
+                added_blocks=len(additions),
+            )
             return False
 
         if not additions:
+            self._record_depth_reconciliation_failure(
+                p,
+                reason="no_distinct_safe_blocks_available",
+                assembled_words=assembled_words,
+                target_words=target_words,
+                added_blocks=0,
+            )
             return False
         if additions:
             heading = base.new_tag("h2")
@@ -2346,14 +2374,13 @@ class WorkbenchEngine:
         remaining = list(preflight["blockers"])
         remaining.extend(_provenance_findings(candidate_provenance))
         if remaining:
-            self._event(
-                project_id, "depth_reconciliation_incomplete", "admin_review",
-                p["article_hash"], {
-                    "remaining_blockers": remaining,
-                    "paid_calls_added": 0,
-                    "operator_decision_required": False,
-                    "canonical_hash_preserved": p["article_hash"],
-                },
+            self._record_depth_reconciliation_failure(
+                p,
+                reason="reconciled_candidate_failed_publication_contract",
+                assembled_words=self._article_word_count(candidate),
+                target_words=target_words,
+                added_blocks=len(additions),
+                remaining_blockers=remaining,
             )
             return False
         if not self._set_article(
@@ -2387,6 +2414,48 @@ class WorkbenchEngine:
             },
         )
         return True
+
+    def _record_depth_reconciliation_failure(
+        self,
+        project,
+        *,
+        reason,
+        assembled_words,
+        target_words,
+        added_blocks=0,
+        remaining_blockers=None,
+    ):
+        """Persist a terminal zero-cost depth attempt exactly once.
+
+        Without this durable boundary, every browser click can replay the same
+        deterministic no-op while the reserved independent review remains
+        untouched. The next owner is a fresh, bounded corrected transaction.
+        """
+        existing = [
+            event
+            for event in self.events(project["id"])
+            if event["event_type"] == "depth_reconciliation_incomplete"
+        ]
+        if existing:
+            return
+        self._event(
+            project["id"],
+            "depth_reconciliation_incomplete",
+            "admin_review",
+            project["article_hash"],
+            {
+                "reason": reason,
+                "assembled_words": int(assembled_words or 0),
+                "target_words": int(target_words or 0),
+                "added_blocks": int(added_blocks or 0),
+                "remaining_blockers": list(remaining_blockers or []),
+                "paid_calls_added": 0,
+                "operator_decision_required": False,
+                "canonical_hash_preserved": project["article_hash"],
+                "runtime_revision": WORKBENCH_RUNTIME_REVISION,
+                "next_action": "automatic_corrected_transaction",
+            },
+        )
 
     def _sealed_pack_decision_block(self, project, sealed_pack):
         """Deprecated: deterministic prose must never become article content."""
@@ -5507,8 +5576,23 @@ class WorkbenchEngine:
                 ORDER BY occurrences DESC, MAX(io.created_at) DESC
                 LIMIT 12
             """, (fact_source_hash, platform, vertical)).fetchall()
+            depth_rows = conn.execute("""
+                SELECT e.payload
+                FROM events e
+                JOIN projects p ON p.id=e.project_id
+                WHERE p.fact_source_hash=? AND p.platform=? AND p.vertical=?
+                  AND e.event_type='depth_reconciliation_incomplete'
+                ORDER BY e.id DESC
+                LIMIT 1
+            """, (fact_source_hash, platform, vertical)).fetchall()
         rows = self._sanitize_guidance_rows(rows)
-        if not rows:
+        depth_failure = {}
+        if depth_rows:
+            try:
+                depth_failure = json.loads(depth_rows[0]["payload"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                depth_failure = {}
+        if not rows and not depth_failure:
             return ""
         lines = [
             "Same-source issues observed in prior attempts "
@@ -5518,5 +5602,17 @@ class WorkbenchEngine:
             lines.append(
                 f"- Seen {row['occurrences']} time(s): "
                 f"{row['category']} — {row['issue']}"
+            )
+        if depth_failure:
+            profile = publication_profile(platform, vertical)
+            prior_words = int(depth_failure.get("assembled_words") or 0)
+            lines.append(
+                "- A prior transaction exhausted safe zero-cost depth recovery "
+                f"at {prior_words:,} words. Build the first complete draft to "
+                f"at least {profile['recovery_target']:,} useful, "
+                "source-grounded words so compliance editing cannot collapse "
+                f"it below the {profile['hard_floor']:,}-word hard floor. "
+                "Expand distinct reader questions from permitted claims; do "
+                "not pad with generic advice or repeated caveats."
             )
         return "\n".join(lines)

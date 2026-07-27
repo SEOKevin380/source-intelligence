@@ -129,6 +129,14 @@ def normalize_contact_information(value=None) -> dict:
         clean = " ".join(str(value_item or "").split()).strip()
         if not is_publication_placeholder(clean):
             normalized[canonical] = clean
+    # A generic "Phone:" label is common in one-box operator intake. Treat a
+    # visible non-NANP country code as authoritative instead of publishing an
+    # Australian, UK, or other international number as "U.S. Support Phone."
+    us_phone = normalized.get("support_phone_us", "")
+    country_code = re.match(r"^\+\s*(\d{1,3})\b", us_phone)
+    if country_code and country_code.group(1) != "1":
+        normalized.pop("support_phone_us", None)
+        normalized.setdefault("support_phone_international", us_phone)
     return {
         key: normalized[key]
         for key in CONTACT_INFORMATION_FIELDS
@@ -248,6 +256,15 @@ def extract_legacy_intake_terms(operator_notes: str) -> tuple[dict, str]:
 
     def address_block(*labels):
         joined = "|".join(re.escape(label) for label in labels)
+        # When an address is supplied on the same line as its label, that line
+        # is the complete value. Continuing into the next unlabeled line can
+        # swallow ordinary production notes into the public contact block.
+        inline = re.search(
+            rf"(?im)^[ \t]*(?:{joined})[ \t]*:[ \t]*(\S[^\r\n]*)$",
+            notes,
+        )
+        if inline:
+            return " ".join(inline.group(1).split()).strip()
         match = re.search(
             rf"(?ims)^\s*(?:{joined})\s*:\s*(.*?)"
             r"(?=^\s*(?:Product\s+Support|Order\s+Support|Refund|"
@@ -290,8 +307,23 @@ def resolve_intake_contact_terms(
     inferred_contact, inferred_refund = extract_legacy_intake_terms(
         operator_notes
     )
+    explicit = normalize_contact_information(explicit_contact)
+    # Repair historical parser contamination without overruling a genuinely
+    # different operator-entered address. If the stored explicit value is the
+    # freshly inferred address plus trailing prose, the shorter line-bounded
+    # value is the authoritative migration result.
+    for field in ("business_address", "return_address"):
+        inferred_value = inferred_contact.get(field, "")
+        explicit_value = explicit.get(field, "")
+        if (
+            inferred_value
+            and explicit_value
+            and explicit_value.startswith(inferred_value)
+            and explicit_value != inferred_value
+        ):
+            explicit.pop(field, None)
     merged = dict(inferred_contact)
-    merged.update(normalize_contact_information(explicit_contact))
+    merged.update(explicit)
     refund_terms = " ".join(
         str(explicit_refund_terms or inferred_refund).split()
     ).strip()

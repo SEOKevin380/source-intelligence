@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+import json
 
 import pytest
 
@@ -278,3 +279,136 @@ def test_worker_owns_job_to_terminal_result(tmp_path):
     assert finished.result["paid_calls"] == 4
     assert finished.result["article_hash"] == "article-1"
     assert fake.prepared[0][2] == 1
+
+
+class FakeCorrectedWorkerEngine:
+    def __init__(self, root):
+        self.root = root
+        pack = {
+            "source_pack_contract": {"sha256": "a" * 64},
+            "product": {
+                "product_name": "Short Device",
+                "official_url": "https://example.com",
+                "product_type": "device",
+            },
+        }
+        source_text = (
+            "AUTOMATION CONTEXT VERSION: old-workflow\n"
+            "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══\n"
+            + json.dumps(pack)
+        )
+        self.projects = {
+            "project-1": {
+                "id": "project-1",
+                "source_hash": "source-1",
+                "source_text": source_text,
+                "platform": "AccessNewsWire",
+                "vertical": "device",
+                "stage": "admin_review",
+                "article_hash": "short-hash",
+            }
+        }
+        self.event_rows = {"project-1": []}
+        self.prepared = []
+
+    def get(self, project_id):
+        return dict(self.projects[project_id])
+
+    def prepare_queue_execution(
+        self, project_id, *, queue_job_id, reclaim_attempt
+    ):
+        self.prepared.append((project_id, queue_job_id, reclaim_attempt))
+        return True
+
+    def run_to_completion(
+        self, project_id, master_instructions, progress_callback
+    ):
+        progress_callback("Running")
+        if project_id == "project-1":
+            return dict(self.projects[project_id])
+        self.projects[project_id]["stage"] = "package_ready"
+        self.projects[project_id]["article_hash"] = "approved-hash"
+        return dict(self.projects[project_id])
+
+    def run_action(self, project_id, current_workflow_version):
+        assert project_id == "project-1"
+        return {"action": "rebuild_corrected_transaction"}
+
+    def events(self, project_id):
+        return list(self.event_rows.get(project_id, []))
+
+    def create_project_from_pack(
+        self, pack, platform, vertical, force_new
+    ):
+        assert force_new is True
+        self.projects["project-2"] = {
+            "id": "project-2",
+            "source_hash": "source-2",
+            "source_text": self.projects["project-1"]["source_text"],
+            "platform": platform,
+            "vertical": vertical,
+            "stage": "source_ready",
+            "article_hash": "",
+        }
+        self.event_rows.setdefault("project-2", [])
+        return "project-2"
+
+    def _event(
+        self, project_id, event_type, stage, article_hash, payload
+    ):
+        self.event_rows.setdefault(project_id, []).append({
+            "event_type": event_type,
+            "stage": stage,
+            "article_hash": article_hash,
+            "payload": payload,
+        })
+
+    def usage_summary(self, project_id):
+        return {"calls": 3 if project_id == "project-1" else 4}
+
+    def capabilities(self):
+        return {"wordpress": False}
+
+    def quarantine_queue_failure(self, *args, **kwargs):
+        raise AssertionError("Successful worker must not quarantine")
+
+
+def test_worker_automatically_queues_one_corrected_transaction(tmp_path):
+    fake = FakeCorrectedWorkerEngine(tmp_path)
+    repo = RunJobRepository(queue_path(tmp_path))
+    parent, _ = repo.submit(
+        idempotency_key="parent",
+        project_id="project-1",
+        source_hash="source-1",
+        workflow_version="old-workflow",
+    )
+    worker = RunQueueWorker(
+        tmp_path,
+        "rules",
+        engine_factory=lambda root: fake,
+    )
+
+    handed_off = worker.run_once()
+
+    assert handed_off.id == parent.id
+    assert handed_off.terminal_code == (
+        "automatic_corrected_transaction_queued"
+    )
+    assert handed_off.result["project_id"] == "project-2"
+    replacement = repo.latest_for_project("project-2")
+    assert replacement.status == "pending"
+    assert any(
+        event["event_type"] == "automatic_corrected_transaction_queued"
+        for event in fake.events("project-1")
+    )
+    assert any(
+        event["event_type"] == "automatic_corrected_transaction_started"
+        for event in fake.events("project-2")
+    )
+
+    completed = worker.run_once()
+
+    assert completed.id == replacement.id
+    assert completed.status == "completed"
+    assert completed.terminal_code == "package_ready"
+    assert completed.result["project_id"] == "project-2"

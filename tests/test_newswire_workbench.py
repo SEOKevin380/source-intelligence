@@ -252,6 +252,25 @@ def test_accesswire_gaming_prompts_bind_depth_html_and_local_attribution():
         )
 
 
+def test_accesswire_device_prompts_build_a_depth_buffer_before_compliance():
+    draft_prompt = generation_prompt(
+        "sealed source", "AccessNewsWire", "device", "rules"
+    )
+    repair_prompt = revision_prompt(
+        "sealed source",
+        "<p>draft</p>",
+        {"mandatory_edits": []},
+        "AccessNewsWire",
+        "device",
+    )
+    for prompt in (draft_prompt, repair_prompt):
+        assert "1,900" in prompt
+        assert "1,400" in prompt
+        assert "AccessNewsWire device" in prompt
+        assert "source-grounded" in prompt
+        assert "hands-on" in prompt
+
+
 def test_review_context_keeps_whole_governed_sections_only():
     context = (
         "═══ LOCKED GENERATION BLUEPRINT ═══\nkeep blueprint\n"
@@ -2601,6 +2620,115 @@ def test_three_call_d18_stop_is_resumable_from_paid_artifacts(tmp_path):
         {"blockers": [{"id": "D18", "issue": "Draft is short."}]},
     )
     assert engine.can_recover_locked_pre_signoff(pid) is True
+
+
+def test_failed_d18_reconciliation_is_durable_and_never_replayed(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Short Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "AccessNewsWire", force_new=True
+    )
+    short = (
+        "<p><strong>Paid Advertorial:</strong> Compensation may be "
+        "received.</p>"
+        "<p>According to the seller, Literal product fact 0.</p>"
+    )
+    engine._set_article(
+        engine.get(pid), short, "revised", "03-claude-revision.html"
+    )
+    for purpose in ("draft", "compliance", "compliance_repair"):
+        engine._record_llm_call(
+            pid,
+            purpose,
+            route_for(purpose, "device"),
+            100,
+            100,
+            raw_output=short,
+        )
+    engine._set_stage(pid, "admin_review")
+    engine._event(
+        pid,
+        "pre_signoff_blocked",
+        "admin_review",
+        engine.get(pid)["article_hash"],
+        {"blockers": [{"id": "D18", "issue": "Draft is short."}]},
+    )
+    audited = {
+        "article": short,
+        "blockers": [{"id": "D18", "issue": "Draft is short."}],
+        "mechanical_remaining": [],
+        "repair_passes": [],
+        "initial_findings": [],
+        "final_findings": [],
+    }
+    ledger = {
+        "passed": True,
+        "used_claim_count": 1,
+        "coverage_violations": [],
+        "attribution_violations": [],
+        "grounding_violations": [],
+        "cta_integrity_violations": [],
+    }
+    with patch(
+        "newswire_workbench.engine.audit_article",
+        return_value=audited,
+    ), patch(
+        "article_provenance.build_article_claim_ledger",
+        return_value=ledger,
+    ), patch(
+        "newswire_workbench.engine.repair_source_grounding",
+        side_effect=lambda article, *_args: article,
+    ):
+        assert engine.can_recover_locked_pre_signoff(pid) is True
+        assert engine._recover_depth_from_paid_artifacts(pid) is False
+        assert engine.can_recover_locked_pre_signoff(pid) is False
+
+    failures = [
+        event
+        for event in engine.events(pid)
+        if event["event_type"] == "depth_reconciliation_incomplete"
+    ]
+    assert len(failures) == 1
+    payload = json.loads(failures[0]["payload"])
+    assert payload["reason"] == "insufficient_safe_paid_artifact_depth"
+    assert payload["next_action"] == "automatic_corrected_transaction"
+
+    preflight = {
+        "blockers": [{"id": "D18", "issue": "Draft is short."}],
+        "recommendations": [],
+        "semantic_review": {
+            "last_verdict": "not_run",
+            "remaining_calls": 1,
+            "passed": False,
+        },
+        "publication_ready": False,
+        "ready_for_packaging": False,
+        "policy_intelligence": {},
+    }
+    with patch.object(
+        engine, "offline_preflight", return_value=preflight
+    ), patch(
+        "newswire_workbench.engine.audit_article",
+        return_value=audited,
+    ), patch(
+        "article_provenance.build_article_claim_ledger",
+        return_value=ledger,
+    ):
+        assert (
+            engine.run_action(pid)["action"]
+            == "rebuild_corrected_transaction"
+        )
 
 
 def test_depth_only_preflight_recovers_inline_without_operator_resume(tmp_path):
