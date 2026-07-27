@@ -563,7 +563,7 @@ def test_exhausted_adjudicated_hash_hands_off_to_review_only_transaction(
         "corrected_final_candidate_received",
         "admin_review",
         replacement["article_hash"],
-        {"generation": 3},
+        {"generation": 4},
     )
     assert not engine.can_handoff_corrected_final_candidate(replacement_id)
 
