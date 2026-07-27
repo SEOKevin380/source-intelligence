@@ -77,6 +77,7 @@ LOCKED_STAGE_PURPOSE = {
     "compliance_reviewed": "compliance_repair",
     "revised": "final_signoff",
 }
+CORRECTED_FINAL_CANDIDATE_HANDOFF_LIMIT = 2
 
 
 def _now():
@@ -1271,8 +1272,28 @@ class WorkbenchEngine:
             for event in self.events(project_id)
         )
 
+    def _corrected_final_candidate_generation(self, project_id):
+        """Count bounded review-only handoffs without trusting browser state."""
+        generation = 0
+        for event in self.events(project_id):
+            if event.get("event_type") != "corrected_final_candidate_received":
+                continue
+            payload = event.get("payload") or {}
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except (TypeError, ValueError):
+                    payload = {}
+            # Projects created before the generation field was introduced are
+            # the first corrected-candidate handoff, never generation zero.
+            generation = max(
+                generation,
+                int(payload.get("generation") or 1),
+            )
+        return generation
+
     def can_handoff_corrected_final_candidate(self, project_id):
-        """Allow one review-only transaction after an exhausted adjudication."""
+        """Allow a bounded review-only handoff after final-signoff adjudication."""
         project = self.get(project_id)
         if project["stage"] != "admin_review" or not project["article_hash"]:
             return False
@@ -1283,16 +1304,17 @@ class WorkbenchEngine:
         if self._billable_call_count(project_id, "final_signoff") != 1:
             return False
         return (
-            self.usage_summary(project_id)["calls"]
-            >= execution_budget()["calls"]
+            self._corrected_final_candidate_generation(project_id)
+            < CORRECTED_FINAL_CANDIDATE_HANDOFF_LIMIT
         )
 
     def create_corrected_final_candidate_transaction(self, project_id):
         """Move a corrected exact artifact to a zero-usage final-review owner."""
         if not self.can_handoff_corrected_final_candidate(project_id):
             raise RuntimeError(
-                "Corrected final-candidate handoff requires an exhausted "
-                "locked transaction with a current adjudicated article hash."
+                "Corrected final-candidate handoff requires a locked "
+                "transaction with an exhausted final-review slot and a "
+                "current adjudicated article hash."
             )
         from article_provenance import extract_sealed_pack
 
@@ -1316,6 +1338,9 @@ class WorkbenchEngine:
             raise RuntimeError(
                 "Corrected final-candidate transaction inherited paid usage."
             )
+        next_generation = (
+            self._corrected_final_candidate_generation(project_id) + 1
+        )
         title = source.get("release_title") or source["title"]
         candidate = (
             f"<h1>{html.escape(title)}</h1>"
@@ -1337,6 +1362,7 @@ class WorkbenchEngine:
                 "replacement_article_hash": replacement["article_hash"],
                 "paid_calls_added_to_source_project": 0,
                 "replacement_paid_calls": 0,
+                "generation": next_generation,
                 "next_action": "reserved_final_signoff",
                 "operator_click_required": False,
             },
@@ -1350,6 +1376,7 @@ class WorkbenchEngine:
                 "source_project_id": project_id,
                 "source_article_hash": source["article_hash"],
                 "paid_calls_inherited": 0,
+                "generation": next_generation,
                 "next_action": "reserved_final_signoff",
                 "operator_click_required": False,
             },
@@ -1483,7 +1510,8 @@ class WorkbenchEngine:
                 "label": "Review Corrected Article",
                 "reason": (
                     "The exact independent-review edits are applied and this "
-                    "four-call ledger is exhausted. The engine will validate "
+                    "transaction's final-review slot is exhausted. The engine "
+                    "will validate "
                     "the corrected artifact in a zero-usage transaction and "
                     "spend only one fresh exact-hash final review."
                 ),

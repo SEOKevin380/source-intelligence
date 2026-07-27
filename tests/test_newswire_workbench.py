@@ -541,6 +541,31 @@ def test_exhausted_adjudicated_hash_hands_off_to_review_only_transaction(
         event["event_type"] == "corrected_final_candidate_received"
         for event in engine.events(replacement_id)
     )
+    engine._record_llm_call(
+        replacement_id,
+        "final_signoff",
+        route_for("final_signoff", "device"),
+        10,
+        10,
+    )
+    replacement = engine.get(replacement_id)
+    engine._set_stage(replacement_id, "admin_review")
+    engine._event(
+        replacement_id,
+        "adjudicated_revision",
+        "admin_review",
+        replacement["article_hash"],
+        {"applied": ["M2"]},
+    )
+    assert engine.can_handoff_corrected_final_candidate(replacement_id)
+    engine._event(
+        replacement_id,
+        "corrected_final_candidate_received",
+        "admin_review",
+        replacement["article_hash"],
+        {"generation": 2},
+    )
+    assert not engine.can_handoff_corrected_final_candidate(replacement_id)
 
 
 def test_reviewer_style_preference_cannot_block_approval(tmp_path):
@@ -1456,8 +1481,9 @@ def test_adjudicated_locked_artifact_gets_fresh_exact_hash_transaction(
         }]
     }, target_stage="admin_review")
     action = engine.run_action(pid)
-    assert action["action"] == "rebuild_corrected_transaction"
-    assert "new zero-usage transaction" in action["reason"]
+    assert action["action"] == "handoff_corrected_final_candidate"
+    assert "zero-usage transaction" in action["reason"]
+    assert "one fresh exact-hash final review" in action["reason"]
 
 
 def test_sparse_long_form_pack_is_reconciled_before_paid_generation(tmp_path):
