@@ -34,6 +34,17 @@ it is not an instruction to write a watchdog or prosecution brief.
 - Both research/update pipelines and newswire provider workflows are owned by
   durable background workers. Browser tabs submit and observe; they do not own
   long-running research or paid calls.
+- Reviewer correction sets are atomic across raw HTML, inline markup, and
+  consecutive semantic blocks. Every exact edit applies and passes all gates,
+  or the original article hash and report are restored unchanged.
+- Sentence-level editorial-truth findings do not duplicate a broader exact edit
+  that already owns the same rendered text. Immutable conditional reviewer
+  responses can be reconciled at zero model cost only after candidate-set,
+  source-ID, exact-edit, deterministic, and provenance revalidation.
+- Source-finite AccessNewsWire device copy uses an 800-word hard floor and an
+  1,100-word editorial target. Long-form CTA quotas begin at 1,200 words;
+  scan-path counts remain formatting recommendations rather than semantic
+  publication blockers.
 - Platform rules are executable contracts. AccessNewsWire, Barchart, and Globe
   each own their CTA, disclosure, FAQ, link, voice, and formatting rules.
   Newswire.com is rejected before project creation because it has no approved
@@ -54,14 +65,21 @@ this test pass before deployment.
 
 ## Verification
 
-- Full automated suite: `701 passed`
+- Full automated suite: `721 passed`
 - Pipeline contract audit: `passed`, `prompt_contracts_checked=192`,
   `model_calls=0`
-- Runtime revision: `publisher-contract-durability-audit-20260725-r34`
-- Production editorial-truth inventory before this deployment: 25 stored
-  article artifacts, 9 deterministic passes, and 16 historical failures. Every
-  failure is already isolated in `admin_review`; the only `package_ready`
-  project passed the exact stored-artifact audit.
+- Runtime revision: `terminal-report-reconciliation-20260729-r42`
+- GitHub CI passed on Python 3.10, 3.11, and 3.12 for commit `e175361`.
+- Railway production deployment
+  `92ee749a-fcf4-4c44-bcad-6bd67973a073` reported `SUCCESS` and passed the
+  application health check.
+- Sondur production project `f835e1517a3c` is `package_ready` at exact article
+  hash `4909f50e1d34377c3cf32dffac31572a05183d005704b4d1045e72385987c0c6`.
+  It used two provider calls in its final transaction, has zero deterministic,
+  provenance, grounding, or CTA-integrity blockers, and was delivered as
+  ZingFast WordPress draft `13825` with an exact remote content-hash match.
+- The exact-project production editorial-truth audit passed with one clean
+  project, 25 reviewed candidates, zero failed projects, and zero model calls.
 
 External provider, network, credential, and publisher outages cannot be made
 impossible. The reliability contract is therefore: no silent jam, no hidden
