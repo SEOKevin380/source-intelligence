@@ -45,9 +45,9 @@ from .execution_budget import (
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "serp-differentiation-depth-v35-self-healing-editorial-contract"
+    "grounding-first-device-depth-v36-atomic-review-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "corrected-candidate-handoff-20260727-r36"
+WORKBENCH_RUNTIME_REVISION = "grounding-first-device-depth-20260729-r37"
 
 STAGES = (
     "source_ready",
@@ -1962,7 +1962,7 @@ class WorkbenchEngine:
             project["platform"], project["vertical"]
         )
         if (
-            profile["hard_floor"] >= 1000
+            profile["target_min"] >= 1000
             and claim_count < 6
             and len(set(missing_facts)) >= 5
         ):

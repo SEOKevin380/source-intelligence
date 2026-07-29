@@ -154,12 +154,24 @@ def test_every_publisher_has_a_nonzero_depth_contract(platform):
 def test_accesswire_device_depth_rewards_grounding_over_padding():
     profile = publication_profile("AccessNewsWire", "device")
     assert profile == {
-        "hard_floor": 1000,
-        "target_min": 1200,
-        "target_max": 1800,
-        "recovery_target": 1400,
+        "hard_floor": 900,
+        "target_min": 1100,
+        "target_max": 1600,
+        "recovery_target": 1300,
         "label": "device AccessNewsWire",
     }
+
+
+def test_accesswire_device_depth_accepts_complete_950_word_release():
+    article = (
+        "<p>Paid Advertorial: Compensation may be received.</p>"
+        "<h2><strong>Documented Product Details</strong></h2>"
+        "<p>" + " ".join(["source-grounded"] * 950) + "</p>"
+    )
+    findings = deterministic_findings(
+        article, "AccessNewsWire", "device"
+    )
+    assert "D18" not in {item["id"] for item in findings}
 
 
 def test_generation_prompt_preserves_client_advocacy_without_invention():
@@ -275,8 +287,8 @@ def test_accesswire_device_prompts_build_a_depth_buffer_before_compliance():
         "device",
     )
     for prompt in (draft_prompt, repair_prompt):
-        assert "1,400" in prompt
-        assert "1,000" in prompt
+        assert "1,300" in prompt
+        assert "900" in prompt
         assert "AccessNewsWire device" in prompt
         assert "source-grounded" in prompt
         assert "hands-on" in prompt

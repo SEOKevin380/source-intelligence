@@ -21,12 +21,12 @@ _PROFILES = {
     },
     ("AccessNewsWire", "device"): {
         # A finite device record should not be padded with invented bridge
-        # copy merely to survive compliance edits. Keep 1,200 as the editorial
-        # target while accepting a complete, source-grounded 1,000-word release.
-        "hard_floor": 1000,
-        "target_min": 1200,
-        "target_max": 1800,
-        "recovery_target": 1400,
+        # copy merely to survive compliance edits. Keep 1,100 as the editorial
+        # target while accepting a complete, source-grounded 900-word release.
+        "hard_floor": 900,
+        "target_min": 1100,
+        "target_max": 1600,
+        "recovery_target": 1300,
         "label": "device AccessNewsWire",
     },
     ("AccessNewsWire", "financial"): {
