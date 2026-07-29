@@ -4614,6 +4614,9 @@ def test_locked_package_accepts_terminal_executive_signoff(tmp_path):
 
     assert engine.get(pid)["stage"] == "package_ready"
     assert engine.export_path(pid).exists()
+    preflight = engine.offline_preflight(pid)
+    assert preflight["semantic_review"]["passed"]
+    assert preflight["ready_for_packaging"]
 
 
 def test_next_action_includes_admin_queue(tmp_path):

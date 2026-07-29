@@ -694,7 +694,10 @@ class WorkbenchEngine:
             and last_report.get("reviewed_article_hash") == p["article_hash"]
             and (
                 not self._uses_locked_call_path(p)
-                or last_report.get("approval_purpose") == "final_signoff"
+                or last_report.get("approval_purpose") in {
+                    "final_signoff",
+                    "executive_rescue_signoff",
+                }
             )
             and p["stage"] in {
                 "signed_off", "post_seo_signed_off", "package_ready"
@@ -1133,7 +1136,10 @@ class WorkbenchEngine:
                 "article hash."
             )
         allowed_purposes = (
-            {"final_signoff"}
+            {
+                "final_signoff",
+                "executive_rescue_signoff",
+            }
             if self._uses_locked_call_path(p)
             else {"compliance", "final_signoff"}
         )
