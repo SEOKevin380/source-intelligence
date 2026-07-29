@@ -240,6 +240,79 @@ def prune_unattributed_claim_blocks(pack: dict, article: str) -> tuple[str, dict
     }
 
 
+def repair_unattributed_seller_claim_prefixes(
+    pack: dict, article: str
+) -> tuple[str, dict]:
+    """Restore claim-local seller attribution after a governing lead is removed.
+
+    A reviewer can correctly delete a redundant list introduction such as
+    ``According to the seller, each purchase includes:`` while leaving literal
+    source-backed list items behind. The list items then lose the attribution
+    scope they previously inherited. This zero-model repair adds only the
+    already-required seller attribution marker to exact affected semantic
+    blocks; it never changes the claim text or repairs source-attributed claims.
+    Globe's brand-as-subject contract is excluded because its attribution form
+    requires product-specific language rather than this generic prefix.
+    """
+    product = pack.get("product") or {}
+    platform = str(
+        product.get("publishing_platform")
+        or product.get("publishing_channel")
+        or (pack.get("release_details") or {}).get("platform")
+        or ""
+    )
+    if "globe" in platform.casefold():
+        return article, {
+            "changed": False,
+            "prefixed_block_count": 0,
+            "prefixed_sentences": [],
+            "remaining_attribution_violations": [],
+        }
+
+    ledger = build_article_claim_ledger(pack, article)
+    targets = {
+        re.sub(
+            r"\s+", " ", str(item.get("article_sentence") or "")
+        ).strip()
+        for item in ledger.get("attribution_violations") or []
+        if (
+            item.get("required_treatment")
+            == "seller_attribution_required"
+            and str(item.get("article_sentence") or "").strip()
+        )
+    }
+    if not targets:
+        return article, {
+            "changed": False,
+            "prefixed_block_count": 0,
+            "prefixed_sentences": [],
+            "remaining_attribution_violations": [],
+        }
+
+    soup = BeautifulSoup(html.unescape(article or ""), "html.parser")
+    prefixed = []
+    for block in soup.find_all(["p", "li", "figcaption"]):
+        plain = re.sub(
+            r"\s+", " ", block.get_text(" ", strip=True)
+        ).strip()
+        matches = [sentence for sentence in targets if sentence == plain]
+        if len(matches) != 1:
+            continue
+        block.insert(0, "According to the seller, ")
+        prefixed.append(matches[0])
+
+    repaired = str(soup)
+    remaining = build_article_claim_ledger(
+        pack, repaired
+    ).get("attribution_violations") or []
+    return repaired, {
+        "changed": bool(prefixed),
+        "prefixed_block_count": len(prefixed),
+        "prefixed_sentences": sorted(prefixed),
+        "remaining_attribution_violations": remaining,
+    }
+
+
 def repair_bidirectional_claim_blocks(
     pack: dict, article: str, affiliate_href: str = ""
 ) -> tuple[str, dict]:

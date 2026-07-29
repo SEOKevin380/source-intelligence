@@ -183,6 +183,26 @@ class RunQueueWorker:
                     )
                 if (
                     action.get("action")
+                    == "resume_terminal_identity_signoff"
+                ):
+                    if engine.run_terminal_identity_recovery_signoff(
+                        job.project_id
+                    ):
+                        result = engine.run_to_completion(
+                            job.project_id,
+                            self.master_instructions,
+                            progress_callback=lambda message: self._progress(
+                                job, str(message)
+                            ),
+                        )
+                    else:
+                        result = engine.get(job.project_id)
+                    action = engine.run_action(
+                        job.project_id,
+                        WORKBENCH_SOURCE_CONTEXT_VERSION,
+                    )
+                if (
+                    action.get("action")
                     == "handoff_corrected_final_candidate"
                 ):
                     failed = engine.get(job.project_id)

@@ -46,9 +46,9 @@ from .execution_budget import (
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "grounding-first-device-depth-v38-unique-review-candidates"
+    "grounding-first-device-depth-v39-terminal-identity-review"
 )
-WORKBENCH_RUNTIME_REVISION = "unique-review-candidates-20260729-r40"
+WORKBENCH_RUNTIME_REVISION = "terminal-identity-review-20260729-r41"
 
 STAGES = (
     "source_ready",
@@ -1563,10 +1563,60 @@ class WorkbenchEngine:
         from article_provenance import (
             build_article_claim_ledger,
             extract_sealed_pack,
+            repair_unattributed_seller_claim_prefixes,
         )
+        sealed_pack = extract_sealed_pack(current["source_text"])
+        attribution_repaired, attribution_repair = (
+            repair_unattributed_seller_claim_prefixes(
+                sealed_pack, current["article_text"]
+            )
+        )
+        if attribution_repair["changed"]:
+            digest = _hash(
+                (current.get("release_title") or current["title"])
+                + "\n" + attribution_repaired
+            )
+            with self._connect() as conn:
+                result = conn.execute(
+                    "UPDATE projects SET article_text=?,article_hash=?,"
+                    "updated_at=? WHERE id=? AND article_hash=?",
+                    (
+                        attribution_repaired,
+                        digest,
+                        _now(),
+                        project_id,
+                        current["article_hash"],
+                    ),
+                )
+            if result.rowcount != 1:
+                raise RuntimeError(
+                    "Claim-local attribution repair lost the canonical hash."
+                )
+            self._write(
+                project_id,
+                "08-claim-local-attribution-repair.html",
+                attribution_repaired,
+            )
+            self._event(
+                project_id,
+                "claim_local_attribution_repaired",
+                "admin_review",
+                digest,
+                {
+                    **attribution_repair,
+                    "paid_calls_added": 0,
+                    "operator_decision_required": False,
+                },
+            )
+            current = self.get(project_id)
+            preflight = audit_article(
+                current["article_text"],
+                current["platform"],
+                current["vertical"],
+                affiliate_href,
+            )
         provenance = build_article_claim_ledger(
-            extract_sealed_pack(current["source_text"]),
-            current["article_text"],
+            sealed_pack, current["article_text"],
         )
         provenance_blockers = _provenance_findings(provenance)
         if preflight["blockers"] or provenance_blockers:
@@ -1649,6 +1699,109 @@ class WorkbenchEngine:
                 + identity_recovery_allowance
             )
         )
+
+    def can_run_terminal_identity_recovery_signoff(self, project_id):
+        """Allow one last judgment call after the duplicate-ID recovery path."""
+        project = self.get(project_id)
+        if (
+            project["stage"] != "admin_review"
+            or not self._uses_locked_call_path(project)
+            or not self._has_current_adjudicated_revision(project_id)
+            or self._corrected_final_candidate_generation(project_id)
+            != CORRECTED_FINAL_CANDIDATE_HANDOFF_LIMIT + 1
+            or self._billable_call_count(
+                project_id, "final_signoff"
+            ) != 1
+            or self.usage_summary(project_id)["calls"]
+            >= execution_budget()["calls"]
+        ):
+            return False
+        route = route_for(
+            "executive_rescue_signoff", project["vertical"]
+        )
+        if self._billable_call_count(
+            project_id, "executive_rescue_signoff"
+        ) >= route.max_calls:
+            return False
+        preflight = audit_article(
+            project["article_text"],
+            project["platform"],
+            project["vertical"],
+            _source_platform_link(
+                project["source_text"], project["platform"]
+            ),
+        )
+        if (
+            preflight["article"] != project["article_text"]
+            or preflight["blockers"]
+        ):
+            return False
+        from article_provenance import (
+            build_article_claim_ledger,
+            extract_sealed_pack,
+        )
+        provenance = build_article_claim_ledger(
+            extract_sealed_pack(project["source_text"]),
+            project["article_text"],
+        )
+        return bool(provenance.get("passed"))
+
+    def run_terminal_identity_recovery_signoff(self, project_id):
+        """Review the terminal corrected hash once, with no writer or handoff."""
+        if not self.can_run_terminal_identity_recovery_signoff(project_id):
+            return False
+        project = self.get(project_id)
+        report = self._openai_review(
+            project,
+            final=True,
+            purpose="executive_rescue_signoff",
+        )
+        if report.get("verdict") == "approved":
+            self._set_report(
+                project,
+                report,
+                "signed_off",
+                "05-terminal-identity-signoff.json",
+            )
+            approved = self.get(project_id)
+            self._event(
+                project_id,
+                "terminal_identity_recovery_approved",
+                "signed_off",
+                approved["article_hash"],
+                {
+                    "review_purpose": "executive_rescue_signoff",
+                    "paid_calls_added": 1,
+                    "further_handoff_allowed": False,
+                    "operator_decision_required": False,
+                },
+            )
+            return True
+        if self._complete_locked_conditional_exact_signoff(
+            project_id, report
+        ):
+            return True
+        self._set_report(
+            project,
+            report,
+            "admin_review",
+            "05-terminal-identity-signoff.json",
+        )
+        self._event(
+            project_id,
+            "terminal_identity_recovery_rejected",
+            "admin_review",
+            project["article_hash"],
+            {
+                "review_purpose": "executive_rescue_signoff",
+                "mandatory_count": len(
+                    report.get("mandatory_edits") or []
+                ),
+                "further_handoff_allowed": False,
+                "operator_decision_required": False,
+            },
+        )
+        return False
 
     def create_corrected_final_candidate_transaction(self, project_id):
         """Move a corrected exact artifact to a zero-usage final-review owner."""
@@ -1876,6 +2029,19 @@ class WorkbenchEngine:
                 ),
                 "may_start_paid_call": True,
             }
+        if self.can_run_terminal_identity_recovery_signoff(project_id):
+            return {
+                **action,
+                "action": "resume_terminal_identity_signoff",
+                "label": "Run Terminal Exact-Hash Review",
+                "reason": (
+                    "The duplicate-candidate identity defect has been repaired "
+                    "and the final literal corrections pass every offline gate. "
+                    "One terminal executive review remains inside this "
+                    "transaction; it cannot regenerate or hand off the article."
+                ),
+                "may_start_paid_call": True,
+            }
         stranded_calls = self._stranded_required_calls(project_id)
         if stranded_calls:
             return {
@@ -2077,6 +2243,13 @@ class WorkbenchEngine:
                 if self._uses_locked_call_path(project):
                     if self._recover_locked_pre_signoff(project_id):
                         continue
+                    if self.can_run_terminal_identity_recovery_signoff(
+                        project_id
+                    ):
+                        if self.run_terminal_identity_recovery_signoff(
+                            project_id
+                        ):
+                            continue
                     return project
                 if self._recover_mechanical_admin_review(project_id):
                     continue
@@ -2351,7 +2524,10 @@ class WorkbenchEngine:
         if (
             not self._uses_locked_call_path(project)
             or report.get("verdict") != "not_approved"
-            or report.get("approval_purpose") != "final_signoff"
+            or report.get("approval_purpose") not in {
+                "final_signoff",
+                "executive_rescue_signoff",
+            }
             or report.get("reviewed_article_hash") != project["article_hash"]
             or not edits
             or len(edits) > 8
@@ -4656,7 +4832,13 @@ class WorkbenchEngine:
             )
         project = self.get(project_id)
         is_current_bounded_run = self._uses_locked_call_path(project)
-        if is_current_bounded_run:
+        terminal_identity_review = bool(
+            stage == "executive_rescue_signoff"
+            and self.can_run_terminal_identity_recovery_signoff(
+                project_id
+            )
+        )
+        if is_current_bounded_run and not terminal_identity_review:
             if stage not in REQUIRED_CALL_PATH:
                 raise RuntimeError(
                     f"Paid purpose {stage} is outside the locked four-stage "
@@ -4747,6 +4929,13 @@ class WorkbenchEngine:
     def _purpose_call_limit(self, project, purpose, route):
         """Return the authoritative per-purpose limit for this project."""
         if self._uses_locked_call_path(project):
+            if (
+                purpose == "executive_rescue_signoff"
+                and self.can_run_terminal_identity_recovery_signoff(
+                    project["id"]
+                )
+            ):
+                return 1
             return int(PURPOSE_CALL_LIMITS.get(purpose, 0))
         return int(route.max_calls)
 
@@ -5492,7 +5681,11 @@ class WorkbenchEngine:
             and approval.get("verdict") == "approved"
             and approval.get("reviewed_article_hash") == project["article_hash"]
             and approval.get("approval_purpose")
-            in {"final_signoff", "post_seo_signoff"}
+            in {
+                "final_signoff",
+                "post_seo_signoff",
+                "executive_rescue_signoff",
+            }
             and approval == project_approval
             and packaged_provenance == expected_provenance
             and packaged_provenance.get("passed")

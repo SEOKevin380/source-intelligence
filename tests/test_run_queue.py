@@ -502,3 +502,57 @@ def test_worker_applies_entire_exact_patch_before_handoff(tmp_path):
     assert handed_off.terminal_code == "corrected_final_candidate_queued"
     assert handed_off.result["source_article_hash"] == "fully-patched-hash"
     assert repo.latest_for_project("project-2").status == "pending"
+
+
+class FakeTerminalIdentityWorkerEngine(FakeCorrectedWorkerEngine):
+    def __init__(self, root):
+        super().__init__(root)
+        self.terminal_reviewed = False
+
+    def run_action(self, project_id, current_workflow_version):
+        assert project_id == "project-1"
+        if self.projects[project_id]["stage"] == "package_ready":
+            return {"action": "complete"}
+        return {"action": "resume_terminal_identity_signoff"}
+
+    def run_terminal_identity_recovery_signoff(self, project_id):
+        assert project_id == "project-1"
+        self.terminal_reviewed = True
+        self.projects[project_id]["stage"] = "signed_off"
+        return True
+
+    def run_to_completion(
+        self, project_id, master_instructions, progress_callback
+    ):
+        progress_callback("Running")
+        if not self.terminal_reviewed:
+            return dict(self.projects[project_id])
+        self.projects[project_id]["stage"] = "package_ready"
+        self.projects[project_id]["article_hash"] = "terminal-approved-hash"
+        return dict(self.projects[project_id])
+
+
+def test_worker_finishes_terminal_identity_review_without_another_button(
+    tmp_path,
+):
+    fake = FakeTerminalIdentityWorkerEngine(tmp_path)
+    repo = RunJobRepository(queue_path(tmp_path))
+    submitted, _ = repo.submit(
+        idempotency_key="terminal-identity",
+        project_id="project-1",
+        source_hash="source-1",
+        workflow_version="workflow-v1",
+    )
+    worker = RunQueueWorker(
+        tmp_path,
+        "rules",
+        engine_factory=lambda root: fake,
+    )
+
+    completed = worker.run_once()
+
+    assert fake.terminal_reviewed is True
+    assert completed.id == submitted.id
+    assert completed.status == "completed"
+    assert completed.terminal_code == "package_ready"
+    assert completed.result["article_hash"] == "terminal-approved-hash"

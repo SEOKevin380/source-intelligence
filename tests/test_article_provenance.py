@@ -3,6 +3,7 @@ from article_provenance import (
     ensure_structured_contact_block,
     extract_sealed_pack,
     prune_unattributed_claim_blocks,
+    repair_unattributed_seller_claim_prefixes,
 )
 
 
@@ -228,6 +229,58 @@ def test_seller_attributed_colon_introduction_governs_direct_list_items():
     )
     assert ledger["used_claim_count"] == 1
     assert not ledger["attribution_violations"]
+
+
+def test_removed_seller_list_lead_can_restore_claim_local_attribution():
+    pack = {
+        "product": {
+            "product_name": "Travel Device",
+            "publishing_platform": "AccessNewsWire",
+        },
+        "publication_claims": {
+            "inclusion": [
+                {
+                    "claim_id": "device",
+                    "text": "1 Travel Device (manually inflatable)",
+                    "publication_treatment": "seller_attribution_required",
+                },
+                {
+                    "claim_id": "case",
+                    "text": "1 Travel Case (for compact storage and transport)",
+                    "publication_treatment": "seller_attribution_required",
+                },
+                {
+                    "claim_id": "mask",
+                    "text": "1 Sleep Mask (included as an accessory)",
+                    "publication_treatment": "seller_attribution_required",
+                },
+            ],
+        },
+    }
+    article = (
+        "<ul>"
+        "<li>1 Travel Device (manually inflatable)</li>"
+        "<li>1 Travel Case (for compact storage and transport)</li>"
+        "<li>1 Sleep Mask (included as an accessory)</li>"
+        "</ul>"
+    )
+    assert len(
+        build_article_claim_ledger(pack, article)[
+            "attribution_violations"
+        ]
+    ) == 3
+
+    repaired, report = repair_unattributed_seller_claim_prefixes(
+        pack, article
+    )
+
+    assert report["changed"] is True
+    assert report["prefixed_block_count"] == 3
+    assert report["remaining_attribution_violations"] == []
+    assert repaired.count("According to the seller,") == 3
+    assert build_article_claim_ledger(
+        pack, repaired
+    )["attribution_violations"] == []
 
 
 def test_list_attribution_does_not_flow_from_unattributed_introduction():

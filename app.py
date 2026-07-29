@@ -2232,6 +2232,7 @@ else:
             _is_resume = _action_name in {
                 "resume", "resume_zero_cost", "resume_paid_reserved",
                 "apply_complete_exact_reviewer_patch",
+                "resume_terminal_identity_signoff",
             }
             _is_final_candidate_handoff = (
                 _action_name == "handoff_corrected_final_candidate"
@@ -2246,6 +2247,7 @@ else:
                 "rebuild_corrected_transaction",
                 "handoff_corrected_final_candidate",
                 "apply_complete_exact_reviewer_patch",
+                "resume_terminal_identity_signoff",
             }
             _action_prerequisite_missing = bool(
                 _action_requires_models and not _ready_to_run
@@ -2636,6 +2638,7 @@ else:
                     if _active_action["action"] in {
                         "resume", "resume_zero_cost", "resume_paid_reserved",
                         "apply_complete_exact_reviewer_patch",
+                        "resume_terminal_identity_signoff",
                     }:
                         st.warning(
                             _active_action["reason"] + " Click **"

@@ -687,6 +687,111 @@ def test_legacy_duplicate_candidate_report_reconciles_without_paid_call(
     )
 
 
+def test_terminal_identity_recovery_gets_one_non_writer_review(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Terminal Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "AccessNewsWire", vertical="device"
+    )
+    project = engine.get(pid)
+    article = "<p>According to the seller, the device is portable.</p>"
+    digest = hashlib.sha256(
+        ((project.get("release_title") or project["title"]) + "\n" + article)
+        .encode("utf-8")
+    ).hexdigest()
+    with engine._connect() as conn:
+        conn.execute(
+            "UPDATE projects SET article_text=?,article_hash=?,"
+            "stage='admin_review',last_report='{}' WHERE id=?",
+            (article, digest, pid),
+        )
+    engine._event(
+        pid,
+        "corrected_final_candidate_received",
+        "admin_review",
+        digest,
+        {"generation": 7},
+    )
+    engine._event(
+        pid,
+        "complete_exact_reviewer_patch_applied",
+        "admin_review",
+        digest,
+        {"paid_calls_added": 0},
+    )
+    engine._record_llm_call(
+        pid,
+        "final_signoff",
+        route_for("final_signoff", "device"),
+        10,
+        10,
+    )
+    clean_preflight = {"article": article, "blockers": []}
+    clean_ledger = {
+        "passed": True,
+        "coverage_violations": [],
+        "attribution_violations": [],
+        "grounding_violations": [],
+        "cta_integrity_violations": [],
+    }
+    approval = {
+        "verdict": "approved",
+        "mandatory_count": 0,
+        "conditional_approval_after_exact_edits": False,
+        "source_accuracy": {"verified": 3, "checked": 3},
+        "editorial_truth_review": {
+            "candidate_set_hash": "terminal",
+            "decisions": [],
+        },
+        "mandatory_edits": [],
+        "recommended_edits": [],
+        "approved_elements": ["Exact terminal hash passed."],
+        "notes": [],
+        "reviewed_article_hash": digest,
+        "approval_purpose": "executive_rescue_signoff",
+    }
+    purposes = []
+
+    def approve(_project, final=None, purpose=None):
+        purposes.append(purpose)
+        return approval
+
+    with patch(
+        "newswire_workbench.engine.audit_article",
+        return_value=clean_preflight,
+    ), patch(
+        "article_provenance.build_article_claim_ledger",
+        return_value=clean_ledger,
+    ), patch.object(
+        engine, "_openai_review", side_effect=approve
+    ):
+        assert engine.can_run_terminal_identity_recovery_signoff(pid)
+        engine._assert_call_budget(
+            pid,
+            "executive_rescue_signoff",
+            route_for("executive_rescue_signoff", "device"),
+        )
+        assert engine.run_terminal_identity_recovery_signoff(pid)
+
+    assert purposes == ["executive_rescue_signoff"]
+    signed = engine.get(pid)
+    assert signed["stage"] == "signed_off"
+    assert signed["article_hash"] == digest
+    assert signed["last_report"]["approval_purpose"] == (
+        "executive_rescue_signoff"
+    )
+    assert not engine.can_run_terminal_identity_recovery_signoff(pid)
+
+
 def test_complete_exact_reviewer_patch_is_all_or_nothing(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     pack = seal_source_pack({
