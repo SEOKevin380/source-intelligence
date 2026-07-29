@@ -47,7 +47,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "grounding-first-device-depth-v36-atomic-review-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "grounding-first-device-depth-20260729-r37"
+WORKBENCH_RUNTIME_REVISION = "atomic-patch-lineage-20260729-r38"
 
 STAGES = (
     "source_ready",
@@ -1267,7 +1267,10 @@ class WorkbenchEngine:
         """Return whether the current hash is an exact reviewer-corrected artifact."""
         project = self.get(project_id)
         return any(
-            event.get("event_type") == "adjudicated_revision"
+            event.get("event_type") in {
+                "adjudicated_revision",
+                "complete_exact_reviewer_patch_applied",
+            }
             and event.get("article_hash") == project["article_hash"]
             for event in self.events(project_id)
         )

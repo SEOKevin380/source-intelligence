@@ -656,6 +656,14 @@ def test_complete_exact_reviewer_patch_is_all_or_nothing(tmp_path):
         == "complete_exact_reviewer_patch_applied"
         for event in engine.events(pid)
     )
+    engine._record_llm_call(
+        pid,
+        "final_signoff",
+        route_for("final_signoff", "device"),
+        10,
+        10,
+    )
+    assert engine.can_handoff_corrected_final_candidate(pid)
 
 
 def test_complete_exact_reviewer_patch_accepts_nested_delete_already_satisfied(
