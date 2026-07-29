@@ -39,6 +39,7 @@ from newswire_workbench.human_copy import (
     human_copy_diagnostics,
     normalize_american_english,
 )
+from newswire_workbench.editorial_truth import audit_editorial_truth
 from source_pack_contract import seal_source_pack
 from article_provenance import build_article_claim_ledger
 
@@ -578,6 +579,112 @@ def test_exhausted_adjudicated_hash_hands_off_to_review_only_transaction(
         {"generation": 6},
     )
     assert not engine.can_handoff_corrected_final_candidate(replacement_id)
+    engine._event(
+        replacement_id,
+        "legacy_candidate_identity_reconciled",
+        "admin_review",
+        replacement["article_hash"],
+        {"paid_calls_added": 0},
+    )
+    assert engine.can_handoff_corrected_final_candidate(replacement_id)
+
+
+def test_legacy_duplicate_candidate_report_reconciles_without_paid_call(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Duplicate Candidate Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "AccessNewsWire", vertical="device"
+    )
+    sentence = (
+        "The offer includes a portable travel pouch for use during trips."
+    )
+    article = f"<p>{sentence}</p><p>{sentence}</p>"
+    digest = hashlib.sha256(
+        ("Duplicate Candidate Device\n" + article).encode("utf-8")
+    ).hexdigest()
+    truth = audit_editorial_truth(pack, article, "")
+    assert len(truth["review_candidates"]) == 2
+    report = {
+        "verdict": "not_approved",
+        "mandatory_count": 2,
+        "conditional_approval_after_exact_edits": False,
+        "source_accuracy": {"verified": 0, "checked": 2},
+        "editorial_truth_review": {
+            "candidate_set_hash": truth[
+                "legacy_review_candidate_set_hash"
+            ],
+            "decisions": [
+                {
+                    "sentence_id": item["legacy_sentence_id"],
+                    "verdict": "non_material",
+                    "source_ids": [],
+                    "rationale": "Legacy duplicate candidate attestation.",
+                }
+                for item in truth["review_candidates"]
+            ],
+        },
+        "mandatory_edits": [
+            {
+                "id": "M1",
+                "category": "Precision",
+                "issue": "Use narrower wording.",
+                "exact_text": sentence,
+                "replacement": (
+                    "According to the seller, the device is portable."
+                ),
+            },
+            {
+                "id": "E-REVIEW-SCOPE",
+                "category": "Editorial truth review coverage",
+                "issue": (
+                    "The independent reviewer did not account for every "
+                    "material article-to-source candidate with valid source "
+                    "evidence: candidate_coverage"
+                ),
+                "exact_text": "",
+                "replacement": "Repeat the exact-hash semantic review.",
+            },
+        ],
+        "recommended_edits": [],
+        "approved_elements": [],
+        "notes": [],
+        "reviewed_article_hash": digest,
+        "approval_purpose": "final_signoff",
+    }
+    with engine._connect() as conn:
+        conn.execute(
+            "UPDATE projects SET article_text=?,article_hash=?,"
+            "stage='admin_review',last_report=? WHERE id=?",
+            (article, digest, json.dumps(report), pid),
+        )
+
+    assert engine.can_reconcile_legacy_duplicate_candidate_report(pid)
+    assert engine.reconcile_legacy_duplicate_candidate_report(pid)
+
+    reconciled = engine.get(pid)["last_report"]
+    assert reconciled["mandatory_count"] == 1
+    assert [item["id"] for item in reconciled["mandatory_edits"]] == ["M1"]
+    decisions = reconciled["editorial_truth_review"]["decisions"]
+    assert len({item["sentence_id"] for item in decisions}) == 2
+    assert reconciled["editorial_truth_review"]["candidate_set_hash"] == (
+        truth["review_candidate_set_hash"]
+    )
+    assert engine.usage_summary(pid)["calls"] == 0
+    assert any(
+        event["event_type"] == "legacy_candidate_identity_reconciled"
+        for event in engine.events(pid)
+    )
 
 
 def test_complete_exact_reviewer_patch_is_all_or_nothing(tmp_path):

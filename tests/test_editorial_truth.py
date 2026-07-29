@@ -86,6 +86,30 @@ def _disclosure():
     )
 
 
+def test_duplicate_review_candidates_receive_occurrence_qualified_ids():
+    sentence = (
+        "The offer includes a portable travel pouch for use during trips."
+    )
+    result = audit_editorial_truth(
+        _pack(),
+        f"<p>{sentence}</p><p>{sentence}</p>",
+        "",
+    )
+    candidates = result["review_candidates"]
+    assert len(candidates) == 2
+    assert candidates[0]["sentence_id"].startswith("S-")
+    assert candidates[1]["sentence_id"] == (
+        candidates[0]["sentence_id"] + "-2"
+    )
+    assert {
+        item["legacy_sentence_id"] for item in candidates
+    } == {candidates[0]["sentence_id"]}
+    assert (
+        result["review_candidate_set_hash"]
+        != result["legacy_review_candidate_set_hash"]
+    )
+
+
 @pytest.mark.parametrize(
     ("sentence", "rule"),
     [

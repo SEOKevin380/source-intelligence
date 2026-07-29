@@ -19,6 +19,7 @@ import html
 import json
 import math
 import re
+from collections import Counter
 from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
@@ -242,6 +243,7 @@ def _source_fragments(pack: dict) -> list[dict]:
 def _sentence_rows(article: str) -> list[dict]:
     soup = BeautifulSoup(html.unescape(article or ""), "html.parser")
     rows = []
+    sentence_occurrences = Counter()
     current_heading = ""
     for node in soup.find_all(["h1", "h2", "h3", "p", "li", "figcaption"]):
         if node.name in {"h1", "h2", "h3"}:
@@ -260,10 +262,18 @@ def _sentence_rows(article: str) -> list[dict]:
             sentence = sentence.strip()
             if len(sentence) < 20:
                 continue
+            legacy_sentence_id = "S-" + hashlib.sha256(
+                sentence.encode()
+            ).hexdigest()[:12]
+            sentence_occurrences[legacy_sentence_id] += 1
+            occurrence = sentence_occurrences[legacy_sentence_id]
             rows.append({
-                "sentence_id": "S-" + hashlib.sha256(
-                    sentence.encode()
-                ).hexdigest()[:12],
+                "sentence_id": (
+                    legacy_sentence_id
+                    if occurrence == 1
+                    else f"{legacy_sentence_id}-{occurrence}"
+                ),
+                "legacy_sentence_id": legacy_sentence_id,
                 "text": sentence,
                 "heading": current_heading,
                 "tokens": _tokens(sentence),
@@ -440,6 +450,7 @@ def _grounding_audit(pack: dict, article: str) -> dict:
             continue
         candidates.append({
             "sentence_id": row["sentence_id"],
+            "legacy_sentence_id": row["legacy_sentence_id"],
             "exact_text": row["text"],
             "heading": row["heading"],
             "best_source_id": best["source_id"],
@@ -468,6 +479,25 @@ def _grounding_audit(pack: dict, article: str) -> dict:
             ensure_ascii=False,
         ).encode()
     ).hexdigest()
+    legacy_candidate_payload = [
+        {
+            "sentence_id": item["legacy_sentence_id"],
+            "exact_text": item["exact_text"],
+            "best_source_id": item["best_source_id"],
+            "best_source_artifact_id": item[
+                "best_source_artifact_id"
+            ],
+        }
+        for item in candidates
+    ]
+    legacy_candidate_set_hash = hashlib.sha256(
+        json.dumps(
+            legacy_candidate_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+    ).hexdigest()
     return {
         "source_fragment_count": len(fragments),
         "sentence_count": len(rows),
@@ -476,6 +506,7 @@ def _grounding_audit(pack: dict, article: str) -> dict:
         "grounding_violations": violations,
         "review_candidates": candidates,
         "review_candidate_set_hash": candidate_set_hash,
+        "legacy_review_candidate_set_hash": legacy_candidate_set_hash,
     }
 
 

@@ -10,6 +10,7 @@ import sqlite3
 import time
 import uuid
 import zipfile
+from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -45,9 +46,9 @@ from .execution_budget import (
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "grounding-first-device-depth-v37-atomic-review-contract"
+    "grounding-first-device-depth-v38-unique-review-candidates"
 )
-WORKBENCH_RUNTIME_REVISION = "source-finite-device-depth-20260729-r39"
+WORKBENCH_RUNTIME_REVISION = "unique-review-candidates-20260729-r40"
 
 STAGES = (
     "source_ready",
@@ -1275,6 +1276,174 @@ class WorkbenchEngine:
             for event in self.events(project_id)
         )
 
+    def can_reconcile_legacy_duplicate_candidate_report(self, project_id):
+        """Recognize a complete legacy review rejected only by duplicate IDs."""
+        from article_provenance import extract_sealed_pack
+        from .editorial_truth import audit_editorial_truth
+
+        project = self.get(project_id)
+        report = project.get("last_report") or {}
+        if (
+            project["stage"] != "admin_review"
+            or report.get("verdict") != "not_approved"
+            or report.get("approval_purpose") != "final_signoff"
+            or report.get("reviewed_article_hash") != project["article_hash"]
+        ):
+            return False
+        scope_edits = [
+            item for item in report.get("mandatory_edits") or []
+            if str(item.get("id") or "") == "E-REVIEW-SCOPE"
+        ]
+        if len(scope_edits) != 1:
+            return False
+        scope_issue = str(scope_edits[0].get("issue") or "")
+        if not scope_issue.rstrip().endswith(": candidate_coverage"):
+            return False
+
+        truth = audit_editorial_truth(
+            extract_sealed_pack(project["source_text"]),
+            project["article_text"],
+            _source_platform_link(
+                project["source_text"], project["platform"]
+            ),
+        )
+        candidates = list(truth.get("review_candidates") or [])
+        legacy_ids = [
+            str(item.get("legacy_sentence_id") or item["sentence_id"])
+            for item in candidates
+        ]
+        if len(legacy_ids) == len(set(legacy_ids)):
+            return False
+        truth_review = report.get("editorial_truth_review") or {}
+        if (
+            truth_review.get("candidate_set_hash")
+            != truth.get("legacy_review_candidate_set_hash")
+        ):
+            return False
+        decisions = list(truth_review.get("decisions") or [])
+        decision_ids = [
+            str(item.get("sentence_id") or "")
+            for item in decisions if isinstance(item, dict)
+        ]
+        if Counter(decision_ids) != Counter(legacy_ids):
+            return False
+
+        grouped_candidates = defaultdict(list)
+        grouped_decisions = defaultdict(list)
+        for candidate in candidates:
+            grouped_candidates[
+                str(
+                    candidate.get("legacy_sentence_id")
+                    or candidate["sentence_id"]
+                )
+            ].append(candidate)
+        for decision in decisions:
+            if not isinstance(decision, dict):
+                return False
+            grouped_decisions[
+                str(decision.get("sentence_id") or "")
+            ].append(decision)
+        for legacy_id, candidate_group in grouped_candidates.items():
+            decision_group = grouped_decisions.get(legacy_id) or []
+            if len(decision_group) != len(candidate_group):
+                return False
+            for candidate, decision in zip(candidate_group, decision_group):
+                if decision.get("verdict") != "source_supported":
+                    continue
+                allowed = {
+                    str(source_id)
+                    for source_id in (
+                        candidate.get("best_source_id") or "",
+                        candidate.get("best_source_artifact_id") or "",
+                    )
+                    if str(source_id)
+                }
+                supplied = {
+                    str(source_id)
+                    for source_id in decision.get("source_ids") or []
+                    if str(source_id)
+                }
+                if not allowed or not allowed.intersection(supplied):
+                    return False
+        return True
+
+    def reconcile_legacy_duplicate_candidate_report(self, project_id):
+        """Upgrade one fully attested duplicate-ID report without a paid call."""
+        if not self.can_reconcile_legacy_duplicate_candidate_report(project_id):
+            return False
+        from article_provenance import extract_sealed_pack
+        from .editorial_truth import audit_editorial_truth
+
+        project = self.get(project_id)
+        report = copy.deepcopy(project["last_report"])
+        truth = audit_editorial_truth(
+            extract_sealed_pack(project["source_text"]),
+            project["article_text"],
+            _source_platform_link(
+                project["source_text"], project["platform"]
+            ),
+        )
+        grouped_candidates = defaultdict(list)
+        for candidate in truth["review_candidates"]:
+            grouped_candidates[
+                str(
+                    candidate.get("legacy_sentence_id")
+                    or candidate["sentence_id"]
+                )
+            ].append(candidate)
+        occurrence_indexes = Counter()
+        decisions = (
+            report.get("editorial_truth_review") or {}
+        ).get("decisions") or []
+        normalized_decisions = []
+        for decision in decisions:
+            legacy_id = str(decision.get("sentence_id") or "")
+            index = occurrence_indexes[legacy_id]
+            occurrence_indexes[legacy_id] += 1
+            candidate = grouped_candidates[legacy_id][index]
+            normalized = copy.deepcopy(decision)
+            normalized["sentence_id"] = candidate["sentence_id"]
+            normalized_decisions.append(normalized)
+
+        truth_review = report.setdefault("editorial_truth_review", {})
+        truth_review["candidate_set_hash"] = truth[
+            "review_candidate_set_hash"
+        ]
+        truth_review["decisions"] = normalized_decisions
+        report["mandatory_edits"] = [
+            item for item in report.get("mandatory_edits") or []
+            if str(item.get("id") or "") != "E-REVIEW-SCOPE"
+        ]
+        report["mandatory_count"] = len(report["mandatory_edits"])
+        report["verdict"] = (
+            "not_approved" if report["mandatory_edits"] else "approved"
+        )
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE projects SET last_report=? WHERE id=?",
+                (json.dumps(report), project_id),
+            )
+        self._event(
+            project_id,
+            "legacy_candidate_identity_reconciled",
+            project["stage"],
+            project["article_hash"],
+            {
+                "legacy_candidate_set_hash": (
+                    truth["legacy_review_candidate_set_hash"]
+                ),
+                "candidate_set_hash": truth["review_candidate_set_hash"],
+                "candidate_count": len(truth["review_candidates"]),
+                "unique_candidate_count": len({
+                    item["sentence_id"]
+                    for item in truth["review_candidates"]
+                }),
+                "paid_calls_added": 0,
+                "operator_decision_required": False,
+            },
+        )
+        return True
+
     def can_apply_complete_exact_reviewer_patch(self, project_id):
         """Return whether the final reviewer supplied a closed literal patch set."""
         project = self.get(project_id)
@@ -1314,6 +1483,9 @@ class WorkbenchEngine:
 
     def apply_complete_exact_reviewer_patch(self, project_id):
         """Atomically apply all exact edits, never a misleading partial subset."""
+        if self.can_reconcile_legacy_duplicate_candidate_report(project_id):
+            if not self.reconcile_legacy_duplicate_candidate_report(project_id):
+                return False
         if not self.can_apply_complete_exact_reviewer_patch(project_id):
             return False
         project = self.get(project_id)
@@ -1465,9 +1637,17 @@ class WorkbenchEngine:
             return False
         if self._billable_call_count(project_id, "final_signoff") != 1:
             return False
+        identity_recovery_allowance = int(any(
+            event.get("event_type")
+            == "legacy_candidate_identity_reconciled"
+            for event in self.events(project_id)
+        ))
         return (
             self._corrected_final_candidate_generation(project_id)
-            < CORRECTED_FINAL_CANDIDATE_HANDOFF_LIMIT
+            < (
+                CORRECTED_FINAL_CANDIDATE_HANDOFF_LIMIT
+                + identity_recovery_allowance
+            )
         )
 
     def create_corrected_final_candidate_transaction(self, project_id):
@@ -1665,7 +1845,12 @@ class WorkbenchEngine:
                     "remaining independent review."
                 ),
             }
-        if self.can_apply_complete_exact_reviewer_patch(project_id):
+        if (
+            self.can_apply_complete_exact_reviewer_patch(project_id)
+            or self.can_reconcile_legacy_duplicate_candidate_report(
+                project_id
+            )
+        ):
             return {
                 **action,
                 "action": "apply_complete_exact_reviewer_patch",
