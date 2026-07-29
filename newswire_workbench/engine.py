@@ -45,9 +45,9 @@ from .execution_budget import (
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "grounding-first-device-depth-v36-atomic-review-contract"
+    "grounding-first-device-depth-v37-atomic-review-contract"
 )
-WORKBENCH_RUNTIME_REVISION = "atomic-patch-lineage-20260729-r38"
+WORKBENCH_RUNTIME_REVISION = "source-finite-device-depth-20260729-r39"
 
 STAGES = (
     "source_ready",
@@ -77,7 +77,7 @@ LOCKED_STAGE_PURPOSE = {
     "compliance_reviewed": "compliance_repair",
     "revised": "final_signoff",
 }
-CORRECTED_FINAL_CANDIDATE_HANDOFF_LIMIT = 5
+CORRECTED_FINAL_CANDIDATE_HANDOFF_LIMIT = 6
 
 
 def _now():

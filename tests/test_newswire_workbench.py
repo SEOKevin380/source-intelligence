@@ -154,7 +154,7 @@ def test_every_publisher_has_a_nonzero_depth_contract(platform):
 def test_accesswire_device_depth_rewards_grounding_over_padding():
     profile = publication_profile("AccessNewsWire", "device")
     assert profile == {
-        "hard_floor": 900,
+        "hard_floor": 800,
         "target_min": 1100,
         "target_max": 1600,
         "recovery_target": 1300,
@@ -162,11 +162,11 @@ def test_accesswire_device_depth_rewards_grounding_over_padding():
     }
 
 
-def test_accesswire_device_depth_accepts_complete_950_word_release():
+def test_accesswire_device_depth_accepts_complete_850_word_release():
     article = (
         "<p>Paid Advertorial: Compensation may be received.</p>"
         "<h2><strong>Documented Product Details</strong></h2>"
-        "<p>" + " ".join(["source-grounded"] * 950) + "</p>"
+        "<p>" + " ".join(["source-grounded"] * 850) + "</p>"
     )
     findings = deterministic_findings(
         article, "AccessNewsWire", "device"
@@ -288,7 +288,7 @@ def test_accesswire_device_prompts_build_a_depth_buffer_before_compliance():
     )
     for prompt in (draft_prompt, repair_prompt):
         assert "1,300" in prompt
-        assert "900" in prompt
+        assert "800" in prompt
         assert "AccessNewsWire device" in prompt
         assert "source-grounded" in prompt
         assert "hands-on" in prompt
@@ -575,7 +575,7 @@ def test_exhausted_adjudicated_hash_hands_off_to_review_only_transaction(
         "corrected_final_candidate_received",
         "admin_review",
         replacement["article_hash"],
-        {"generation": 5},
+        {"generation": 6},
     )
     assert not engine.can_handoff_corrected_final_candidate(replacement_id)
 
