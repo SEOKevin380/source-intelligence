@@ -46,9 +46,9 @@ from .execution_budget import (
 
 
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
-    "grounding-first-device-depth-v39-terminal-identity-review"
+    "grounding-first-device-depth-v40-terminal-report-reconciliation"
 )
-WORKBENCH_RUNTIME_REVISION = "terminal-identity-review-20260729-r41"
+WORKBENCH_RUNTIME_REVISION = "terminal-report-reconciliation-20260729-r42"
 
 STAGES = (
     "source_ready",
@@ -1444,6 +1444,29 @@ class WorkbenchEngine:
         )
         return True
 
+    @staticmethod
+    def _normalized_reviewer_quote(value):
+        """Normalize rendered reviewer/article text for safe coverage checks."""
+        visible = BeautifulSoup(
+            str(value or ""), "html.parser"
+        ).get_text(" ", strip=True)
+        visible = re.sub(r"\s+", " ", visible).strip()
+        return re.sub(r"\s+([.,;:!?])", r"\1", visible)
+
+    @classmethod
+    def _reviewer_edit_covers_exact_text(cls, edits, exact_text):
+        """Return whether one complete edit owns an unsupported sub-quote."""
+        target = cls._normalized_reviewer_quote(exact_text)
+        if not target:
+            return False
+        return any(
+            target in cls._normalized_reviewer_quote(
+                item.get("exact_text") or ""
+            )
+            for item in edits
+            if isinstance(item, dict)
+        )
+
     def can_apply_complete_exact_reviewer_patch(self, project_id):
         """Return whether the final reviewer supplied a closed literal patch set."""
         project = self.get(project_id)
@@ -1803,6 +1826,169 @@ class WorkbenchEngine:
         )
         return False
 
+    def _reconciled_terminal_identity_report(self, project_id):
+        """Recover the paid terminal report after deterministic postprocessing.
+
+        The provider response is immutable. Reconciliation is permitted only
+        when that response explicitly declared a complete conditional patch,
+        attested to every current editorial-truth candidate, and supplied an
+        exact edit that owns each unsupported candidate. House-rule conflicts
+        are then removed using the same deterministic authority as a live
+        review. No semantic judgment is invented here.
+        """
+        project = self.get(project_id)
+        current_report = project.get("last_report") or {}
+        if (
+            project["stage"] != "admin_review"
+            or not self._uses_locked_call_path(project)
+            or current_report.get("approval_purpose")
+            != "executive_rescue_signoff"
+            or current_report.get("reviewed_article_hash")
+            != project["article_hash"]
+            or any(
+                event.get("event_type")
+                == "terminal_identity_report_reconciled"
+                and event.get("article_hash") == project["article_hash"]
+                for event in self.events(project_id)
+            )
+        ):
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT raw_output,input_article_hash,status FROM llm_calls "
+                "WHERE project_id=? AND stage='executive_rescue_signoff' "
+                "ORDER BY id DESC LIMIT 1",
+                (project_id,),
+            ).fetchone()
+        if (
+            not row
+            or row["status"] != "success"
+            or row["input_article_hash"] != project["article_hash"]
+            or not row["raw_output"]
+        ):
+            return None
+        try:
+            report = json.loads(row["raw_output"])
+            self._validate_report(report)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        if (
+            report.get("verdict") != "not_approved"
+            or not report.get("conditional_approval_after_exact_edits")
+        ):
+            return None
+
+        from article_provenance import extract_sealed_pack
+        from .editorial_truth import audit_editorial_truth
+        truth = audit_editorial_truth(
+            extract_sealed_pack(project["source_text"]),
+            project["article_text"],
+            _source_platform_link(
+                project["source_text"], project["platform"]
+            ),
+        )
+        expected = {
+            item["sentence_id"]: item
+            for item in truth["review_candidates"]
+        }
+        truth_review = report.get("editorial_truth_review") or {}
+        decisions = truth_review.get("decisions") or []
+        decision_ids = [
+            str(item.get("sentence_id") or "")
+            for item in decisions
+            if isinstance(item, dict)
+        ]
+        if (
+            truth_review.get("candidate_set_hash")
+            != truth["review_candidate_set_hash"]
+            or len(decision_ids) != len(set(decision_ids))
+            or set(decision_ids) != set(expected)
+        ):
+            return None
+        edits = list(report.get("mandatory_edits") or [])
+        for decision in decisions:
+            if not isinstance(decision, dict):
+                return None
+            sentence_id = str(decision.get("sentence_id") or "")
+            candidate = expected.get(sentence_id)
+            if not candidate:
+                return None
+            verdict = decision.get("verdict")
+            if verdict == "source_supported":
+                allowed_source_ids = {
+                    str(source_id)
+                    for source_id in (
+                        candidate.get("best_source_id") or "",
+                        candidate.get("best_source_artifact_id") or "",
+                    )
+                    if str(source_id)
+                }
+                if (
+                    not allowed_source_ids
+                    or not allowed_source_ids.intersection(
+                        str(source_id)
+                        for source_id in (
+                            decision.get("source_ids") or []
+                        )
+                    )
+                ):
+                    return None
+            elif verdict == "unsupported" and not (
+                self._reviewer_edit_covers_exact_text(
+                    edits, candidate.get("exact_text") or ""
+                )
+            ):
+                return None
+
+        report["reviewed_article_hash"] = project["article_hash"]
+        report["approval_purpose"] = "executive_rescue_signoff"
+        report["prompt_version"] = PROMPT_VERSION
+        report = self._remove_house_rule_conflicts(
+            report, project["article_text"]
+        )
+        if (
+            report.get("verdict") != "not_approved"
+            or not report.get("conditional_approval_after_exact_edits")
+        ):
+            return None
+        if not self._can_apply_locked_conditional_exact_signoff(
+            project, report
+        ):
+            return None
+        return report
+
+    def can_reconcile_terminal_identity_report(self, project_id):
+        """Return whether the paid terminal response owns a zero-cost patch."""
+        return self._reconciled_terminal_identity_report(project_id) is not None
+
+    def reconcile_terminal_identity_report(self, project_id):
+        """Apply the provider-declared terminal patch without another call."""
+        report = self._reconciled_terminal_identity_report(project_id)
+        if report is None:
+            return False
+        project = self.get(project_id)
+        reviewed_hash = project["article_hash"]
+        if not self._complete_locked_conditional_exact_signoff(
+            project_id, report
+        ):
+            return False
+        signed = self.get(project_id)
+        self._event(
+            project_id,
+            "terminal_identity_report_reconciled",
+            "signed_off",
+            signed["article_hash"],
+            {
+                "reviewed_hash": reviewed_hash,
+                "result_hash": signed["article_hash"],
+                "paid_calls_added": 0,
+                "provider_conditional_approval_preserved": True,
+                "further_review_allowed": False,
+                "operator_decision_required": False,
+            },
+        )
+        return True
+
     def create_corrected_final_candidate_transaction(self, project_id):
         """Move a corrected exact artifact to a zero-usage final-review owner."""
         if not self.can_handoff_corrected_final_candidate(project_id):
@@ -2013,6 +2199,19 @@ class WorkbenchEngine:
                     "The engine will apply every edit atomically, rerun all "
                     "gates, and hand only the complete corrected hash to the "
                     "next bounded independent review."
+                ),
+            }
+        if self.can_reconcile_terminal_identity_report(project_id):
+            return {
+                **action,
+                "action": "resume_zero_cost",
+                "label": "Apply Terminal Reviewer Corrections",
+                "reason": (
+                    "The paid terminal reviewer explicitly declared its exact "
+                    "edit set publishable. Deterministic reconciliation will "
+                    "remove duplicate candidate findings and inapplicable "
+                    "short-form quotas, apply every remaining edit atomically, "
+                    "and spend no additional model call."
                 ),
             }
         if self.can_handoff_corrected_final_candidate(project_id):
@@ -2242,6 +2441,8 @@ class WorkbenchEngine:
             if project["stage"] == "admin_review":
                 if self._uses_locked_call_path(project):
                     if self._recover_locked_pre_signoff(project_id):
+                        continue
+                    if self.reconcile_terminal_identity_report(project_id):
                         continue
                     if self.can_run_terminal_identity_recovery_signoff(
                         project_id
@@ -2521,6 +2722,12 @@ class WorkbenchEngine:
         """Validate that a rejected final report is a closed exact patch set."""
         report = report or project.get("last_report") or {}
         edits = list(report.get("mandatory_edits") or [])
+        edit_limit = (
+            12
+            if report.get("approval_purpose")
+            == "executive_rescue_signoff"
+            else 8
+        )
         if (
             not self._uses_locked_call_path(project)
             or report.get("verdict") != "not_approved"
@@ -2530,7 +2737,7 @@ class WorkbenchEngine:
             }
             or report.get("reviewed_article_hash") != project["article_hash"]
             or not edits
-            or len(edits) > 8
+            or len(edits) > edit_limit
             or not self._conditional_exact_patch_declared(report)
             or self._report_has_true_source_conflict(report)
         ):
@@ -4491,6 +4698,7 @@ class WorkbenchEngine:
                 str(item.get("exact_text") or "")
                 for item in existing
             }
+            uncovered_unsupported = False
             if attestation_errors:
                 existing.append({
                     "id": "E-REVIEW-SCOPE",
@@ -4517,8 +4725,15 @@ class WorkbenchEngine:
                     str(decision.get("sentence_id") or "")
                 ) or {}
                 exact_text = str(candidate.get("exact_text") or "")
-                if not exact_text or exact_text in existing_exact:
+                if (
+                    not exact_text
+                    or exact_text in existing_exact
+                    or self._reviewer_edit_covers_exact_text(
+                        existing, exact_text
+                    )
+                ):
                     continue
+                uncovered_unsupported = True
                 existing.append({
                     "id": "E-REVIEW-" + str(
                         decision.get("sentence_id") or "UNKNOWN"
@@ -4536,11 +4751,7 @@ class WorkbenchEngine:
                     ),
                 })
                 existing_exact.add(exact_text)
-            if attestation_errors or any(
-                isinstance(item, dict)
-                and item.get("verdict") == "unsupported"
-                for item in decisions
-            ):
+            if attestation_errors or uncovered_unsupported:
                 report["mandatory_count"] = len(existing)
                 report["verdict"] = "not_approved"
                 report["conditional_approval_after_exact_edits"] = False
@@ -5042,6 +5253,10 @@ class WorkbenchEngine:
     def _remove_house_rule_conflicts(self, report, article=""):
         """Prevent a reviewer from turning its own house-rule conflicts into blockers."""
         kept, rejected = [], []
+        plain_article = BeautifulSoup(
+            str(article or ""), "html.parser"
+        ).get_text(" ", strip=True)
+        word_count = len(re.findall(r"\b[\w’'-]+\b", plain_article))
         for item in report.get("mandatory_edits", []) or []:
             exact = str(item.get("exact_text", "") or "")
             replacement = str(item.get("replacement", "") or "")
@@ -5103,6 +5318,35 @@ class WorkbenchEngine:
                 item["replacement"] = (
                     "Keep one descriptive contextual link without naming its "
                     "publisher or calling it a previous release."
+                )
+            elif (
+                word_count < 1200
+                and re.search(r"\bfull[- ]length\b", issue, re.I)
+                and re.search(
+                    r"\b(?:ctas?|affiliate (?:ctas?|links?))\b",
+                    category + " " + issue,
+                    re.I,
+                )
+            ):
+                reason = (
+                    "short_form_copy_is_below_the_long_form_cta_threshold"
+                )
+            elif re.search(
+                r"\bkey[- ]takeaway\b|"
+                r"\bnon-heading\s+strong\b|"
+                r"\bscan[- ]path\b",
+                category + " " + issue,
+                re.I,
+            ):
+                report.setdefault("recommended_edits", []).append({
+                    "id": str(item.get("id") or "R-SCAN-PATH"),
+                    "category": category or "Formatting recommendation",
+                    "issue": issue,
+                    "replacement": replacement,
+                })
+                reason = (
+                    "scan_path_count_is_a_deterministic_recommendation_not_a_"
+                    "publication_blocker"
                 )
             elif (
                 re.search(
@@ -5486,7 +5730,10 @@ class WorkbenchEngine:
             report.get("verdict") != "approved"
             or report.get("reviewed_article_hash") != p["article_hash"]
             or report.get("approval_purpose") not in (
-                {"final_signoff"}
+                {
+                    "final_signoff",
+                    "executive_rescue_signoff",
+                }
                 if self._uses_locked_call_path(p)
                 else {"compliance", "final_signoff"}
             )

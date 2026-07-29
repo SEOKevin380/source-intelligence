@@ -792,6 +792,183 @@ def test_terminal_identity_recovery_gets_one_non_writer_review(tmp_path):
     assert not engine.can_run_terminal_identity_recovery_signoff(pid)
 
 
+def test_terminal_report_reconciliation_preserves_provider_conditional_patch(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Terminal Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "AccessNewsWire", vertical="device"
+    )
+    title = engine.get(pid)["release_title"]
+    article = (
+        "<p>Direct seller specification.</p>"
+        "<p>Unsupported bridge claim.</p>"
+    )
+    digest = hashlib.sha256(
+        (title + "\n" + article).encode("utf-8")
+    ).hexdigest()
+    raw_report = {
+        "verdict": "not_approved",
+        "mandatory_count": 4,
+        "conditional_approval_after_exact_edits": True,
+        "source_accuracy": {"verified": 0, "checked": 2},
+        "editorial_truth_review": {
+            "candidate_set_hash": "terminal-candidates",
+            "decisions": [
+                {
+                    "sentence_id": "S-1",
+                    "verdict": "unsupported",
+                    "source_ids": [],
+                    "rationale": "Direct seller claim lacks attribution.",
+                },
+                {
+                    "sentence_id": "S-2",
+                    "verdict": "unsupported",
+                    "source_ids": [],
+                    "rationale": "Bridge claim exceeds the source.",
+                },
+            ],
+        },
+        "mandatory_edits": [
+            {
+                "id": "M1",
+                "category": "claim_attribution",
+                "issue": "Direct seller claim lacks attribution.",
+                "exact_text": "Direct seller specification.",
+                "replacement": (
+                    "According to the seller, the specification is listed."
+                ),
+            },
+            {
+                "id": "M2",
+                "category": "unsupported_claim",
+                "issue": "Bridge claim exceeds the source.",
+                "exact_text": "Unsupported bridge claim.",
+                "replacement": (
+                    "According to the seller, the device uses manual inflation."
+                ),
+            },
+            {
+                "id": "M3",
+                "category": "platform_cta",
+                "issue": (
+                    "Full-length AccessNewsWire copy requires four affiliate "
+                    "CTAs."
+                ),
+                "exact_text": "<p>Unsupported bridge claim.</p>",
+                "replacement": "<p><a href=\"https://example.com\">CTA</a></p>",
+            },
+            {
+                "id": "M4",
+                "category": "formatting_contract",
+                "issue": (
+                    "Add 10-14 non-heading STRONG.key-takeaway phrases."
+                ),
+                "exact_text": "<p>Direct seller specification.</p>",
+                "replacement": (
+                    "<p><strong class=\"key-takeaway\">"
+                    "Direct seller specification.</strong></p>"
+                ),
+            },
+        ],
+        "recommended_edits": [],
+        "approved_elements": ["The exact replacements are complete."],
+        "notes": [
+            "The article is publishable after the mandatory edits are applied."
+        ],
+    }
+    stored_report = json.loads(json.dumps(raw_report))
+    stored_report["conditional_approval_after_exact_edits"] = False
+    stored_report["mandatory_edits"].append({
+        "id": "E-REVIEW-S-1",
+        "category": "Article-to-source grounding",
+        "issue": "Duplicate sentence-level finding.",
+        "exact_text": "Direct seller specification.",
+        "replacement": "Delete or replace this sentence.",
+    })
+    stored_report["mandatory_count"] = len(
+        stored_report["mandatory_edits"]
+    )
+    stored_report["reviewed_article_hash"] = digest
+    stored_report["approval_purpose"] = "executive_rescue_signoff"
+    with engine._connect() as conn:
+        conn.execute(
+            "UPDATE projects SET article_text=?,article_hash=?,"
+            "stage='admin_review',last_report=? WHERE id=?",
+            (article, digest, json.dumps(stored_report), pid),
+        )
+    engine._record_llm_call(
+        pid,
+        "executive_rescue_signoff",
+        route_for("executive_rescue_signoff", "device"),
+        10,
+        10,
+        raw_output=json.dumps(raw_report),
+    )
+    truth = {
+        "review_candidate_set_hash": "terminal-candidates",
+        "review_candidates": [
+            {
+                "sentence_id": "S-1",
+                "exact_text": "Direct seller specification.",
+                "best_source_id": "source-1",
+                "best_source_artifact_id": "",
+            },
+            {
+                "sentence_id": "S-2",
+                "exact_text": "Unsupported bridge claim.",
+                "best_source_id": "source-2",
+                "best_source_artifact_id": "",
+            },
+        ],
+    }
+    clean_ledger = {
+        "passed": True,
+        "coverage_violations": [],
+        "attribution_violations": [],
+        "grounding_violations": [],
+        "cta_integrity_violations": [],
+    }
+
+    def clean_audit(value, *args, **kwargs):
+        return {"article": value, "blockers": []}
+
+    with patch(
+        "newswire_workbench.editorial_truth.audit_editorial_truth",
+        return_value=truth,
+    ), patch(
+        "newswire_workbench.engine.audit_article",
+        side_effect=clean_audit,
+    ), patch(
+        "article_provenance.build_article_claim_ledger",
+        return_value=clean_ledger,
+    ):
+        assert engine.can_reconcile_terminal_identity_report(pid)
+        assert engine.reconcile_terminal_identity_report(pid)
+
+    signed = engine.get(pid)
+    assert signed["stage"] == "signed_off"
+    assert signed["last_report"]["verdict"] == "approved"
+    assert signed["last_report"]["approval_purpose"] == (
+        "executive_rescue_signoff"
+    )
+    assert [item["id"] for item in (
+        signed["last_report"]["resolved_mandatory_edits"]
+    )] == ["M1", "M2"]
+    assert "According to the seller" in signed["article_text"]
+    assert engine.usage_summary(pid)["calls"] == 1
+
+
 def test_complete_exact_reviewer_patch_is_all_or_nothing(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     pack = seal_source_pack({
@@ -4399,6 +4576,44 @@ def test_locked_package_requires_final_signoff_purpose(tmp_path):
     assert not engine.offline_preflight(pid)["ready_for_packaging"]
     with pytest.raises(RuntimeError, match="independent approval"):
         engine._build_package(engine.get(pid))
+
+
+def test_locked_package_accepts_terminal_executive_signoff(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Test",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    pid = engine.create_project_from_pack(
+        pack, "AccessNewsWire", force_new=True
+    )
+    engine.import_manual_article(
+        pid,
+        "<p>Seller materials state Literal product fact 0.</p>"
+        "<p>Seller materials state Literal product fact 1.</p>"
+        "<p>Seller materials state Literal product fact 2.</p>"
+        + (
+            "<p>This source-grounded reader section explains the documented "
+            "offer clearly without adding unsupported product facts.</p>"
+        ) * 230,
+    )
+    project = engine.get(pid)
+    report = _independent_approval(engine, pid)
+    report["approval_purpose"] = "executive_rescue_signoff"
+    engine._set_report(
+        project, report, "signed_off", "terminal-approval.json"
+    )
+
+    engine._build_package(engine.get(pid))
+
+    assert engine.get(pid)["stage"] == "package_ready"
+    assert engine.export_path(pid).exists()
 
 
 def test_next_action_includes_admin_queue(tmp_path):

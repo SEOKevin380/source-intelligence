@@ -637,8 +637,9 @@ Review all applicable categories:
 11. Link presentation and distribution must match the named platform contract;
     never import another publisher's CTA or Related Links pattern.
 12. MBK HTML formatting: no body H1, every H2/H3 explicitly contains STRONG,
-    CTA anchor text is explicitly STRONG when the platform permits CTAs, and
-    10–14 non-heading STRONG.key-takeaway phrases.
+    and CTA anchor text is explicitly STRONG when the platform permits CTAs.
+    Key-takeaway scan-path counts are deterministic formatting recommendations,
+    not semantic publication blockers.
     Contact, email, phone, and order-support links do not count as conversion
     CTAs.
 13. Editorial depth: {depth_review_contract}
@@ -706,6 +707,8 @@ Review all applicable categories:
     other). Reject consecutive standalone CTAs, identical CTA text pointing to
     different destinations, misleading official/affiliate labels, or excessive
     affiliate-link density. The final contact block is not CTA inventory.
+    Apply long-form CTA-count targets only at 1,200 words or more; do not demand
+    a fourth CTA from shorter copy.
 25. Editorial-truth candidate coverage: the machine-generated packet below
     lists material sentences that were not decisively grounded by lexical
     evidence. Return exactly one decision for every candidate ID and echo the
