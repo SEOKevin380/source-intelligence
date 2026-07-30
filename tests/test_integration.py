@@ -3256,6 +3256,42 @@ class TestRealHandlerPipeline:
         assert facts == [("Vitamin B12: 2,500 mcg",
                           ["Vitamin B12", "2,500 mcg"])]
 
+    def test_pricing_tiers_adapt_canonical_pricing_rows(self, pipeline_db):
+        """Software pricing_tiers uses the extractor's canonical pricing list."""
+        from stage_handlers import _extract_targeted_fact
+
+        data = {"pricing": [
+            {
+                "package": "API - Standard",
+                "price": "$10 per million input tokens",
+            },
+            {
+                "package": "API - Standard",
+                "price": "$50 per million output tokens",
+            },
+            {
+                "package": "API - Cache Reads",
+                "price": "$1 per million tokens",
+            },
+        ]}
+
+        facts = _extract_targeted_fact("pricing_tiers", data)
+
+        assert facts == [
+            (
+                "API - Standard input: $10 per million input tokens",
+                ["$10 per million input tokens"],
+            ),
+            (
+                "API - Standard output: $50 per million output tokens",
+                ["$50 per million output tokens"],
+            ),
+            (
+                "API - Cache Reads: $1 per million tokens",
+                ["$1 per million tokens"],
+            ),
+        ]
+
     def test_manual_entry_rejects_invalid_fact_for_offering(self, pipeline_db):
         """record_manual_entry rejects facts not in the offering's pack."""
         from stage_handlers import record_manual_entry, RecoveryError

@@ -807,13 +807,64 @@ def _extract_targeted_fact(fact_key: str, product_data: dict) -> list:
                      [str(ct), "servings per container", "servings"])]
         return []
 
-    if fact_key == "pricing":
-        pricing = product_data.get("pricing", {})
+    if fact_key in {"pricing", "pricing_tiers"}:
+        pricing = (
+            product_data.get(fact_key)
+            or product_data.get("pricing", {})
+        )
         if isinstance(pricing, dict) and pricing:
             results = []
             for pkg, price in pricing.items():
-                text = f"{pkg}: {price}"
-                results.append((text, [str(price), pkg]))
+                pkg_text = str(pkg).strip()
+                price_text = str(price).strip()
+                if not pkg_text and not price_text:
+                    continue
+                text = (
+                    f"{pkg_text}: {price_text}"
+                    if pkg_text and price_text
+                    else pkg_text or price_text
+                )
+                results.append((text, [price_text or pkg_text]))
+            return results
+        if isinstance(pricing, list):
+            results = []
+            for item in pricing:
+                if isinstance(item, str):
+                    if item.strip():
+                        results.append((item.strip(), [item.strip()]))
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                pkg = str(
+                    item.get("name", item.get("package", ""))
+                ).strip()
+                price = str(
+                    item.get("price", item.get("amount", ""))
+                ).strip()
+                if not pkg and not price:
+                    continue
+
+                # API prices commonly use one plan name with separate input
+                # and output rates. Those are complementary billing axes, not
+                # conflicting package prices. Preserve the direction in the
+                # normalized tier label so reconciliation keeps both.
+                price_folded = price.casefold()
+                pkg_folded = pkg.casefold()
+                direction = ""
+                if "input token" in price_folded and "input" not in pkg_folded:
+                    direction = " input"
+                elif (
+                    "output token" in price_folded
+                    and "output" not in pkg_folded
+                ):
+                    direction = " output"
+                normalized_pkg = f"{pkg}{direction}".strip()
+                text = (
+                    f"{normalized_pkg}: {price}"
+                    if normalized_pkg and price
+                    else normalized_pkg or price
+                )
+                results.append((text, [price or normalized_pkg]))
             return results
         return []
 
@@ -1787,22 +1838,50 @@ def handle_extract(job: Job) -> dict:
             for fact_key in pack_facts:
                 if fact_key in ALREADY_HANDLED:
                     continue
-                # Check if extract_data has a value for this fact key
-                value = extract_data.get(fact_key, "")
-                if not value:
-                    continue
+                # The canonical extractor stores all offer rows under
+                # ``pricing``. Software and telehealth packs call the same
+                # concept ``pricing_tiers``. Adapt that schema boundary here
+                # so a captured input/output rate table is not reported as a
+                # missing fact.
+                if fact_key == "pricing_tiers":
+                    normalized_pairs = _extract_targeted_fact(
+                        fact_key, extract_data
+                    )
+                    if not normalized_pairs:
+                        continue
+                else:
+                    value = extract_data.get(fact_key, "")
+                    if not value:
+                        continue
+                    normalized_pairs = [
+                        (item_str, [item_str])
+                        for item_str in _normalize_fact_value(
+                            fact_key, value
+                        )
+                    ]
                 # Deterministic claim type selection — explicit primary type
                 # per fact_key, falling back to FEATURE for unmapped keys
                 ct = _get_fact_key_primary_type().get(fact_key, ClaimType.FEATURE)
                 try:
-                    # Normalize value to list of string items for uniform handling
-                    items = _normalize_fact_value(fact_key, value)
-                    for item_str in items:
+                    for item_str, search_terms in normalized_pairs:
                         if not item_str.strip():
                             continue
                         excerpt, location = _find_literal_excerpt(
-                            artifact_text, [item_str]
+                            artifact_text, search_terms
                         )
+                        metadata = {
+                            "excerpt_is_literal": bool(excerpt),
+                            "fact_key": fact_key,
+                        }
+                        if (
+                            fact_key == "pricing_tiers"
+                            and ": " in item_str
+                        ):
+                            package, price = item_str.split(": ", 1)
+                            metadata.update({
+                                "package": package,
+                                "price": price,
+                            })
                         claims_batch.append(Claim(
                             offering_id=job.offering_id,
                             claim_text=item_str,
@@ -1813,8 +1892,7 @@ def handle_extract(job: Job) -> dict:
                             source_class=artifact_sc_str,
                             confidence=vendor_confidence,
                             extraction_method="llm_extraction",
-                            metadata={"excerpt_is_literal": bool(excerpt),
-                                      "fact_key": fact_key},
+                            metadata=metadata,
                         ))
                 except Exception as e:
                     extraction_errors.append(
