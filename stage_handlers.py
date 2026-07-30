@@ -1152,6 +1152,45 @@ def _quarantine_conflicted_product_fields(
     return product
 
 
+def _merge_manifest_with_claim_sources(
+    source_manifest: list,
+    artifacts_used: dict,
+) -> list:
+    """Carry cumulative claim provenance into an incremental pack manifest.
+
+    Update jobs capture one new official page at a time, while valid claims
+    from earlier jobs remain attached to their immutable artifacts. A manifest
+    containing only the latest update makes those claims look orphaned even
+    though their evidence is still present in the lake. Add each historical
+    contributing artifact once, explicitly marked as reused.
+    """
+    merged = [
+        deepcopy(item)
+        for item in (source_manifest or [])
+        if isinstance(item, dict)
+    ]
+    existing_ids = {
+        str(item.get("artifact_id") or "")
+        for item in merged
+        if item.get("artifact_id")
+    }
+    for artifact_id, artifact in (artifacts_used or {}).items():
+        if not artifact_id or artifact_id in existing_ids:
+            continue
+        merged.append({
+            "type": "historical_claim_source",
+            "url": artifact.get("source_url", ""),
+            "status": "reused",
+            "artifact_id": artifact_id,
+            "source_class": artifact.get("source_class", ""),
+            "captured_at": artifact.get("captured_at", ""),
+            "tls_verified": bool(artifact.get("tls_verified", False)),
+            "provenance_scope": "active_claims_from_prior_audit_runs",
+        })
+        existing_ids.add(artifact_id)
+    return merged
+
+
 def _product_data_from_verified_claims(job: Job, base_product: dict) -> dict:
     """Project verified label claims back into structured product data."""
     from claims import ClaimsLedger, ReviewStatus
@@ -3271,7 +3310,10 @@ def handle_source_pack(job: Job) -> dict:
     intake_manifest_hash = hashlib.sha256(
         json.dumps(intake_manifest, sort_keys=True).encode("utf-8")
     ).hexdigest()
-    source_manifest = acquire_result.get("source_manifest", [])
+    source_manifest = _merge_manifest_with_claim_sources(
+        acquire_result.get("source_manifest", []),
+        artifacts_used,
+    )
     sections.append("INTAKE SOURCE MANIFEST")
     sections.append("-" * 40)
     sections.append(f"  Manifest SHA-256: {intake_manifest_hash}")

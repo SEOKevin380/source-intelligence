@@ -676,6 +676,192 @@ class ProductDatabase:
         compliance = research_data.get("compliance", {})
         reputation = research_data.get("reputation", {})
 
+        # Non-health offerings must not inherit the supplement scorecard.
+        # Ingredients, PubMed studies, and drug-interaction coverage account
+        # for 45 points below, which gives otherwise complete software,
+        # device, service, and information-product packs an artificial ceiling
+        # of 55. Score those verticals from their sealed intelligence contract,
+        # captured provenance, offer facts, and category-appropriate checks.
+        product_type = str(product.get("product_type") or "").strip().lower()
+        health_types = {
+            "supplement", "food", "topical", "cannabis", "telehealth",
+        }
+        if product_type and product_type not in health_types:
+            score = 0
+            flags = []
+
+            # Identity (15)
+            if product.get("product_name"):
+                score += 5
+            else:
+                flags.append("MISSING: product_name")
+            if product.get("brand_name") or product.get("company"):
+                score += 5
+            else:
+                flags.append("MISSING: brand_name or company")
+            if product.get("product_type"):
+                score += 3
+            if product.get("category"):
+                score += 2
+
+            # Vertical-specific required facts (30)
+            required = research_data.get("required_facts", {}) or {}
+            missing_facts = [
+                str(item) for item in required.get("missing", []) or []
+                if str(item).strip()
+            ]
+            manual_only = [
+                str(item) for item in required.get("manual_only", []) or []
+                if str(item).strip()
+            ]
+            provisional = [
+                str(item) for item in required.get("provisional", []) or []
+                if str(item).strip()
+            ]
+            ratio = required.get("coverage_ratio")
+            try:
+                ratio = max(0.0, min(1.0, float(ratio)))
+            except (TypeError, ValueError):
+                ratio = None
+            if ratio is None:
+                # Legacy packs may predate required_facts. Use a conservative
+                # category-neutral fallback instead of supplement fields.
+                relevant_values = [
+                    product.get("key_features"),
+                    product.get("services_offered"),
+                    product.get("topics_covered"),
+                    product.get("platform_support"),
+                    product.get("integrations"),
+                    product.get("specifications"),
+                    product.get("data_security"),
+                    product.get("support_options"),
+                ]
+                ratio = min(
+                    1.0,
+                    sum(bool(value) for value in relevant_values) / 4.0,
+                )
+            score += round(30 * ratio)
+            if missing_facts:
+                flags.append(
+                    "MISSING REQUIRED FACTS: " + ", ".join(missing_facts)
+                )
+            elif ratio < 1:
+                flags.append(
+                    "INFO: Some vertical-specific required facts are missing"
+                )
+            if manual_only:
+                flags.append(
+                    "MANUAL-ONLY FACTS: " + ", ".join(manual_only)
+                )
+            if provisional:
+                flags.append(
+                    "PROVISIONAL FACTS: " + ", ".join(provisional)
+                )
+
+            # Evidence provenance (15)
+            manifest = research_data.get("source_manifest", []) or []
+            captured = [
+                item for item in manifest
+                if isinstance(item, dict)
+                and str(item.get("status") or "").casefold()
+                in {"captured", "success", "fetched", "available", "reused"}
+            ]
+            public_sources = [
+                item for item in captured
+                if str(item.get("url") or "").startswith(("http://", "https://"))
+            ]
+            if public_sources:
+                score += 8
+                score += 4 if len(public_sources) >= 2 else 2
+            else:
+                flags.append("WARNING: No captured public source")
+            if (
+                research_data.get("artifacts_used")
+                or research_data.get("claims_by_type")
+            ):
+                score += 3
+
+            # Claims and offer terms (20)
+            publication_claims = research_data.get("publication_claims", {}) or {}
+            publication_count = (
+                sum(len(items or []) for items in publication_claims.values())
+                if isinstance(publication_claims, dict)
+                else len(publication_claims)
+                if isinstance(publication_claims, list)
+                else 0
+            )
+            claim_count = max(
+                publication_count,
+                len(product.get("claims", []) or []),
+            )
+            if claim_count >= 3:
+                score += 10
+            elif claim_count:
+                score += 5
+                flags.append("INFO: Limited claim coverage")
+            else:
+                flags.append("WARNING: No claims extracted")
+
+            if product.get("pricing"):
+                score += 10
+            else:
+                flags.append("WARNING: No pricing data extracted")
+
+            # Compliance and trust context (15)
+            if compliance:
+                score += 7
+                if compliance.get("risk_level"):
+                    score += 3
+            else:
+                flags.append("WARNING: No compliance analysis")
+            has_trust_context = bool(
+                reputation
+                or product.get("company")
+                or product.get("support_options")
+            )
+            if has_trust_context:
+                score += 5
+
+            # Sealed contract (5)
+            contract = research_data.get("source_pack_contract", {}) or {}
+            readiness = str(contract.get("readiness") or "").casefold()
+            if readiness == "complete":
+                score += 5
+            elif contract:
+                flags.append(
+                    "INFO: Source pack is sealed with documented limitations"
+                )
+
+            score = min(score, 100)
+            # Contract readiness is an upper bound. A sealed limited pack may
+            # still be useful, but it must never display as FULL; a blocked
+            # pack must never look production-sufficient.
+            if readiness == "limited":
+                score = min(score, 79)
+            elif readiness == "blocked":
+                score = min(score, 39)
+            if score >= 80:
+                flags.insert(
+                    0,
+                    "COMPLETENESS: FULL — Data sufficient for production",
+                )
+            elif score >= 60:
+                flags.insert(
+                    0,
+                    "COMPLETENESS: GOOD — Minor gaps, review before production",
+                )
+            elif score >= 40:
+                flags.insert(
+                    0,
+                    "COMPLETENESS: PARTIAL — Significant gaps, manual data needed",
+                )
+            else:
+                flags.insert(
+                    0,
+                    "COMPLETENESS: THIN — Major data gaps, re-research recommended",
+                )
+            return score, flags
+
         # Product identification (max 15)
         if product.get("product_name"):
             score += 5

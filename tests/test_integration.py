@@ -3315,6 +3315,42 @@ class TestRealHandlerPipeline:
             ),
         ]
 
+    def test_incremental_manifest_includes_prior_claim_sources(
+        self, pipeline_db
+    ):
+        """Later update packs retain the provenance of active older claims."""
+        from stage_handlers import _merge_manifest_with_claim_sources
+
+        manifest = [{
+            "type": "product_page",
+            "url": "https://example.com/latest",
+            "status": "captured",
+            "artifact_id": "latest",
+        }]
+        used = {
+            "latest": {
+                "source_url": "https://example.com/latest",
+                "source_class": "official_vendor",
+            },
+            "older": {
+                "source_url": "https://example.com/pricing",
+                "source_class": "official_vendor",
+                "captured_at": "2026-07-30T12:00:00+00:00",
+                "tls_verified": True,
+            },
+        }
+
+        merged = _merge_manifest_with_claim_sources(manifest, used)
+
+        assert [item["artifact_id"] for item in merged] == [
+            "latest", "older",
+        ]
+        assert merged[1]["type"] == "historical_claim_source"
+        assert merged[1]["status"] == "reused"
+        assert merged[1]["provenance_scope"] == (
+            "active_claims_from_prior_audit_runs"
+        )
+
     def test_manual_entry_rejects_invalid_fact_for_offering(self, pipeline_db):
         """record_manual_entry rejects facts not in the offering's pack."""
         from stage_handlers import record_manual_entry, RecoveryError

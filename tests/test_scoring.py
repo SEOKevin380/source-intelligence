@@ -87,6 +87,105 @@ class TestCompletenessScoreLabels:
         assert hasattr(ProductDatabase, "compute_completeness_score")
         assert not hasattr(ProductDatabase, "compute_quality_score")
 
+    def test_complete_software_pack_uses_vertical_scorecard(self, tmp_db):
+        """Software is scored on offer evidence, not ingredients/PubMed."""
+        data = {
+            "product": {
+                "product_name": "Claude Fable 5",
+                "brand_name": "Anthropic",
+                "product_type": "software",
+                "category": "info_product",
+                "key_features": ["Agentic coding"],
+                "platform_support": ["API"],
+                "integrations": ["Claude Code"],
+                "data_security": "30-day retention",
+                "support_options": ["Support center"],
+                "pricing": [
+                    {"package": "Input", "price": "$10"},
+                    {"package": "Output", "price": "$50"},
+                ],
+                "claims": [
+                    {"claim": "Feature one"},
+                    {"claim": "Feature two"},
+                    {"claim": "Feature three"},
+                ],
+                "company": {"name": "Anthropic, PBC"},
+            },
+            "required_facts": {
+                "covered": [
+                    "key_features", "pricing_tiers", "platform_support",
+                    "integrations", "data_security", "support_options",
+                ],
+                "missing": [],
+                "coverage_ratio": 1.0,
+            },
+            "source_manifest": [
+                {
+                    "type": "product_page",
+                    "url": "https://example.com/product",
+                    "status": "captured",
+                    "artifact_id": "artifact-1",
+                },
+                {
+                    "type": "pricing",
+                    "url": "https://example.com/pricing",
+                    "status": "captured",
+                    "artifact_id": "artifact-2",
+                },
+            ],
+            "claims_by_type": {"feature": [{"text": "Feature one"}]},
+            "compliance": {"risk_level": "low"},
+            "reputation": {"official_company": "Anthropic"},
+            "source_pack_contract": {"readiness": "complete"},
+        }
+
+        score, flags = tmp_db.compute_completeness_score(data)
+
+        assert score >= 80
+        assert flags[0].startswith("COMPLETENESS: FULL")
+        assert not any("ingredient" in flag.lower() for flag in flags)
+        assert not any("pubmed" in flag.lower() for flag in flags)
+
+    def test_limited_software_pack_cannot_score_full(self, tmp_db):
+        data = {
+            "product": {
+                "product_name": "Test Software",
+                "brand_name": "Test Brand",
+                "product_type": "software",
+                "category": "info_product",
+                "key_features": ["Feature"],
+                "pricing": [{"package": "Plan", "price": "$10"}],
+                "claims": [
+                    {"claim": "One"},
+                    {"claim": "Two"},
+                    {"claim": "Three"},
+                ],
+                "company": {"name": "Test Brand"},
+            },
+            "required_facts": {
+                "covered": ["key_features"],
+                "missing": ["data_security"],
+                "manual_only": [],
+                "provisional": [],
+                "coverage_ratio": 0.5,
+            },
+            "source_manifest": [{
+                "type": "product_page",
+                "url": "https://example.com/product",
+                "status": "captured",
+                "artifact_id": "artifact-1",
+            }],
+            "claims_by_type": {"feature": [{"text": "Feature"}]},
+            "compliance": {"risk_level": "low"},
+            "source_pack_contract": {"readiness": "limited"},
+        }
+
+        score, flags = tmp_db.compute_completeness_score(data)
+
+        assert score < 80
+        assert any("data_security" in flag for flag in flags)
+        assert not flags[0].startswith("COMPLETENESS: FULL")
+
 
 class TestHumanVsAnimalStudyScoring:
     """Human studies should score higher than animal-only evidence."""
