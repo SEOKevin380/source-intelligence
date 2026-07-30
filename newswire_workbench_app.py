@@ -12,7 +12,7 @@ from newswire_workbench.prompts import PLATFORMS
 
 st.set_page_config(page_title="Newswire Compliance Workbench", page_icon="📰", layout="wide")
 st.title("Newswire Compliance Workbench")
-st.caption("Verified source pack → routed draft → independent compliance → bounded repair → SEO regression → approved package")
+st.caption("Sealed source pack → routed draft → independent compliance → bounded repair → SEO regression → approved package")
 
 engine = WorkbenchEngine()
 caps = engine.capabilities()
@@ -45,6 +45,40 @@ with st.sidebar:
             st.rerun()
         except Exception as exc:
             st.error(str(exc))
+
+_stuck = engine.admin_review_queue()
+if _stuck:
+    _oldest = max((item.get("age_hours") or 0) for item in _stuck)
+    with st.expander(
+        f"⚠️ Kevin review queue — {len(_stuck)} waiting "
+        f"(oldest {_oldest:.1f}h)",
+        expanded=_oldest >= 4,
+    ):
+        _queue_labels = {
+            item["project_id"]: (
+                f"{item['title']} · {item['platform']} · "
+                f"{item.get('age_hours') or 0:.1f}h"
+            )
+            for item in _stuck
+        }
+        _queue_id = st.selectbox(
+            "Waiting transaction",
+            list(_queue_labels),
+            format_func=_queue_labels.get,
+            key="admin_review_queue_project",
+        )
+        _queue_item = next(
+            item for item in _stuck
+            if item["project_id"] == _queue_id
+        )
+        st.markdown(f"**{_queue_item['action_label']}**")
+        st.caption(_queue_item["action_reason"])
+        if st.button(
+            "Open waiting transaction",
+            key=f"open_admin_review_{_queue_id}",
+        ):
+            st.session_state.project_id = _queue_id
+            st.rerun()
 
 projects = engine.list_projects()
 if not projects:

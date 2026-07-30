@@ -28,6 +28,15 @@ st.set_page_config(
     layout="wide",
 )
 
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_admin_review_queue(workbench_root):
+    """Avoid recomputing every historical transaction on each app rerun."""
+    from newswire_workbench import WorkbenchEngine
+
+    return WorkbenchEngine(workbench_root).admin_review_queue()
+
+
 # ── Dark theme CSS overrides ──
 st.markdown("""
 <style>
@@ -291,6 +300,57 @@ if CRM_AVAILABLE and db:
         f"CRM: {stats['researched_products']} researched / "
         f"{stats['total_products']} total products"
     )
+
+try:
+    from config import NEWSWIRE_WORKBENCH_PATH
+
+    _global_admin_queue = _cached_admin_review_queue(
+        str(NEWSWIRE_WORKBENCH_PATH)
+    )
+except Exception:
+    # The research CRM must remain usable if the separate workbench store is
+    # unavailable. A queue-row lookup also guards individual corrupt projects.
+    _global_admin_queue = []
+if _global_admin_queue:
+    _oldest_admin_age = max(
+        item.get("age_hours") or 0 for item in _global_admin_queue
+    )
+    with st.sidebar.expander(
+        "⚠️ Kevin review queue — "
+        f"{len(_global_admin_queue)} waiting "
+        f"(oldest {_oldest_admin_age:.1f}h)",
+        expanded=_oldest_admin_age >= 4,
+    ):
+        _admin_labels = {
+            item["project_id"]: (
+                f"{item['title']} · {item['platform']} · "
+                f"{item.get('age_hours') or 0:.1f}h"
+            )
+            for item in _global_admin_queue
+        }
+        _selected_admin_id = st.selectbox(
+            "Waiting transaction",
+            list(_admin_labels),
+            format_func=_admin_labels.get,
+            key="source_intelligence_admin_review_queue",
+        )
+        _selected_admin = next(
+            item for item in _global_admin_queue
+            if item["project_id"] == _selected_admin_id
+        )
+        st.markdown(f"**{_selected_admin['action_label']}**")
+        st.caption(_selected_admin["action_reason"])
+        st.caption(
+            "Project "
+            f"`{_selected_admin['project_id']}` · "
+            f"{_selected_admin['vertical']} · "
+            "paid call allowed: "
+            + (
+                "yes"
+                if _selected_admin["may_start_paid_call"]
+                else "no"
+            )
+        )
 
 st.sidebar.markdown("---")
 
@@ -2074,14 +2134,17 @@ else:
     st.caption(f"Runtime revision: {WORKBENCH_RUNTIME_REVISION}")
 
     if _pack_readiness == "complete":
-        st.success(
-            "Ready for automated publishing. The verified source pack is "
-            "complete and integrity-protected."
+        st.info(
+            "Source pack sealed and integrity-protected. Claims are captured "
+            "from supplied records; sealing does not independently verify "
+            "them. Automated drafting remains subject to source attribution "
+            "and independent article review."
         )
     elif _pack_readiness == "limited":
         st.warning(
-            "Ready for automated publishing with documented gaps. Automation "
-            "will omit unavailable facts and continue without questions."
+            "Source pack sealed with documented gaps. Automation will omit "
+            "unavailable facts and continue without questions; sealing does "
+            "not independently verify captured claims."
         )
     else:
         _readiness_reasons = _pack_contract.get("readiness_reasons") or []
