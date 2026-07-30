@@ -1,5 +1,6 @@
-import json
+import copy
 import hashlib
+import json
 from unittest.mock import patch
 
 import pytest
@@ -14,10 +15,112 @@ from newswire_workbench.editorial_truth import (
 )
 from newswire_workbench.engine import WorkbenchEngine
 from newswire_workbench.routing import route_for
-from source_pack_contract import seal_source_pack
+from claims import (
+    Claim,
+    ClaimsLedger,
+    ClaimType,
+    ReviewStatus,
+    claim_publication_record,
+)
+from entities import Offering
+from source_pack_contract import seal_source_pack as _seal_source_pack
 
 
 AFFILIATE = "https://partner.example/offer"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_source_review_authority(tmp_path, monkeypatch):
+    """Give Workbench integration tests a real isolated review ledger."""
+    import config
+    from database import ProductDatabase
+
+    authority_db = tmp_path / "source-review-authority.db"
+    monkeypatch.setattr(config, "DB_PATH", str(authority_db))
+    monkeypatch.setenv(
+        "SOURCE_INTELLIGENCE_DATA_DIR",
+        str(tmp_path / "source-review-trust"),
+    )
+    monkeypatch.delenv(
+        "SOURCE_INTELLIGENCE_TRUST_KEY_ID",
+        raising=False,
+    )
+    database = ProductDatabase(db_path=str(authority_db))
+    database.close()
+
+
+def seal_source_pack(raw_pack):
+    """Seal accepted fixtures through real append-only review transitions."""
+    pack = copy.deepcopy(raw_pack)
+    offering_id = str(pack.get("offering_id") or "").strip()
+    if not offering_id:
+        offering_id = Offering.from_legacy_product_data(
+            pack.get("product") or {}
+        ).offering_id
+        pack["offering_id"] = offering_id
+    ledger = ClaimsLedger()
+    for claim_type, claims in (pack.get("claims_by_type") or {}).items():
+        for index, claim in enumerate(claims or []):
+            if str(
+                claim.get("review_status") or ""
+            ).casefold() != "accepted":
+                continue
+            claim_id = str(claim.get("claim_id") or "") or hashlib.sha256(
+                (
+                    offering_id
+                    + str(claim.get("text") or "")
+                    + str(claim.get("artifact_id") or "")
+                    + str(index)
+                ).encode()
+            ).hexdigest()[:32]
+            current = ledger.get_claim(claim_id)
+            if current is None:
+                current = Claim(
+                    claim_id=claim_id,
+                    offering_id=offering_id,
+                    claim_text=str(claim.get("text") or ""),
+                    claim_type=ClaimType(
+                        str(claim.get("claim_type") or claim_type)
+                    ),
+                    source_artifact_id=claim.get("artifact_id"),
+                    exact_excerpt=str(
+                        claim.get("excerpt")
+                        or claim.get("text")
+                        or ""
+                    ),
+                    page_location=str(
+                        claim.get("location") or "test fixture"
+                    ),
+                    captured_at=str(
+                        claim.get("captured_at")
+                        or "2026-07-30T00:00:00+00:00"
+                    ),
+                    source_class=str(
+                        claim.get("source_class") or ""
+                    ),
+                    confidence=float(claim.get("confidence") or 0.0),
+                    extraction_method=str(
+                        claim.get("extraction_method")
+                        or "llm_extraction"
+                    ),
+                    effective_market=str(
+                        claim.get("effective_market") or "US"
+                    ),
+                    review_status=ReviewStatus.UNREVIEWED,
+                    conflicts=list(claim.get("conflicts") or []),
+                    metadata=copy.deepcopy(claim.get("metadata") or {}),
+                )
+                ledger.add_claim(current)
+            if current.review_status != ReviewStatus.ACCEPTED:
+                ledger.update_review(
+                    claim_id,
+                    ReviewStatus.ACCEPTED,
+                    reviewer="Alice Example",
+                )
+            claims[index] = claim_publication_record(
+                ledger.get_claim(claim_id)
+            )
+    return _seal_source_pack(pack, claims_ledger=ledger)
 
 
 def _pack():
@@ -329,22 +432,34 @@ def test_offline_preflight_surfaces_truth_and_cta_false_passes(tmp_path):
                     "text": "Free scratch game with nine crystal balls",
                     "artifact_id": "a1",
                     "source_class": "official_vendor",
-                    "review_status": "unreviewed",
-                    "metadata": {"excerpt_is_literal": True},
+                    "review_status": "accepted",
+                    "reviewed_by": "Editorial Truth Test Reviewer",
+                    "metadata": {
+                        "excerpt_is_literal": True,
+                        "fact_key": "product_description",
+                    },
                 },
                 {
                     "text": "Personalized readings use Fortune Numbers",
                     "artifact_id": "a1",
                     "source_class": "official_vendor",
-                    "review_status": "unreviewed",
-                    "metadata": {"excerpt_is_literal": True},
+                    "review_status": "accepted",
+                    "reviewed_by": "Editorial Truth Test Reviewer",
+                    "metadata": {
+                        "excerpt_is_literal": True,
+                        "fact_key": "how_it_works",
+                    },
                 },
                 {
                     "text": "Secure digital link after purchase",
                     "artifact_id": "a1",
                     "source_class": "official_vendor",
-                    "review_status": "unreviewed",
-                    "metadata": {"excerpt_is_literal": True},
+                    "review_status": "accepted",
+                    "reviewed_by": "Editorial Truth Test Reviewer",
+                    "metadata": {
+                        "excerpt_is_literal": True,
+                        "fact_key": "access_method",
+                    },
                 },
             ],
         },
@@ -392,8 +507,16 @@ def test_wordpress_handoff_rechecks_current_truth_contract(tmp_path):
                     "text": f"Literal product fact {index}",
                     "artifact_id": "a1",
                     "source_class": "official_vendor",
-                    "review_status": "unreviewed",
-                    "metadata": {"excerpt_is_literal": True},
+                    "review_status": "accepted",
+                    "reviewed_by": "Editorial Truth Test Reviewer",
+                    "metadata": {
+                        "excerpt_is_literal": True,
+                        "fact_key": (
+                            "product_description"
+                            if index == 0
+                            else "how_it_works"
+                        ),
+                    },
                 }
                 for index in range(3)
             ],
@@ -428,6 +551,9 @@ def test_wordpress_handoff_rechecks_current_truth_contract(tmp_path):
     with patch(
         "newswire_workbench.engine.deterministic_findings",
         return_value=[],
+    ), patch(
+        "newswire_workbench.engine.audit_article",
+        return_value={"blockers": []},
     ), pytest.raises(RuntimeError, match="bidirectional editorial-truth"):
         engine.send_to_wordpress_draft(pid)
 
@@ -445,6 +571,8 @@ def test_reviewer_candidate_scope_hash_mismatch_cannot_approve(tmp_path):
         _disclosure()
         + "<p>The product provides an account for ongoing use.</p>",
     )
+    project = engine.get(pid)
+    truth, _ = engine._editorial_truth_packet(project)
     engine._record_llm_call(
         pid,
         "compliance",
@@ -466,19 +594,45 @@ def test_reviewer_candidate_scope_hash_mismatch_cannot_approve(tmp_path):
             "notes": [],
         }),
         lifecycle="provider_succeeded",
+        expected_candidate_count=len(truth["review_candidates"]),
+        expected_candidate_set_hash=truth["review_candidate_set_hash"],
     )
     with patch(
         "newswire_workbench.engine.deterministic_findings",
         return_value=[],
-    ):
-        report = engine._openai_review(
+    ), pytest.raises(RuntimeError, match="scope attestation failed"):
+        engine._openai_review(
             engine.get(pid), final=False, purpose="compliance"
         )
+
+    project = engine.get(pid)
+    report = project["last_report"]
+    assert project["stage"] == "admin_review"
     assert report["verdict"] == "not_approved"
     assert any(
         item["id"] == "E-REVIEW-SCOPE"
+        and str(item["exact_text"]).strip()
         for item in report["mandatory_edits"]
     )
+    with engine._connect() as conn:
+        call = conn.execute(
+            "SELECT lifecycle FROM llm_calls WHERE project_id=?",
+            (pid,),
+        ).fetchone()
+    assert call["lifecycle"] == "applied"
+    assert engine._latest_pending_call(pid, "compliance") is None
+    action = engine.run_action(pid)
+    assert action["action"] == "review_reviewer_scope_failure"
+    assert action["owner"] == "admin_review_queue"
+    assert action["may_start_paid_call"] is False
+    mismatch = [
+        event for event in engine.events(pid)
+        if event["event_type"] == "reviewer_scope_mismatch"
+    ]
+    assert len(mismatch) == 1
+    assert json.loads(
+        mismatch[0]["payload"]
+    )["paid_call_consumed"] is True
 
 
 def test_reviewer_may_attest_with_supplied_source_artifact_id(tmp_path):

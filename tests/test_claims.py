@@ -8,7 +8,96 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from claims import ClaimsLedger, Claim, ClaimType, ReviewStatus
+from claims import (
+    ClaimsLedger,
+    Claim,
+    ClaimType,
+    ReviewStatus,
+    claim_publication_record,
+    is_human_reviewer,
+    literal_claim_matches_excerpt,
+)
+
+
+@pytest.mark.parametrize(
+    "reviewer",
+    [
+        "123",
+        "AI service",
+        "Claude 3",
+        "GPT reviewer",
+        "Not A Bot",
+        "Source Intelligence",
+        "automation agent",
+        "Human Reviewer",
+        "human being",
+        "X",
+        "anonymous",
+        "unknown",
+        "guest",
+        "admin",
+        "test user",
+    ],
+)
+def test_machine_or_non_name_reviewer_labels_fail_closed(reviewer):
+    assert is_human_reviewer(reviewer) is False
+
+
+def test_named_person_reviewer_label_is_admitted():
+    assert is_human_reviewer("Kevin Mahoney") is True
+
+
+@pytest.mark.parametrize(
+    ("claim_text", "excerpt"),
+    [
+        (
+            "D-Aspartic Acid: 2352mg",
+            "Serving Size: 2 capsules | D-Aspartic Acid 2352mg | Zinc 30mg",
+        ),
+        ("Price: $59.99", "Price $59.99"),
+        ("Increase: 42%", "Increase: 42 %"),
+        ("Limit: <= 5mg", "Limit ≤ 5 mg"),
+    ],
+)
+def test_literal_claim_allows_presentation_only_boundaries(
+    claim_text, excerpt,
+):
+    assert literal_claim_matches_excerpt(claim_text, excerpt) is True
+
+
+@pytest.mark.parametrize(
+    ("claim_text", "excerpt"),
+    [
+        ("Zinc: 15mg", "Zinc: 30mg"),
+        ("Limit: < 5mg", "Limit: > 5mg"),
+        ("Price: $59.99", "Price: $159.99"),
+        ("Device cures asthma", "Device supports routine respiratory care"),
+    ],
+)
+def test_literal_claim_rejects_semantically_different_tokens(
+    claim_text, excerpt,
+):
+    assert literal_claim_matches_excerpt(claim_text, excerpt) is False
+
+
+def test_blank_offering_id_is_rejected_at_ledger_boundaries(ledger):
+    with pytest.raises(ValueError, match="offering_id"):
+        ledger.add_claim(Claim(claim_text="A claim"))
+    with pytest.raises(ValueError, match="offering_id"):
+        ledger.get_claims("")
+
+
+def test_nonhuman_reviewer_cannot_accept_claim(ledger):
+    claim_id = ledger.add_claim(Claim(
+        offering_id="review-scope",
+        claim_text="A reviewable claim",
+    ))
+    with pytest.raises(ValueError, match="named human"):
+        ledger.update_review(
+            claim_id,
+            ReviewStatus.ACCEPTED,
+            reviewer="Claude 3",
+        )
 
 
 @pytest.fixture
@@ -95,6 +184,19 @@ class TestClaimsLedger:
         ids = ledger.add_claims_batch(claims)
         assert len(ids) == 5
 
+    def test_empty_claim_text_is_rejected_atomically(self, ledger):
+        with pytest.raises(ValueError, match="nonempty"):
+            ledger.add_claim(Claim(
+                offering_id="test-1",
+                claim_text="   ",
+            ))
+        with pytest.raises(ValueError, match="nonempty"):
+            ledger.add_claims_batch([
+                Claim(offering_id="test-1", claim_text="Valid"),
+                Claim(offering_id="test-1", claim_text=""),
+            ])
+        assert ledger.get_claims("test-1") == []
+
     def test_get_claims_filtered(self, ledger):
         # Add mixed claim types
         ledger.add_claim(Claim(
@@ -129,12 +231,66 @@ class TestClaimsLedger:
         )
         cid = ledger.add_claim(claim)
 
-        success = ledger.update_review(cid, ReviewStatus.ACCEPTED, reviewer="human")
+        success = ledger.update_review(
+            cid,
+            ReviewStatus.ACCEPTED,
+            reviewer="Kevin Test",
+        )
         assert success is True
 
         updated = ledger.get_claim(cid)
         assert updated.review_status == ReviewStatus.ACCEPTED
-        assert updated.reviewed_by == "human"
+        assert updated.reviewed_by == "Kevin Test"
+        event = ledger.conn.execute(
+            "SELECT * FROM claim_review_events WHERE claim_id=?",
+            (cid,),
+        ).fetchone()
+        assert event["prior_status"] == "unreviewed"
+        assert event["new_status"] == "accepted"
+        assert event["reviewer"] == "Kevin Test"
+        with pytest.raises(Exception, match="immutable"):
+            ledger.conn.execute(
+                "DELETE FROM claim_review_events WHERE id=?",
+                (event["id"],),
+            )
+
+    def test_latest_review_head_supersedes_prior_acceptance(self, ledger):
+        claim = Claim(
+            offering_id="review-head-offering",
+            claim_text="Device includes a washable filter",
+            claim_type=ClaimType.FEATURE,
+            metadata={"fact_key": "key_features"},
+        )
+        claim_id = ledger.add_claim(claim)
+        assert ledger.update_review(
+            claim_id,
+            ReviewStatus.ACCEPTED,
+            reviewer="Kevin Mahoney",
+        )
+        accepted_snapshot = claim_publication_record(
+            ledger.get_claim(claim_id)
+        )
+        accepted_head = ledger.get_latest_review_heads(
+            "review-head-offering",
+            claim_ids=[claim_id],
+        )[claim_id]
+        assert accepted_head["authoritative_human_acceptance"] is True
+
+        assert ledger.update_review(
+            claim_id,
+            ReviewStatus.REJECTED,
+            reviewer="Kevin Mahoney",
+        )
+        rejected_head = ledger.get_latest_review_heads(
+            "review-head-offering",
+            claim_ids=[claim_id],
+        )[claim_id]
+
+        assert accepted_snapshot["review_status"] == "accepted"
+        assert rejected_head["current_status"] == "rejected"
+        assert rejected_head["latest_event_status"] == "rejected"
+        assert rejected_head["head_valid"] is True
+        assert rejected_head["authoritative_human_acceptance"] is False
 
     def test_detect_conflicts_ingredient_amounts(self, ledger):
         """Two different amounts for the same ingredient = conflict."""
@@ -840,14 +996,18 @@ class TestRequiredFactsCoverage:
         DO satisfy mandatory fact coverage."""
         oid = "strict-ok-1"
         # Evidence-backed claim with fact_key and artifact
-        ledger.add_claim(Claim(
+        claim_id = ledger.add_claim(Claim(
             offering_id=oid, claim_text="Vitamin D 2000 IU",
             claim_type=ClaimType.INGREDIENT_AMOUNT,
             source_artifact_id="art-evidence-1",
-            review_status=ReviewStatus.ACCEPTED,
             extraction_method="llm_extraction",
             metadata={"fact_key": "ingredients_with_amounts"},
         ))
+        ledger.update_review(
+            claim_id,
+            ReviewStatus.ACCEPTED,
+            reviewer="Kevin Mahoney",
+        )
         # Both strict and non-strict: covered
         for strict in (True, False):
             result = ledger.check_required_facts(

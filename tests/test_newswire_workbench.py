@@ -1,8 +1,10 @@
+import copy
 import hashlib
 import json
+import sqlite3
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from bs4 import BeautifulSoup, NavigableString
@@ -42,8 +44,125 @@ from newswire_workbench.human_copy import (
     normalize_american_english,
 )
 from newswire_workbench.editorial_truth import audit_editorial_truth
-from source_pack_contract import seal_source_pack
+from source_pack_contract import (
+    CONTRACT_NAME,
+    _canonical_payload,
+    seal_source_pack as _seal_source_pack,
+)
+from claims import (
+    Claim,
+    ClaimsLedger,
+    ClaimType,
+    ReviewStatus,
+    claim_publication_record,
+)
+from entities import Offering
 from article_provenance import build_article_claim_ledger
+
+
+@pytest.fixture(autouse=True)
+def _isolated_source_review_authority(tmp_path, monkeypatch):
+    """Give every Workbench test a real, isolated Source review authority."""
+    import config
+    from database import ProductDatabase
+
+    authority_db = tmp_path / "source-review-authority.db"
+    trust_dir = tmp_path / "source-review-trust"
+    monkeypatch.setattr(config, "DB_PATH", str(authority_db))
+    monkeypatch.setenv(
+        "SOURCE_INTELLIGENCE_DATA_DIR",
+        str(trust_dir),
+    )
+    monkeypatch.delenv(
+        "SOURCE_INTELLIGENCE_TRUST_KEY_ID",
+        raising=False,
+    )
+    database = ProductDatabase(db_path=str(authority_db))
+    database.close()
+
+
+def seal_source_pack(raw_pack):
+    """Seal fixtures through real append-only review transitions."""
+    pack = copy.deepcopy(raw_pack)
+    offering_id = str(pack.get("offering_id") or "").strip()
+    if not offering_id:
+        offering_id = Offering.from_legacy_product_data(
+            pack.get("product") or {}
+        ).offering_id
+        pack["offering_id"] = offering_id
+    ledger = ClaimsLedger()
+    for claim_type, claims in (pack.get("claims_by_type") or {}).items():
+        for index, claim in enumerate(claims or []):
+            if (
+                str(claim.get("review_status") or "").casefold()
+                != "accepted"
+            ):
+                continue
+            claim_id = str(claim.get("claim_id") or "") or hashlib.sha256(
+                (
+                    offering_id
+                    + str(claim.get("text") or "")
+                    + str(claim.get("artifact_id") or "")
+                    + str(index)
+                ).encode()
+            ).hexdigest()[:32]
+            durable = ledger.get_claim(claim_id)
+            if durable is None:
+                durable = Claim(
+                    claim_id=claim_id,
+                    offering_id=offering_id,
+                    claim_text=str(claim.get("text") or ""),
+                    claim_type=ClaimType(
+                        str(claim.get("claim_type") or claim_type)
+                    ),
+                    source_artifact_id=claim.get("artifact_id"),
+                    exact_excerpt=str(
+                        claim.get("excerpt")
+                        or claim.get("text")
+                        or ""
+                    ),
+                    page_location=str(
+                        claim.get("location") or "test fixture"
+                    ),
+                    captured_at=str(
+                        claim.get("captured_at")
+                        or "2026-07-30T00:00:00+00:00"
+                    ),
+                    source_class=str(
+                        claim.get("source_class") or ""
+                    ),
+                    confidence=float(claim.get("confidence") or 0.0),
+                    extraction_method=str(
+                        claim.get("extraction_method")
+                        or "llm_extraction"
+                    ),
+                    effective_market=str(
+                        claim.get("effective_market") or "US"
+                    ),
+                    review_status=ReviewStatus.UNREVIEWED,
+                    conflicts=list(claim.get("conflicts") or []),
+                    metadata=copy.deepcopy(claim.get("metadata") or {}),
+                )
+                ledger.add_claim(durable)
+            if durable.review_status != ReviewStatus.ACCEPTED:
+                ledger.update_review(
+                    claim_id,
+                    ReviewStatus.ACCEPTED,
+                    reviewer=str(
+                        claim.get("reviewed_by")
+                        or "Alice Example"
+                    ),
+                )
+            current = ledger.get_claim(claim_id)
+            sealed_claim = claim_publication_record(current)
+            for key in (
+                "publication_treatment",
+                "source_attribution_required",
+            ):
+                if key in claim:
+                    sealed_claim[key] = copy.deepcopy(claim[key])
+            claims[index] = sealed_claim
+    return _seal_source_pack(pack, claims_ledger=ledger)
 
 
 def _three_literal_claims():
@@ -53,12 +172,35 @@ def _three_literal_claims():
                 "text": f"Literal product fact {number}",
                 "artifact_id": "a1",
                 "source_class": "official_vendor",
-                "review_status": "unreviewed",
-                "metadata": {"excerpt_is_literal": True},
+                "review_status": "accepted",
+                "reviewed_by": "Test Human Reviewer",
+                "metadata": {
+                    "excerpt_is_literal": True,
+                    "fact_key": "key_features",
+                },
             }
             for number in range(3)
         ]
     }
+
+
+def _legacy_v2_pack(pack):
+    """Build an integrity-valid v2 fixture from a current sealed pack."""
+    legacy = json.loads(json.dumps(pack))
+    legacy.pop("source_pack_contract_migrations", None)
+    legacy["source_pack_contract"] = {
+        "name": CONTRACT_NAME,
+        "version": 2,
+        "generated_at": "2026-07-29T00:00:00+00:00",
+        "readiness": "complete",
+        "readiness_reasons": [],
+        "source_of_truth": "source_intelligence",
+        "generation_system": "MBK Master Content Generation System v3.8",
+    }
+    legacy["source_pack_contract"]["sha256"] = hashlib.sha256(
+        _canonical_payload(legacy)
+    ).hexdigest()
+    return legacy
 
 
 def _independent_approval(engine, project_id):
@@ -426,7 +568,11 @@ def test_project_and_immutable_audit(tmp_path):
 def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
     engine = WorkbenchEngine(tmp_path)
     pack = seal_source_pack({
-        "product": {"product_name": "Test Device", "official_url": "https://example.com"},
+        "product": {
+            "product_name": "Test Device",
+            "official_url": "https://example.com",
+            "product_type": "device",
+        },
         "all_artifacts": [{"artifact_id": "a1"}],
         "claims_by_type": _three_literal_claims(),
         "required_facts": {"missing": []},
@@ -449,6 +595,838 @@ def test_sealed_source_pack_handoff_is_validated_and_idempotent(tmp_path):
         e["event_type"] == "sealed_source_pack_imported"
         for e in engine.events(first)
     )
+
+
+def test_unverified_v3_pack_is_rejected_before_project_or_paid_call(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    claims = _three_literal_claims()
+    for claim in claims["feature"]:
+        claim["review_status"] = "unreviewed"
+        claim.pop("reviewed_by", None)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Unreviewed Device",
+            "official_url": "https://example.com/unreviewed",
+            "product_type": "device",
+        },
+        "all_artifacts": [{
+            "artifact_id": "a1",
+            "source_class": "official_vendor",
+        }],
+        "claims_by_type": claims,
+        "required_facts": {"missing": []},
+    })
+
+    with pytest.raises(ValueError, match="Source verification required"):
+        engine.create_project_from_pack(pack, "AccessNewsWire")
+
+    assert engine.list_projects() == []
+    with engine._connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) AS count FROM llm_calls"
+        ).fetchone()["count"] == 0
+
+
+def test_valid_v2_pack_migrates_with_auditable_prior_decision(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    current = seal_source_pack({
+        "product": {
+            "product_name": "Migrated Device",
+            "official_url": "https://example.com/migrated",
+            "product_type": "device",
+        },
+        "all_artifacts": [{
+            "artifact_id": "a1",
+            "source_class": "official_vendor",
+        }],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    legacy = _legacy_v2_pack(current)
+    prior_sha = legacy["source_pack_contract"]["sha256"]
+
+    project_id = engine.create_project_from_pack(
+        legacy, "AccessNewsWire", force_new=True
+    )
+
+    assert legacy["source_pack_contract"]["version"] == 3
+    migration = legacy["source_pack_contract_migrations"][0]
+    assert migration["prior_sha256"] == prior_sha
+    events = [
+        event for event in engine.events(project_id)
+        if event["event_type"] == "source_pack_contract_migrated"
+    ]
+    assert len(events) == 1
+    payload = json.loads(events[0]["payload"])
+    assert payload["prior_sha256"] == prior_sha
+    assert payload["new_sha256"] == (
+        legacy["source_pack_contract"]["sha256"]
+    )
+
+
+def test_failed_v2_import_does_not_mutate_caller_or_create_project(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    claims = _three_literal_claims()
+    for claim in claims["feature"]:
+        claim["review_status"] = "unreviewed"
+        claim.pop("reviewed_by", None)
+    current = seal_source_pack({
+        "product": {
+            "product_name": "Blocked Legacy Device",
+            "official_url": "https://example.com/blocked-legacy",
+            "product_type": "device",
+        },
+        "all_artifacts": [{
+            "artifact_id": "a1",
+            "source_url": "https://example.com/blocked-legacy",
+            "source_class": "official_vendor",
+            "source_relationship": "first_party",
+        }],
+        "claims_by_type": claims,
+        "required_facts": {"missing": []},
+    })
+    legacy = _legacy_v2_pack(current)
+    original = json.loads(json.dumps(legacy))
+
+    with pytest.raises(ValueError, match="Source verification required"):
+        engine.create_project_from_pack(
+            legacy, "AccessNewsWire", force_new=True
+        )
+
+    assert legacy == original
+    assert engine.list_projects() == []
+
+
+def test_project_and_initial_audit_events_commit_atomically(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Atomic Import Device",
+            "official_url": "https://example.com/atomic-import",
+            "product_type": "device",
+        },
+        "all_artifacts": [{
+            "artifact_id": "a1",
+            "source_url": "https://example.com/atomic-import",
+            "source_class": "official_vendor",
+            "source_relationship": "first_party",
+        }],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    with engine._connect() as conn:
+        conn.execute("""
+            CREATE TRIGGER fail_initial_audit_event
+            BEFORE INSERT ON events
+            WHEN NEW.event_type='project_created'
+            BEGIN SELECT RAISE(ABORT, 'injected event failure'); END
+        """)
+
+    with pytest.raises(sqlite3.IntegrityError, match="injected"):
+        engine.create_project_from_pack(
+            pack, "AccessNewsWire", force_new=True
+        )
+
+    assert engine.list_projects() == []
+    with engine._connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) AS count FROM events"
+        ).fetchone()["count"] == 0
+
+
+@pytest.mark.parametrize(
+    ("contract_kind", "expected_action"),
+    [
+        ("v2", "rebuild_source_contract"),
+        ("unverified_v3", "review_source_claims"),
+    ],
+)
+@pytest.mark.parametrize("entrypoint", ["run_next", "run_to_completion"])
+def test_already_queued_source_contracts_cannot_bypass_prepaid_gate(
+    tmp_path, contract_kind, expected_action, entrypoint,
+):
+    engine = WorkbenchEngine(tmp_path)
+    claims = _three_literal_claims()
+    if contract_kind == "unverified_v3":
+        for claim in claims["feature"]:
+            claim["review_status"] = "unreviewed"
+            claim.pop("reviewed_by", None)
+    current = seal_source_pack({
+        "product": {
+            "product_name": f"Queued {contract_kind} Device",
+            "official_url": f"https://example.com/{contract_kind}",
+            "product_type": "device",
+        },
+        "all_artifacts": [{
+            "artifact_id": "a1",
+            "source_class": "official_vendor",
+        }],
+        "claims_by_type": claims,
+        "required_facts": {"missing": []},
+    })
+    queued_pack = (
+        _legacy_v2_pack(current)
+        if contract_kind == "v2"
+        else current
+    )
+    source_text = (
+        f"AUTOMATION CONTEXT VERSION: {WORKBENCH_SOURCE_CONTEXT_VERSION}\n"
+        "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══\n"
+        + json.dumps(queued_pack, sort_keys=True)
+    )
+    project_id = engine.create_project(
+        f"Queued {contract_kind}",
+        "AccessNewsWire",
+        source_text,
+        vertical="device",
+    )
+
+    if entrypoint == "run_to_completion":
+        engine._set_stage(project_id, "admin_review")
+
+    with (
+        patch.object(
+            engine,
+            "_claude",
+            side_effect=AssertionError("writer must not be reached"),
+        ),
+        patch.object(
+            engine,
+            "_openai_review",
+            side_effect=AssertionError("reviewer must not be reached"),
+        ),
+    ):
+        project = (
+            engine.run_next(project_id, "")
+            if entrypoint == "run_next"
+            else engine.run_to_completion(
+                project_id, "", max_steps=3
+            )
+        )
+
+    assert project["stage"] == "admin_review"
+    usage = engine.usage_summary(project_id)
+    assert usage["calls"] == 0
+    assert usage["attempts"] == 0
+    action = engine.run_action(project_id)
+    assert action["action"] == expected_action
+    queue_action = engine.admin_review_action(project_id)
+    assert queue_action["action"] == expected_action
+    assert queue_action["may_start_paid_call"] is False
+    assert action["may_start_paid_call"] is False
+
+
+@pytest.mark.parametrize("tamper_kind", ["contract_metadata", "source_text"])
+def test_tampered_queued_source_contract_never_reaches_provider(
+    tmp_path, tamper_kind,
+):
+    engine = WorkbenchEngine(tmp_path)
+    claims = _three_literal_claims()
+    for claim in claims["feature"]:
+        claim["review_status"] = "unreviewed"
+        claim.pop("reviewed_by", None)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Tampered Contract Device",
+            "official_url": "https://example.com/tampered",
+            "product_type": "device",
+        },
+        "all_artifacts": [{
+            "artifact_id": "a1",
+            "source_url": "https://example.com/tampered",
+            "source_class": "official_vendor",
+            "source_relationship": "first_party",
+        }],
+        "claims_by_type": claims,
+        "required_facts": {"missing": []},
+    })
+    if tamper_kind == "contract_metadata":
+        contract = pack["source_pack_contract"]
+        contract["unverified_mandatory_facts"] = []
+        contract["mandatory_fact_assurance"] = {}
+        contract["readiness"] = "complete"
+        contract["readiness_reasons"] = []
+    source_text = (
+        f"AUTOMATION CONTEXT VERSION: {WORKBENCH_SOURCE_CONTEXT_VERSION}\n"
+        "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══\n"
+        + json.dumps(pack, sort_keys=True)
+    )
+    project_id = engine.create_project(
+        "Tampered Contract",
+        "AccessNewsWire",
+        source_text,
+        vertical="device",
+    )
+    if tamper_kind == "source_text":
+        with engine._connect() as conn:
+            conn.execute(
+                "UPDATE projects SET source_text=? WHERE id=?",
+                ("TAMPERED WITHOUT LOCKED MARKER", project_id),
+            )
+
+    with (
+        patch.object(
+            engine,
+            "_claude",
+            side_effect=AssertionError("provider must not be reached"),
+        ),
+        patch.object(
+            engine,
+            "_openai_review",
+            side_effect=AssertionError("reviewer must not be reached"),
+        ),
+    ):
+        result = engine.run_next(project_id, "")
+
+    assert result["stage"] == "admin_review"
+    assert engine.usage_summary(project_id)["calls"] == 0
+    blocker_ids = {
+        item["id"]
+        for item in engine._prepaid_contract_blockers(
+            engine.get(project_id)
+        )
+    }
+    assert blocker_ids == {"SOURCE-CONTRACT-INTEGRITY"}
+    action = engine.run_action(project_id)
+    assert action["may_start_paid_call"] is False
+
+
+@pytest.mark.parametrize(
+    "late_stage",
+    ["signed_off", "post_seo_signed_off", "package_ready"],
+)
+def test_late_stage_source_verification_revokes_packaging_and_delivery(
+    tmp_path, late_stage,
+):
+    engine = WorkbenchEngine(tmp_path)
+    claims = _three_literal_claims()
+    for claim in claims["feature"]:
+        claim["review_status"] = "unreviewed"
+        claim.pop("reviewed_by", None)
+    pack = seal_source_pack({
+        "product": {
+            "product_name": "Late Verification Device",
+            "official_url": "https://example.com/late-verification",
+            "product_type": "device",
+        },
+        "all_artifacts": [{
+            "artifact_id": "a1",
+            "source_class": "official_vendor",
+        }],
+        "claims_by_type": claims,
+        "required_facts": {"missing": []},
+    })
+    source_text = (
+        f"AUTOMATION CONTEXT VERSION: {WORKBENCH_SOURCE_CONTEXT_VERSION}\n"
+        "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══\n"
+        + json.dumps(pack, sort_keys=True)
+    )
+    project_id = engine.create_project(
+        "Late Verification Device",
+        "AccessNewsWire",
+        source_text,
+        vertical="device",
+    )
+    engine._set_stage(project_id, late_stage)
+
+    with (
+        patch.object(
+            engine,
+            "_claude",
+            side_effect=AssertionError("writer must not be reached"),
+        ),
+        patch.object(
+            engine,
+            "_openai_review",
+            side_effect=AssertionError("reviewer must not be reached"),
+        ),
+    ):
+        project = engine.run_next(project_id, "")
+
+    assert project["stage"] == "admin_review"
+    assert engine.usage_summary(project_id)["calls"] == 0
+    action = engine.admin_review_action(project_id)
+    assert action["action"] == "review_source_claims"
+    assert action["may_start_paid_call"] is False
+
+
+def test_rejected_review_head_blocks_new_calls_and_delivery(tmp_path):
+    from claims import (
+        Claim,
+        ClaimType,
+        ClaimsLedger,
+        ReviewStatus,
+        claim_publication_record,
+    )
+    from database import ProductDatabase
+
+    db_path = str(tmp_path / "review-head-boundary.db")
+    ProductDatabase(db_path=db_path)
+    ledger = ClaimsLedger(db_path=db_path)
+    product = {
+        "product_name": "Review Head Boundary Device",
+        "official_url": "https://example.com/review-head-boundary",
+        "product_type": "device",
+    }
+    offering_id = Offering.from_legacy_product_data(product).offering_id
+    claim_ids = []
+    for number in range(3):
+        text = f"Device includes accepted feature {number}"
+        claim_id = ledger.add_claim(Claim(
+            offering_id=offering_id,
+            claim_text=text,
+            claim_type=ClaimType.FEATURE,
+            source_artifact_id="artifact-1",
+            exact_excerpt=text,
+            source_class="official_vendor",
+            metadata={
+                "excerpt_is_literal": True,
+                "fact_key": "key_features",
+            },
+        ))
+        ledger.update_review(
+            claim_id,
+            ReviewStatus.ACCEPTED,
+            reviewer="Alice Example",
+        )
+        claim_ids.append(claim_id)
+    accepted = [
+        claim_publication_record(ledger.get_claim(claim_id))
+        for claim_id in claim_ids
+    ]
+    pack = _seal_source_pack({
+        "offering_id": offering_id,
+        "product": product,
+        "all_artifacts": {
+            "artifact-1": {
+                "artifact_id": "artifact-1",
+                "source_url": product["official_url"],
+                "source_class": "official_vendor",
+                "source_relationship": "first_party",
+            },
+        },
+        "source_manifest": [{"type": "official", "status": "captured"}],
+        "claims_by_type": {"feature": accepted},
+        "claim_review_inventory": copy.deepcopy(accepted),
+        "required_facts": {"missing": []},
+    }, claims_ledger=ledger)
+
+    engine = WorkbenchEngine(tmp_path / "workbench")
+    with patch("claims.ClaimsLedger", return_value=ledger):
+        project_id = engine.create_project_from_pack(
+            pack, "AccessNewsWire", vertical="device"
+        )
+
+    for claim_id in claim_ids:
+        ledger.update_review(
+            claim_id,
+            ReviewStatus.REJECTED,
+            reviewer="Alice Example",
+        )
+
+    with patch("claims.ClaimsLedger", return_value=ledger), patch.object(
+        engine,
+        "_claude",
+        side_effect=AssertionError("writer must not be reached"),
+    ), patch.object(
+        engine,
+        "_openai_review",
+        side_effect=AssertionError("reviewer must not be reached"),
+    ):
+        result = engine.run_next(project_id, "")
+        assert result["stage"] == "admin_review"
+        action = engine.run_action(project_id)
+        assert action["action"] == "reconcile_review_heads_and_reseal"
+        assert action["disabled"] is True
+        assert action["may_start_paid_call"] is False
+        with patch(
+            "newswire_workbench.wordpress.WordPressDraftPublisher",
+            side_effect=AssertionError("publisher must not be reached"),
+        ), pytest.raises(RuntimeError, match="source authority"):
+            engine.send_to_wordpress_draft(project_id)
+
+    assert engine.usage_summary(project_id)["calls"] == 0
+    assert engine.usage_summary(project_id)["attempts"] == 0
+    blockers = [
+        item["id"]
+        for item in json.loads(
+            [
+                event["payload"] for event in engine.events(project_id)
+                if event["event_type"] == "prepaid_contract_blocked"
+            ][-1]
+        )["blockers"]
+    ]
+    assert "SOURCE-REVIEW-HEAD" in blockers
+
+
+def test_direct_package_and_wordpress_boundaries_recheck_source_authority(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    clean_pack = seal_source_pack({
+        "product": {
+            "product_name": "Delivery Boundary Device",
+            "official_url": "https://example.com/delivery-boundary",
+            "product_type": "device",
+        },
+        "all_artifacts": [{
+            "artifact_id": "a1",
+            "source_class": "official_vendor",
+        }],
+        "claims_by_type": _three_literal_claims(),
+        "required_facts": {"missing": []},
+    })
+    project_id = engine.create_project_from_pack(
+        clean_pack, "AccessNewsWire", vertical="device"
+    )
+    project = engine.get(project_id)
+    article = "<p>According to the seller, the device is portable.</p>"
+    digest = hashlib.sha256(
+        ((project.get("release_title") or project["title"]) + "\n" + article)
+        .encode("utf-8")
+    ).hexdigest()
+    report = {
+        "verdict": "approved",
+        "mandatory_count": 0,
+        "mandatory_edits": [],
+        "reviewed_article_hash": digest,
+        "approval_purpose": "final_signoff",
+    }
+    unverified_claims = _three_literal_claims()
+    for claim in unverified_claims["feature"]:
+        claim["review_status"] = "unreviewed"
+        claim.pop("reviewed_by", None)
+    unverified_pack = seal_source_pack({
+        "product": {
+            "product_name": "Delivery Boundary Device",
+            "official_url": "https://example.com/delivery-boundary",
+            "product_type": "device",
+        },
+        "all_artifacts": [{
+            "artifact_id": "a1",
+            "source_class": "official_vendor",
+        }],
+        "claims_by_type": unverified_claims,
+        "required_facts": {"missing": []},
+    })
+    marker = "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══"
+    source_text = (
+        project["source_text"].split(marker, 1)[0]
+        + marker
+        + "\n"
+        + json.dumps(unverified_pack, sort_keys=True)
+    )
+    with engine._connect() as conn:
+        conn.execute(
+            "UPDATE projects SET source_text=?,source_hash=?,article_text=?,"
+            "article_hash=?,last_report=?,stage='package_ready' WHERE id=?",
+            (
+                source_text,
+                hashlib.sha256(source_text.encode("utf-8")).hexdigest(),
+                article,
+                digest,
+                json.dumps(report),
+                project_id,
+            ),
+        )
+
+    with patch(
+        "newswire_workbench.wordpress.WordPressDraftPublisher",
+        side_effect=AssertionError("publisher must not be reached"),
+    ):
+        with pytest.raises(RuntimeError, match="source authority"):
+            engine.send_to_wordpress_draft(project_id)
+
+    engine._set_stage(project_id, "signed_off")
+    with pytest.raises(RuntimeError, match="source authority"):
+        engine._build_package(engine.get(project_id))
+
+
+def test_stale_policy_cannot_complete_or_reach_wordpress(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    project_id = engine.create_project(
+        "Policy Boundary Device",
+        "AccessNewsWire",
+        "legacy device source",
+        "device",
+    )
+    article = "<p>Current exact article.</p>"
+    engine.import_manual_article(project_id, article)
+    project = engine.get(project_id)
+    engine._set_report(
+        project,
+        {
+            "verdict": "approved",
+            "mandatory_count": 0,
+            "mandatory_edits": [],
+            "reviewed_article_hash": project["article_hash"],
+            "approval_purpose": "final_signoff",
+        },
+        "package_ready",
+        "approval.json",
+    )
+    blocker = {
+        "id": "POLICY-SNAPSHOT",
+        "issue": "The authoritative policy snapshot changed.",
+    }
+
+    with patch.object(
+        engine,
+        "_prepaid_contract_blockers",
+        side_effect=[[], [blocker]],
+    ) as authority_checks, patch.object(
+        engine, "article_diagnostics", return_value={}
+    ), patch.object(
+        engine,
+        "offline_preflight",
+        return_value={
+            "blockers": [],
+            "semantic_review": {"remaining_calls": 1},
+            "publication_ready": True,
+        },
+    ):
+        action = engine.run_action(project_id)
+
+    assert action["action"] == "refresh_source_policy"
+    assert action["may_start_paid_call"] is False
+    assert authority_checks.call_count == 2
+    with patch.object(
+        engine, "_prepaid_contract_blockers", return_value=[blocker]
+    ), patch(
+        "newswire_workbench.wordpress.WordPressDraftPublisher",
+        side_effect=AssertionError("publisher must not be reached"),
+    ):
+        with pytest.raises(RuntimeError, match="source authority"):
+            engine.send_to_wordpress_draft(project_id)
+
+
+def test_wordpress_handoff_verifies_archive_after_package_recovery(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    project_id = engine.create_project(
+        "Package Boundary Device",
+        "AccessNewsWire",
+        "legacy device source",
+        "device",
+    )
+    engine.import_manual_article(
+        project_id, "<p>Current exact package article.</p>"
+    )
+    project = engine.get(project_id)
+    engine._set_report(
+        project,
+        {
+            "verdict": "approved",
+            "mandatory_count": 0,
+            "mandatory_edits": [],
+            "reviewed_article_hash": project["article_hash"],
+            "approval_purpose": "final_signoff",
+        },
+        "package_ready",
+        "approval.json",
+    )
+    export_path = engine.export_path(project_id)
+    export_path.write_bytes(b"invalid archive")
+
+    with patch.object(
+        engine, "_prepaid_contract_blockers", return_value=[]
+    ), patch.object(
+        engine, "_ensure_package_export", return_value=export_path
+    ) as ensure_export, patch.object(
+        engine, "_package_export_is_current", return_value=False
+    ), patch(
+        "newswire_workbench.wordpress.WordPressDraftPublisher",
+        side_effect=AssertionError("publisher must not be reached"),
+    ):
+        with pytest.raises(RuntimeError, match="verified submission archive"):
+            engine.send_to_wordpress_draft(project_id)
+
+    ensure_export.assert_called_once()
+
+
+def test_wordpress_rechecks_policy_after_package_recovery(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    project_id = engine.create_project(
+        "Late Policy Change Device",
+        "AccessNewsWire",
+        "legacy device source",
+        "device",
+    )
+    engine.import_manual_article(
+        project_id, "<p>Current exact package article.</p>"
+    )
+    project = engine.get(project_id)
+    engine._set_report(
+        project,
+        {
+            "verdict": "approved",
+            "mandatory_count": 0,
+            "mandatory_edits": [],
+            "reviewed_article_hash": project["article_hash"],
+            "approval_purpose": "final_signoff",
+        },
+        "package_ready",
+        "approval.json",
+    )
+    export_path = engine.export_path(project_id)
+    export_path.write_bytes(b"package checked by focused mock")
+    blocker = {
+        "id": "POLICY-SNAPSHOT",
+        "issue": "The policy changed during local package recovery.",
+    }
+    clean_ledger = {
+        "passed": True,
+        "coverage_violations": [],
+        "attribution_violations": [],
+        "grounding_violations": [],
+        "cta_integrity_violations": [],
+    }
+
+    with patch.object(
+        engine,
+        "_prepaid_contract_blockers",
+        side_effect=[[], [blocker]],
+    ) as authority_checks, patch.object(
+        engine, "_ensure_package_export", return_value=export_path
+    ), patch.object(
+        engine, "_package_export_is_current", return_value=True
+    ), patch(
+        "newswire_workbench.engine.deterministic_findings",
+        return_value=[],
+    ), patch(
+        "article_provenance.extract_sealed_pack",
+        return_value={},
+    ), patch(
+        "article_provenance.build_article_claim_ledger",
+        return_value=clean_ledger,
+    ), patch(
+        "newswire_workbench.wordpress.WordPressDraftPublisher",
+        side_effect=AssertionError("publisher must not be reached"),
+    ):
+        with pytest.raises(RuntimeError, match="current source or policy"):
+            engine.send_to_wordpress_draft(project_id)
+
+    assert authority_checks.call_count == 2
+
+
+@pytest.mark.parametrize(
+    ("late_change", "error_pattern"),
+    [
+        ("source_policy", "immediately before delivery"),
+        ("package", "archive immediately before delivery"),
+        ("stage", "changed stage, article"),
+        ("article", "changed stage, article"),
+    ],
+)
+def test_wordpress_revalidates_after_remote_reads_before_save_draft(
+    tmp_path, late_change, error_pattern,
+):
+    engine = WorkbenchEngine(tmp_path)
+    project_id = engine.create_project(
+        "Final Delivery Boundary",
+        "AccessNewsWire",
+        "legacy device source",
+        "device",
+    )
+    engine.import_manual_article(
+        project_id, "<p>Exact approved delivery article.</p>"
+    )
+    project = engine.get(project_id)
+    engine._set_report(
+        project,
+        {
+            "verdict": "approved",
+            "mandatory_count": 0,
+            "mandatory_edits": [],
+            "reviewed_article_hash": project["article_hash"],
+            "approval_purpose": "final_signoff",
+        },
+        "package_ready",
+        "approval.json",
+    )
+    export_path = engine.export_path(project_id)
+    export_path.write_bytes(b"package checked by focused boundary mock")
+    blocker = {
+        "id": "POLICY-SNAPSHOT",
+        "issue": "Policy changed during the remote WordPress reads.",
+    }
+    clean_ledger = {
+        "passed": True,
+        "coverage_violations": [],
+        "attribution_violations": [],
+        "grounding_violations": [],
+        "cta_integrity_violations": [],
+    }
+    publisher = MagicMock()
+    publisher.site_url = "https://example.com"
+    publisher.test_connection.return_value = True
+
+    def remote_find(_slug):
+        if late_change == "stage":
+            engine._set_stage(project_id, "admin_review")
+        elif late_change == "article":
+            changed = "<p>Article changed during remote reconciliation.</p>"
+            with engine._connect() as conn:
+                conn.execute(
+                    """UPDATE projects
+                    SET article_text=?,article_hash=?,updated_at=?
+                    WHERE id=?""",
+                    (
+                        changed,
+                        hashlib.sha256(
+                            (
+                                "Final Delivery Boundary\n" + changed
+                            ).encode("utf-8")
+                        ).hexdigest(),
+                        "2026-07-30T16:00:00+00:00",
+                        project_id,
+                    ),
+                )
+        return None
+
+    publisher.find_draft_by_slug.side_effect = remote_find
+    authority_calls = 0
+    package_calls = 0
+
+    def authority_check(_project):
+        nonlocal authority_calls
+        authority_calls += 1
+        if late_change == "source_policy" and authority_calls == 3:
+            return [blocker]
+        return []
+
+    def package_check(_project, _path):
+        nonlocal package_calls
+        package_calls += 1
+        return not (late_change == "package" and package_calls == 3)
+
+    with patch.object(
+        engine,
+        "_prepaid_contract_blockers",
+        side_effect=authority_check,
+    ), patch.object(
+        engine, "_ensure_package_export", return_value=export_path
+    ), patch.object(
+        engine,
+        "_package_export_is_current",
+        side_effect=package_check,
+    ), patch(
+        "newswire_workbench.engine.deterministic_findings",
+        return_value=[],
+    ), patch(
+        "article_provenance.extract_sealed_pack",
+        return_value={},
+    ), patch(
+        "article_provenance.build_article_claim_ledger",
+        return_value=clean_ledger,
+    ), patch(
+        "newswire_workbench.wordpress.WordPressDraftPublisher",
+        return_value=publisher,
+    ), pytest.raises(RuntimeError, match=error_pattern):
+        engine.send_to_wordpress_draft(project_id)
+
+    publisher.test_connection.assert_called_once()
+    publisher.find_draft_by_slug.assert_called_once()
+    publisher.save_draft.assert_not_called()
 
 
 def test_exhausted_adjudicated_hash_hands_off_to_review_only_transaction(
@@ -766,6 +1744,50 @@ def test_terminal_identity_recovery_gets_one_non_writer_review(tmp_path):
     def approve(_project, final=None, purpose=None):
         purposes.append(purpose)
         return approval
+
+    marker = "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══"
+    clean_source_text = engine.get(pid)["source_text"]
+    unverified_pack = json.loads(json.dumps(pack))
+    for claim in unverified_pack["claims_by_type"]["feature"]:
+        claim["review_status"] = "unreviewed"
+        claim.pop("reviewed_by", None)
+    unverified_pack = seal_source_pack(unverified_pack)
+    unverified_source_text = (
+        clean_source_text.split(marker, 1)[0]
+        + marker
+        + "\n"
+        + json.dumps(unverified_pack, sort_keys=True)
+    )
+    with engine._connect() as conn:
+        conn.execute(
+            "UPDATE projects SET source_text=?,source_hash=? WHERE id=?",
+            (
+                unverified_source_text,
+                hashlib.sha256(
+                    unverified_source_text.encode("utf-8")
+                ).hexdigest(),
+                pid,
+            ),
+        )
+    with patch.object(
+        engine,
+        "_openai_review",
+        side_effect=AssertionError("reviewer must not be reached"),
+    ):
+        assert not engine.can_run_terminal_identity_recovery_signoff(pid)
+        assert not engine.run_terminal_identity_recovery_signoff(pid)
+    assert engine.usage_summary(pid)["calls"] == 1
+    with engine._connect() as conn:
+        conn.execute(
+            "UPDATE projects SET source_text=?,source_hash=? WHERE id=?",
+            (
+                clean_source_text,
+                hashlib.sha256(
+                    clean_source_text.encode("utf-8")
+                ).hexdigest(),
+                pid,
+            ),
+        )
 
     with patch(
         "newswire_workbench.engine.audit_article",
@@ -1227,6 +2249,7 @@ def test_explicit_rebuild_reuses_active_project_then_rebuilds_terminal(tmp_path)
         "product": {
             "product_name": "Test Device",
             "official_url": "https://example.com",
+            "product_type": "device",
         },
         "all_artifacts": [{"artifact_id": "a1"}],
         "claims_by_type": _three_literal_claims(),
@@ -1438,6 +2461,7 @@ def test_invalid_legacy_package_is_automatically_rebuilt(tmp_path):
         "product": {
             "product_name": "Test Device",
             "official_url": "https://example.com",
+            "product_type": "device",
         },
         "all_artifacts": [{"artifact_id": "a1"}],
         "claims_by_type": _three_literal_claims(),
@@ -1832,10 +2856,14 @@ def test_zero_cost_final_candidate_uses_only_reserved_signoff(tmp_path):
                     "for the current device "
                 ) * 55
             ),
-            "artifact_id": "a1",
-            "source_class": "official_vendor",
-            "review_status": "unreviewed",
-            "metadata": {"excerpt_is_literal": True},
+                "artifact_id": "a1",
+                "source_class": "official_vendor",
+                "review_status": "accepted",
+                "reviewed_by": "Test Human Reviewer",
+                "metadata": {
+                    "excerpt_is_literal": True,
+                    "fact_key": "key_features",
+                },
         }
         for index in range(3)
     ]
@@ -2610,6 +3638,15 @@ def test_offline_preflight_does_not_claim_ready_without_exact_semantic_approval(
                 "id": "S1",
                 "category": "Semantic editorial review",
                 "issue": "The comparison angle still overlaps the prior release.",
+                "exact_text": (
+                    "EcoWatt product details, setup, price, best fit, and "
+                    "material limitations are explained in plain language "
+                    "for buyers."
+                ),
+                "replacement": (
+                    "Reframe this section around a source-grounded product "
+                    "setup question that the prior release did not answer."
+                ),
             }],
             "reviewed_article_hash": p["article_hash"],
         },
@@ -2621,6 +3658,103 @@ def test_offline_preflight_does_not_claim_ready_without_exact_semantic_approval(
     assert preflight["semantic_review"]["passed"] is False
     assert preflight["semantic_review"]["unresolved_edits"][0]["id"] == "S1"
     assert preflight["ready_for_packaging"] is False
+
+
+def test_publication_ready_requires_current_policy_and_valid_export(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    snapshot = "a" * 64
+    pid = engine.create_project(
+        "Delivery Ready Device",
+        "AccessNewsWire",
+        f"Snapshot hash: {snapshot}",
+        "device",
+    )
+    article = "<p>Current exact delivery artifact.</p>"
+    engine.import_manual_article(pid, article)
+    project = engine.get(pid)
+    engine._set_report(
+        project,
+        {
+            "verdict": "approved",
+            "mandatory_count": 0,
+            "mandatory_edits": [],
+            "reviewed_article_hash": project["article_hash"],
+            "approval_purpose": "final_signoff",
+        },
+        "package_ready",
+        "approval.json",
+    )
+    project = engine.get(pid)
+    raw_article_hash = hashlib.sha256(
+        project["article_text"].encode("utf-8")
+    ).hexdigest()
+    with engine._connect() as conn:
+        conn.execute(
+            """INSERT INTO wordpress_drafts(
+                project_id,site_url,post_id,article_hash,remote_content_hash,
+                post_type,remote_status,edit_url,updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?)""",
+            (
+                pid,
+                "https://example.com",
+                123,
+                project["article_hash"],
+                raw_article_hash,
+                "post",
+                "draft",
+                "https://example.com/edit/123",
+                "2026-07-30T00:00:00+00:00",
+            ),
+        )
+    engine.export_path(pid).write_bytes(b"package checked by focused mock")
+    clean_audit = {
+        "passed": True,
+        "blockers": [],
+        "recommendations": [],
+    }
+    clean_ledger = {
+        "passed": True,
+        "coverage_violations": [],
+        "attribution_violations": [],
+        "grounding_violations": [],
+        "cta_integrity_violations": [],
+    }
+
+    def run_preflight(*, current, valid_export):
+        with patch(
+            "newswire_workbench.engine.audit_article",
+            return_value=dict(clean_audit),
+        ), patch(
+            "article_provenance.extract_sealed_pack",
+            return_value={},
+        ), patch(
+            "article_provenance.build_article_claim_ledger",
+            return_value=dict(clean_ledger),
+        ), patch(
+            "policy_intelligence.policy_status",
+            return_value={
+                "current": current,
+                "snapshot_hash": snapshot,
+            },
+        ), patch.object(
+            engine,
+            "_package_export_is_current",
+            return_value=valid_export,
+        ):
+            return engine.offline_preflight(pid)
+
+    ready = run_preflight(current=True, valid_export=True)
+    assert ready["publication_ready"] is True
+    assert ready["pre_run_authorized"] is True
+    assert ready["package_export"]["exact_hash_match"] is True
+
+    missing_export = run_preflight(current=True, valid_export=False)
+    assert missing_export["publication_ready"] is False
+    assert missing_export["package_export"]["exact_hash_match"] is False
+
+    stale_policy = run_preflight(current=False, valid_export=True)
+    assert stale_policy["publication_ready"] is False
+    assert stale_policy["pre_run_authorized"] is False
 
 
 def test_unsourced_categorical_background_triggers_source_grounding_gate():
@@ -3095,7 +4229,8 @@ def test_compliance_repair_ceiling_escalates_to_quality_rescue(tmp_path):
         "mandatory_count": 1,
         "mandatory_edits": [{
             "id": "M1", "category": "Quality",
-            "issue": "Repair the article.", "exact_text": "",
+            "issue": "Repair the article.",
+            "exact_text": "Compensation may be received.",
             "replacement": "Rebuild it.",
         }],
         "recommended_edits": [], "approved_elements": [], "notes": [],
@@ -3200,6 +4335,160 @@ def test_contradictory_paid_reviewer_report_is_quarantined_not_replayed(
     )
 
 
+def test_system_augmented_blockers_are_actionable_and_apply_once(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "System Augmentation",
+        "AccessNewsWire",
+        "legacy device source",
+        vertical="device",
+    )
+    engine.import_manual_article(
+        pid,
+        "<p>Current article anchor for a missing provenance claim.</p>",
+    )
+    call_id = engine._record_llm_call(
+        pid,
+        "compliance",
+        route_for("compliance", "device"),
+        100,
+        100,
+        raw_output=json.dumps({
+            "verdict": "approved",
+            "mandatory_count": 0,
+            "mandatory_edits": [],
+            "recommended_edits": [],
+            "approved_elements": [],
+            "notes": [],
+        }),
+        lifecycle="provider_succeeded",
+    )
+    blank_deterministic_blocker = {
+        "id": "D18",
+        "category": "Editorial depth",
+        "issue": "The required reader coverage is incomplete.",
+        "exact_text": "",
+        "replacement": "Expand the exact missing reader-facing coverage.",
+    }
+    coverage_ledger = {
+        "passed": False,
+        "coverage_violations": [{
+            "id": "P-COVERAGE-PRICING",
+            "issue": "The available pricing claim is not represented.",
+        }],
+        "attribution_violations": [],
+        "grounding_violations": [],
+        "cta_integrity_violations": [],
+    }
+
+    with patch(
+        "newswire_workbench.engine.deterministic_findings",
+        return_value=[blank_deterministic_blocker],
+    ), patch(
+        "article_provenance.build_article_claim_ledger",
+        return_value=coverage_ledger,
+    ):
+        report = engine._openai_review(
+            engine.get(pid), final=False, purpose="compliance"
+        )
+
+    assert {
+        item["id"] for item in report["mandatory_edits"]
+    } == {"D18", "P-COVERAGE-1"}
+    for item in report["mandatory_edits"]:
+        assert all(
+            str(item.get(field) or "").strip()
+            for field in (
+                "id", "category", "issue", "exact_text", "replacement"
+            )
+        )
+    engine._validate_report(report)
+    engine._set_report(
+        engine.get(pid), report, "drafted", "system-augmented-review.json"
+    )
+    with engine._connect() as conn:
+        lifecycle = conn.execute(
+            "SELECT lifecycle FROM llm_calls WHERE id=?",
+            (call_id,),
+        ).fetchone()["lifecycle"]
+    assert lifecycle == "applied"
+    assert engine._latest_pending_call(pid, "compliance") is None
+
+
+def test_final_augmented_report_validation_consumes_failure_without_replay(
+    tmp_path,
+):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Final Augmentation Guard",
+        "AccessNewsWire",
+        "legacy device source",
+        vertical="device",
+    )
+    engine.import_manual_article(pid, "<p>Current exact article.</p>")
+    call_id = engine._record_llm_call(
+        pid,
+        "compliance",
+        route_for("compliance", "device"),
+        100,
+        100,
+        raw_output=json.dumps({
+            "verdict": "approved",
+            "mandatory_count": 0,
+            "mandatory_edits": [],
+            "recommended_edits": [],
+            "approved_elements": [],
+            "notes": [],
+        }),
+        lifecycle="provider_succeeded",
+    )
+    clean_ledger = {
+        "passed": True,
+        "coverage_violations": [],
+        "attribution_violations": [],
+        "grounding_violations": [],
+        "cta_integrity_violations": [],
+    }
+    original_validate = engine._validate_report
+    validation_count = 0
+
+    def fail_only_final_validation(report):
+        nonlocal validation_count
+        validation_count += 1
+        original_validate(report)
+        if validation_count == 2:
+            raise ValueError("synthetic post-augmentation failure")
+
+    with patch.object(
+        engine,
+        "_validate_report",
+        side_effect=fail_only_final_validation,
+    ), patch(
+        "newswire_workbench.engine.deterministic_findings",
+        return_value=[],
+    ), patch(
+        "article_provenance.build_article_claim_ledger",
+        return_value=clean_ledger,
+    ), pytest.raises(RuntimeError, match="local deterministic augmentation"):
+        engine._openai_review(
+            engine.get(pid), final=False, purpose="compliance"
+        )
+
+    assert validation_count == 2
+    assert engine.get(pid)["stage"] == "admin_review"
+    with engine._connect() as conn:
+        lifecycle = conn.execute(
+            "SELECT lifecycle FROM llm_calls WHERE id=?",
+            (call_id,),
+        ).fetchone()["lifecycle"]
+    assert lifecycle == "invalid"
+    assert engine._latest_pending_call(pid, "compliance") is None
+    assert any(
+        event["event_type"] == "system_augmented_report_invalid"
+        for event in engine.events(pid)
+    )
+
+
 def test_invalid_required_reviewer_call_gets_a_fresh_transaction_owner(
     tmp_path,
 ):
@@ -3260,10 +4549,14 @@ def test_provenance_repair_receives_exact_permitted_claim_text(tmp_path):
             "feature": [
                 {
                     "text": text,
-                    "artifact_id": "a1",
-                    "source_class": "official_vendor",
-                    "review_status": "unreviewed",
-                    "metadata": {"excerpt_is_literal": True},
+                        "artifact_id": "a1",
+                        "source_class": "official_vendor",
+                        "review_status": "accepted",
+                        "reviewed_by": "Test Human Reviewer",
+                        "metadata": {
+                            "excerpt_is_literal": True,
+                            "fact_key": "key_features",
+                        },
                 }
                 for text in claim_texts
             ]
@@ -3601,7 +4894,9 @@ def test_short_first_draft_reaches_compliance_before_writer_repair(
             "id": "M1",
             "category": "Editorial depth",
             "issue": "Expand source-grounded reader coverage.",
-            "exact_text": "",
+            "exact_text": (
+                "Seller materials state Literal product fact 0."
+            ),
             "replacement": "Use all permitted claims and reader questions.",
         }],
         "recommended_edits": [],
@@ -3648,7 +4943,10 @@ def test_rejected_repair_candidate_preserves_canonical_and_review(tmp_path):
         "mandatory_count": 1,
         "mandatory_edits": [{
             "id": "M1", "category": "Source accuracy",
-            "issue": "Remove unsupported claims.", "exact_text": "",
+            "issue": "Remove unsupported claims.",
+            "exact_text": (
+                "Seller materials state Literal product fact 0."
+            ),
             "replacement": "Use only sealed facts.",
         }],
         "recommended_edits": [], "approved_elements": [], "notes": [],
@@ -4419,8 +5717,7 @@ def test_request_started_is_durable_billable_and_never_replayed(tmp_path):
     pid = engine.create_project(
         "Test",
         "AccessNewsWire",
-        "═══ SEALED CURRENT-PRODUCT SOURCE PACK — FACTS ONLY ═══\n"
-        "device source",
+        "legacy device source",
         "device",
     )
     route = route_for("draft", "device")
@@ -4429,11 +5726,14 @@ def test_request_started_is_durable_billable_and_never_replayed(tmp_path):
     )
     assert engine.usage_summary(pid)["calls"] == 1
     assert engine._billable_call_count(pid, "draft") == 1
-    assert engine.prepare_queue_execution(
-        pid,
-        queue_job_id="reclaimed-job",
-        reclaim_attempt=2,
-    ) is False
+    with patch.object(
+        engine, "_uses_locked_call_path", return_value=True
+    ):
+        assert engine.prepare_queue_execution(
+            pid,
+            queue_job_id="reclaimed-job",
+            reclaim_attempt=2,
+        ) is False
     assert engine.get(pid)["stage"] == "admin_review"
     with engine._connect() as conn:
         lifecycle = conn.execute(
@@ -4444,6 +5744,66 @@ def test_request_started_is_durable_billable_and_never_replayed(tmp_path):
         event["event_type"] == "ambiguous_provider_request_quarantined"
         for event in engine.events(pid)
     )
+
+
+def test_provider_begin_rechecks_authority_before_recording_request(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Test", "AccessNewsWire", "legacy device source", "device"
+    )
+    blocker = {
+        "id": "POLICY-SNAPSHOT",
+        "issue": "The authoritative policy snapshot changed.",
+    }
+
+    with patch.object(
+        engine, "_prepaid_contract_blockers", return_value=[blocker]
+    ):
+        with pytest.raises(RuntimeError, match="policy authority"):
+            engine._begin_llm_call(
+                pid, "draft", route_for("draft", "device"), "request-hash"
+            )
+
+    assert engine.usage_summary(pid)["calls"] == 0
+    assert engine.usage_summary(pid)["attempts"] == 0
+    assert engine.get(pid)["stage"] == "admin_review"
+    event = [
+        item for item in engine.events(pid)
+        if item["event_type"] == "provider_authority_blocked"
+    ][-1]
+    assert json.loads(event["payload"])["blockers"] == [blocker]
+
+
+def test_paid_response_replay_precedes_new_authority_check(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    pid = engine.create_project(
+        "Test", "AccessNewsWire", "legacy device source", "device"
+    )
+    prompt = "exact replay request"
+    route = route_for("draft", "device")
+    engine._record_llm_call(
+        pid,
+        "draft",
+        route,
+        100,
+        100,
+        raw_output="<p>Durable paid response.</p>",
+        lifecycle="provider_succeeded",
+        request_hash=hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+    )
+
+    with patch.object(
+        engine,
+        "_prepaid_contract_blockers",
+        side_effect=AssertionError(
+            "a durable provider response must replay before a new-call gate"
+        ),
+    ):
+        assert engine._claude(prompt, pid, "draft", "device") == (
+            "<p>Durable paid response.</p>"
+        )
+
+    assert engine.usage_summary(pid)["calls"] == 1
 
 
 def test_paid_review_response_replays_and_applies_without_second_call(
@@ -4719,7 +6079,12 @@ def test_recurring_review_issues_become_memory(tmp_path):
         p = engine.get(pid)
         report = {"verdict": "not_approved", "mandatory_count": 1,
                   "mandatory_edits": [{"id": f"M{n}", "category": "Affiliate wording",
-                  "issue": "Partner URL needs neutral disclosure", "exact_text": "", "replacement": ""}],
+                  "issue": "Partner URL needs neutral disclosure",
+                  "exact_text": "Paid Advertorial",
+                  "replacement": (
+                      "Paid Advertorial: compensation may be received through "
+                      "partner links."
+                  )}],
                   "recommended_edits": [], "approved_elements": [],
                   "reviewed_article_hash": p["article_hash"]}
         engine._set_report(p, report, "compliance_reviewed", f"r{n}.json")
@@ -5156,6 +6521,7 @@ def test_forced_rebuild_keeps_stable_fact_source_identity(tmp_path):
         "product": {
             "product_name": "Test Device",
             "official_url": "https://example.com",
+            "product_type": "device",
         },
         "all_artifacts": [{"artifact_id": "a1"}],
         "claims_by_type": _three_literal_claims(),
@@ -5297,15 +6663,22 @@ def test_nonblocking_house_format_target_cannot_block_wordpress_handoff(
         "title_raw": "Test",
         "content_raw": p["article_text"],
     }
+    package_path = engine.export_path(pid)
+    package_path.write_bytes(b"verified by focused package-boundary mock")
     with patch(
         "newswire_workbench.engine.deterministic_findings",
         return_value=style_finding,
     ), patch(
         "newswire_workbench.wordpress.WordPressDraftPublisher",
         return_value=publisher,
+    ), patch.object(
+        engine, "_ensure_package_export", return_value=package_path,
+    ) as ensure_export, patch.object(
+        engine, "_package_export_is_current", return_value=True,
     ):
         result = engine.send_to_wordpress_draft(pid)
     assert result["post_id"] == 123
+    ensure_export.assert_called_once()
 
 
 def test_deterministic_publication_defects_self_repair_without_admin(tmp_path):
@@ -5787,8 +7160,12 @@ def _prompt_budget_pack(claim_text, product_name="Budget Probe Device"):
                     "text": f"{claim_text} {number}",
                     "artifact_id": "a1",
                     "source_class": "official_vendor",
-                    "review_status": "unreviewed",
-                    "metadata": {"excerpt_is_literal": True},
+                    "review_status": "accepted",
+                    "reviewed_by": "Test Human Reviewer",
+                    "metadata": {
+                        "excerpt_is_literal": True,
+                        "fact_key": "key_features",
+                    },
                 }
                 for number in range(3)
             ]
@@ -5900,6 +7277,7 @@ def test_oversized_pack_blocks_all_paid_entrypoints_before_attempt(
     ]
     assert len(blocked_events) == 1
     payload = json.loads(blocked_events[0]["payload"])
+    assert payload["budget_block_schema"] == 2
     assert payload["blocked_stage"] == "source_ready"
     assert payload["paid_call_started"] is False
     assert "PROMPT-BUDGET" in {
@@ -6278,6 +7656,7 @@ def test_postdraft_prompt_block_records_prior_paid_usage_truthfully(
         if event["event_type"] == "prepaid_contract_blocked"
     )
     payload = json.loads(event["payload"])
+    assert payload["budget_block_schema"] == 2
     assert payload["blocked_stage"] == "drafted"
     assert payload["paid_calls_before_block"] == 1
     assert payload["paid_attempts_before_block"] == 1

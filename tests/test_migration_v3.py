@@ -23,8 +23,8 @@ def tmp_db():
 
 
 class TestMigrationV3:
-    def test_schema_version_is_6(self):
-        assert CURRENT_SCHEMA_VERSION == 6
+    def test_schema_version_is_8(self):
+        assert CURRENT_SCHEMA_VERSION == 8
 
     def test_offerings_table_exists(self, tmp_db):
         db, path = tmp_db
@@ -147,7 +147,7 @@ class TestMigrationV5:
             # Re-open — v5 migration should create the audit table
             db2 = ProductDatabase(db_path=path)
             ver = db2.conn.execute("PRAGMA user_version").fetchone()[0]
-            assert ver == 6
+            assert ver == CURRENT_SCHEMA_VERSION
 
             # Audit table should now exist
             row = db2.conn.execute(
@@ -204,7 +204,7 @@ class TestMigrationV5:
             # Re-open — v6 migration should add the triggers
             db2 = ProductDatabase(db_path=path)
             ver = db2.conn.execute("PRAGMA user_version").fetchone()[0]
-            assert ver == 6
+            assert ver == CURRENT_SCHEMA_VERSION
 
             triggers = db2.conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='trigger' "

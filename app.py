@@ -49,6 +49,29 @@ def _cached_admin_review_action(
     return WorkbenchEngine(workbench_root).admin_review_action(project_id)
 
 
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_source_verification_queue(db_path):
+    """Cache the CRM claim-verification backlog migrated into v3."""
+    from database import ProductDatabase
+
+    return ProductDatabase(db_path=db_path).list_source_verification_queue()
+
+
+def _raw_product_research_json(database, product_key):
+    """Read the exact stored source record without attempting JSON decoding."""
+    row = database.conn.execute(
+        """SELECT research_json FROM products
+        WHERE product_key=? LIMIT 1""",
+        (str(product_key or ""),),
+    ).fetchone()
+    if not row:
+        return ""
+    try:
+        return str(row["research_json"] or "")
+    except (IndexError, KeyError, TypeError):
+        return str(row[0] or "")
+
+
 # ── Dark theme CSS overrides ──
 st.markdown("""
 <style>
@@ -314,6 +337,128 @@ if CRM_AVAILABLE and db:
     )
 
 try:
+    _source_verification_queue = (
+        _cached_source_verification_queue(str(db.db_path))
+        if CRM_AVAILABLE and db
+        else []
+    )
+except Exception:
+    _source_verification_queue = []
+    st.sidebar.error(
+        "Source verification queue could not be loaded. Its backlog may be "
+        "incomplete; retry before approving or publishing source-gated work."
+    )
+if _source_verification_queue:
+    with st.sidebar.expander(
+        "🧾 Source verification queue — "
+        f"{len(_source_verification_queue)} waiting",
+        expanded=True,
+    ):
+        _verification_labels = {
+            item["product_key"]: (
+                f"{item['product_name']} · "
+                + ", ".join(item["unverified_mandatory_facts"])
+            )
+            for item in _source_verification_queue
+        }
+        _selected_verification_key = st.selectbox(
+            "Product source record",
+            list(_verification_labels),
+            index=None,
+            placeholder="Select a product to review",
+            format_func=_verification_labels.get,
+            key="source_verification_queue",
+        )
+        if _selected_verification_key:
+            _selected_verification = next(
+                item for item in _source_verification_queue
+                if item["product_key"] == _selected_verification_key
+            )
+            st.markdown(
+                f"**{_selected_verification['action_label']}**"
+            )
+            if _selected_verification["action"] == "review_source_claims":
+                st.caption(
+                    "Paid drafting is blocked. Open the source record and use "
+                    "Update Report to enter claim-level review."
+                )
+            elif _selected_verification["action"] == "repair_source_contract":
+                st.error(
+                    _selected_verification.get("repair_reason")
+                    or "The stored source contract is malformed or cannot be "
+                    "validated."
+                )
+                st.caption(
+                    "Paid drafting is blocked. Download the exact immutable "
+                    "stored record, repair it outside the live database, then "
+                    "use Update Report to validate and reseal the replacement. "
+                    "This is a source-contract repair, not a missing-ledger "
+                    "claim review."
+                )
+                try:
+                    _raw_source_record = _raw_product_research_json(
+                        db, _selected_verification_key
+                    )
+                except Exception as _raw_source_error:
+                    _raw_source_record = ""
+                    st.error(
+                        "The raw source record could not be exported: "
+                        + str(_raw_source_error)
+                    )
+                if _raw_source_record:
+                    st.download_button(
+                        "Download Raw Source Record",
+                        data=_raw_source_record,
+                        file_name=(
+                            f"{_selected_verification_key}"
+                            "-source-contract-repair.json"
+                        ),
+                        mime="application/json",
+                        key="download_source_contract_repair",
+                        use_container_width=True,
+                    )
+            else:
+                st.caption(
+                    "Paid drafting is blocked. This legacy record has no "
+                    "product-scoped claim ledger yet; run Update Report once "
+                    "to rebuild that ledger before claim review."
+                )
+            if (
+                _selected_verification["action"]
+                != "repair_source_contract"
+            ):
+                if st.button(
+                    "Open Source Record",
+                    key="open_source_verification_record",
+                    use_container_width=True,
+                ):
+                    _verification_record = db.get_product(
+                        _selected_verification_key
+                    )
+                    if (
+                        _verification_record
+                        and _verification_record.get("research_data")
+                    ):
+                        st.session_state.result_data = (
+                            _verification_record["research_data"]
+                        )
+                        st.session_state.result_json_path = os.path.join(
+                            OUTPUT_DIR,
+                            f"{_selected_verification_key}_source.json",
+                        )
+                        st.session_state.form_values = (
+                            _build_form_values_from_result(
+                                _verification_record["research_data"]
+                            )
+                        )
+                        st.session_state.form_key += 1
+                        st.session_state.selected_product_key = (
+                            _selected_verification_key
+                        )
+                        st.session_state.show_form = False
+                        st.rerun()
+
+try:
     from config import NEWSWIRE_WORKBENCH_PATH
 
     _global_admin_queue = _cached_admin_review_queue(
@@ -323,6 +468,10 @@ except Exception:
     # The research CRM must remain usable if the separate workbench store is
     # unavailable. A queue-row lookup also guards individual corrupt projects.
     _global_admin_queue = []
+    st.sidebar.error(
+        "Admin review queue could not be loaded. Waiting transactions may be "
+        "hidden; retry before approving or publishing queued work."
+    )
 if _global_admin_queue:
     _oldest_admin_age = max(
         item.get("age_hours") or 0 for item in _global_admin_queue
@@ -784,6 +933,27 @@ if st.session_state.get("awaiting_review") and st.session_state.get("review_cont
                 placeholder="https://example.com/product-label",
                 key="evidence_url",
             )
+            relationship_label = st.selectbox(
+                "How is this source related to the seller?",
+                [
+                    "Classify from saved source URLs",
+                    "Independent third party",
+                    "Official brand or seller",
+                    "Authorized reseller or affiliate",
+                ],
+                help=(
+                    "A different domain is not automatically independent. "
+                    "Only choose independent third party after confirming the "
+                    "source is not controlled by the seller or its partners."
+                ),
+                key="evidence_source_relationship",
+            )
+            relationship_assertion = {
+                "Classify from saved source URLs": "",
+                "Independent third party": "third_party",
+                "Official brand or seller": "first_party",
+                "Authorized reseller or affiliate": "second_party",
+            }[relationship_label]
             if st.button("Fetch and Extract", key="btn_acquire_evidence"):
                 if not evidence_url.strip():
                     st.error("Please enter a URL.")
@@ -795,6 +965,7 @@ if st.session_state.get("awaiting_review") and st.session_state.get("review_cont
                             offering_id=ctx.get("offering_id", ""),
                             job_id=ctx.get("job_id", ""),
                             target_facts=list(missing_mandatory),
+                            relationship_assertion=relationship_assertion,
                         )
                         if result.get("facts_found"):
                             found_count = (
@@ -802,7 +973,7 @@ if st.session_state.get("awaiting_review") and st.session_state.get("review_cont
                                 + result.get("duplicates_skipped", 0)
                             )
                             st.success(
-                                f"Verified {found_count} evidence-backed claim(s) "
+                                f"Captured {found_count} source-backed claim(s) "
                                 f"from the URL ({', '.join(result['facts_found'])}). "
                                 "You can now approve to continue."
                             )
@@ -881,15 +1052,30 @@ if st.session_state.get("awaiting_review") and st.session_state.get("review_cont
                     except Exception as e:
                         st.error(f"Failed to save: {e}")
 
-    # ── Recovered claims needing explicit acceptance ──
-    # Show non-literal recovered claims for mandatory facts so the reviewer
-    # can accept or reject them before the pipeline proceeds.
-    # Scoped to: (a) has recovery_source metadata, (b) fact_key is in the
-    # offering's mandatory fact set, (c) non-literal, (d) unreviewed.
+    # ── Mandatory claims needing explicit acceptance ──
+    # Readiness v3 routes single-source mandatory facts here, including
+    # literal seller records and policy-automated substitutions. The reviewer
+    # acts on claims; blanket job approval cannot manufacture acceptance.
     try:
-        from claims import ClaimsLedger, ReviewStatus as _RS
+        from claims import (
+            ClaimsLedger,
+            ReviewStatus as _RS,
+            verify_review_attestation as _verify_review_attestation,
+        )
+        _review_offering_id = str(
+            ctx.get("offering_id", "") or ""
+        ).strip()
         _review_ledger = ClaimsLedger()
-        _all_claims = _review_ledger.get_claims(ctx.get("offering_id", ""))
+        _all_claims = (
+            _review_ledger.get_claims(_review_offering_id)
+            if _review_offering_id else []
+        )
+        if not _review_offering_id:
+            st.warning(
+                "This legacy source record has no stable offering identity. "
+                "Run Update Report once to build a product-scoped claim "
+                "ledger before reviewing claims."
+            )
 
         # Determine mandatory fact keys from the offering's intelligence pack
         _mandatory_fact_keys = set()
@@ -905,21 +1091,23 @@ if st.session_state.get("awaiting_review") and st.session_state.get("review_cont
 
         _needs_review = [
             c for c in _all_claims
-            if c.source_artifact_id  # Has artifact (not manual)
-            and (c.metadata.get("recovery_source")
-                 or c.metadata.get("image_ocr"))  # Recovery or uploaded label OCR
-            and not c.metadata.get("excerpt_is_literal", False)
-            and not c.metadata.get("artifact_transcription_verified", False)
-            and c.review_status == _RS.UNREVIEWED
+            if c.source_artifact_id
+            and c.review_status not in {
+                _RS.REJECTED,
+                _RS.CONFLICTED,
+            }
+            and not _verify_review_attestation(
+                c, pack_offering_id=_review_offering_id
+            )
             and (not _mandatory_fact_keys  # Show all if pack unavailable
                  or c.metadata.get("fact_key") in _mandatory_fact_keys)
         ]
         if _needs_review:
-            st.subheader("Recovered Claims Needing Review")
+            st.subheader("Mandatory Source Claims Needing Verification")
             st.info(
-                "These facts were extracted by AI but could not be literally "
-                "verified in the source page. Review each claim and accept "
-                "or reject it before approving."
+                "These claims do not yet have independent corroboration or a "
+                "named human acceptance. Review the source-linked statement "
+                "itself before continuing."
             )
             if "claim_review_actions" not in st.session_state:
                 st.session_state.claim_review_actions = {}
@@ -933,6 +1121,11 @@ if st.session_state.get("awaiting_review") and st.session_state.get("review_cont
                     f"{label}: {claim.claim_text}", expanded=True
                 ):
                     st.markdown(f"**Extracted text:** {claim.claim_text}")
+                    if claim.review_status == _RS.AUTO_SUBSTITUTED:
+                        st.warning(
+                            "This wording was substituted automatically for "
+                            "policy compliance. It is not human-verified."
+                        )
                     if src:
                         st.caption(f"Source: {src}")
                     if claim.exact_excerpt:
@@ -946,7 +1139,8 @@ if st.session_state.get("awaiting_review") and st.session_state.get("review_cont
                     col_a, col_r = st.columns(2)
                     with col_a:
                         if st.button(
-                            "Accept", key=f"accept_{claim.claim_id}",
+                            "Accept as Human Reviewer",
+                            key=f"accept_{claim.claim_id}",
                             type="primary", use_container_width=True,
                         ):
                             reviewer_n = st.session_state.get(
@@ -991,7 +1185,10 @@ if st.session_state.get("awaiting_review") and st.session_state.get("review_cont
                                 st.warning(f"Rejected: {claim.claim_text}")
                                 st.rerun()
     except Exception:
-        pass  # Claims module not available or no claims to review
+        st.error(
+            "Mandatory source claims could not be loaded. Claim review is "
+            "unavailable; do not approve this record until the queue reloads."
+        )
 
     st.divider()
 
@@ -2145,7 +2342,10 @@ else:
         "contact_information": _structured_contact_information,
         "refund_terms": rd_refund_terms or "",
     }
-    from source_pack_contract import seal_source_pack
+    from source_pack_contract import (
+        requires_source_verification,
+        seal_source_pack,
+    )
     _publication_pack = seal_source_pack(data)
     _quick_prompt = build_l6_press_release_prompt(
         _publication_pack, _quick_intake
@@ -2154,6 +2354,9 @@ else:
     _quick_json = json.dumps(_publication_pack, indent=2, default=str)
     _pack_contract = _publication_pack["source_pack_contract"]
     _pack_readiness = _pack_contract["readiness"]
+    _source_verification_required = requires_source_verification(
+        _publication_pack
+    )
     from newswire_workbench import (
         WORKBENCH_RUNTIME_REVISION,
         WORKBENCH_SOURCE_CONTEXT_VERSION,
@@ -2169,11 +2372,22 @@ else:
             "and independent article review."
         )
     elif _pack_readiness == "limited":
-        st.warning(
-            "Source pack sealed with documented gaps. Automation will omit "
-            "unavailable facts and continue without questions; sealing does "
-            "not independently verify captured claims."
-        )
+        if _source_verification_required:
+            _unverified = _pack_contract.get(
+                "unverified_mandatory_facts"
+            ) or []
+            st.warning(
+                "Automated drafting is paused for claim-level source "
+                "verification. A named reviewer must accept, or an "
+                "independent source must corroborate: "
+                + ", ".join(_unverified)
+                + ". Use Update Report to enter the review queue."
+            )
+        else:
+            st.warning(
+                "Source pack sealed with documented data gaps. Automation "
+                "will omit unavailable non-mandatory facts and continue."
+            )
     else:
         _readiness_reasons = _pack_contract.get("readiness_reasons") or []
         st.error(
@@ -2229,7 +2443,11 @@ else:
     elif "globe" in rd_platform.lower():
         _newswire_platform = "Globe Newswire"
 
-    if _newswire_platform and _pack_readiness != "blocked":
+    if (
+        _newswire_platform
+        and _pack_readiness != "blocked"
+        and not _source_verification_required
+    ):
         st.markdown("#### Build Compliant Newswire Draft")
         st.caption(
             "Uses the sealed source pack, banked publisher precedents, and the "
@@ -2564,6 +2782,7 @@ else:
                     or _action_name in {
                         "human_decision", "system_blocked",
                         "refresh_source_policy",
+                        "review_reviewer_scope_failure",
                     }
                 ),
                 key=f"build_newswire_{product_key or _quick_slug}",

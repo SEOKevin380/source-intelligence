@@ -20,6 +20,7 @@ from copy import deepcopy
 from typing import Optional
 from urllib.parse import urlparse
 
+from evidence import EvidenceIntegrityError
 from source_pack_contract import normalize_contact_information
 from workflow import Job, PipelineStage, ReviewBlockError
 
@@ -498,13 +499,33 @@ def handle_acquire(job: Job) -> dict:
                         label_bytes = label_file.read()
                 else:
                     from net import safe_fetch
-                    result = safe_fetch(label_url, max_bytes=5_000_000)
+                    result = safe_fetch(
+                        label_url,
+                        max_bytes=5_000_000,
+                        allow_tls_fallback=False,
+                    )
+                    if (
+                        result.error
+                        or not 200 <= int(result.status_code or 0) < 400
+                        or not result.content
+                    ):
+                        raise ValueError(
+                            result.error
+                            or f"Label image fetch returned HTTP "
+                            f"{result.status_code}"
+                        )
                     label_bytes = result.content
                 if label_bytes:
                     aid = acq.store_label_image(
                         label_bytes,
                         source_description=label_url,
-                        source_url=job.metadata.get("label_source_url", ""),
+                        source_url=(
+                            job.metadata.get("label_source_url", "")
+                            or label_url
+                        ),
+                        fetch_result=(
+                            None if os.path.isfile(label_url) else result
+                        ),
                     )
                     stored_artifacts.append({"artifact_id": aid, "type": "label_image"})
                     source_manifest.append({
@@ -1193,7 +1214,11 @@ def _merge_manifest_with_claim_sources(
 
 def _product_data_from_verified_claims(job: Job, base_product: dict) -> dict:
     """Project verified label claims back into structured product data."""
-    from claims import ClaimsLedger, ReviewStatus
+    from claims import (
+        ClaimsLedger,
+        ReviewStatus,
+        verify_review_attestation,
+    )
 
     # Unit-created and legacy jobs may not yet have an offering identity. There
     # cannot be ledger claims for an empty identity, and opening the default
@@ -1215,7 +1240,9 @@ def _product_data_from_verified_claims(job: Job, base_product: dict) -> dict:
         meta = claim.metadata or {}
         verified = bool(
             meta.get("artifact_transcription_verified")
-            or claim.review_status == ReviewStatus.ACCEPTED
+            or verify_review_attestation(
+                claim, pack_offering_id=job.offering_id
+            )
         )
         if not verified:
             continue
@@ -1956,7 +1983,10 @@ def handle_extract(job: Job) -> dict:
             pass  # Intelligence packs not available; skip generic extraction
 
         if claims_batch:
-            ids = ledger.add_claims_batch(claims_batch)
+            ids = ledger.add_claims_batch(
+                claims_batch,
+                attest_literal_evidence=True,
+            )
             claims_stored = len(ids)
 
     except ImportError:
@@ -2061,8 +2091,110 @@ def _validate_recovery_context(offering_id: str, job_id: str,
     return job
 
 
+def _classify_recovery_source(url: str, job: "Job",
+                              relationship_assertion: str = "") -> tuple:
+    """Classify a recovery URL without promoting seller copy to independent.
+
+    Saved official, label, VSL, and affiliate URLs are the authority for
+    first/second-party relationships. A previously unknown URL is accepted as
+    third-party only when the operator explicitly asserts that relationship.
+    A same-site seller URL always wins over a contradictory assertion.
+    """
+    from evidence import SourceClass, SourceRelationship
+
+    candidate = str(url or "").strip()
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise RecoveryError("Recovery URL must be an absolute HTTP(S) URL")
+
+    metadata = job.metadata if isinstance(job.metadata, dict) else {}
+    official_urls = [
+        str(value or "").strip()
+        for value in (
+            job.url,
+            metadata.get("label_source_url", ""),
+            metadata.get("vsl_url", ""),
+        )
+        if str(value or "").strip()
+    ]
+    affiliate_url = str(metadata.get("affiliate_link", "") or "").strip()
+
+    if any(
+        _same_source_url(candidate, known)
+        or _same_site(candidate, known)
+        for known in official_urls
+    ):
+        return SourceClass.OFFICIAL_VENDOR, SourceRelationship.FIRST_PARTY
+
+    if affiliate_url and (
+        _same_source_url(candidate, affiliate_url)
+        or _same_site(candidate, affiliate_url)
+    ):
+        return (
+            SourceClass.AUTHORIZED_RESELLER,
+            SourceRelationship.SECOND_PARTY,
+        )
+
+    asserted = str(relationship_assertion or "").strip().casefold()
+    aliases = {
+        "third_party": SourceRelationship.THIRD_PARTY,
+        "independent": SourceRelationship.THIRD_PARTY,
+        "independent_third_party": SourceRelationship.THIRD_PARTY,
+        "first_party": SourceRelationship.FIRST_PARTY,
+        "official": SourceRelationship.FIRST_PARTY,
+        "second_party": SourceRelationship.SECOND_PARTY,
+        "authorized_reseller": SourceRelationship.SECOND_PARTY,
+    }
+    relationship = aliases.get(asserted)
+    if relationship == SourceRelationship.THIRD_PARTY:
+        host = (parsed.hostname or "").lower().removeprefix("www.")
+        regulatory_hosts = (
+            "fda.gov",
+            "ftc.gov",
+            "sec.gov",
+            "clinicaltrials.gov",
+        )
+        peer_reviewed_hosts = (
+            "pubmed.ncbi.nlm.nih.gov",
+            "ncbi.nlm.nih.gov",
+        )
+        if any(
+            host == authority or host.endswith("." + authority)
+            for authority in regulatory_hosts
+        ):
+            return SourceClass.REGULATORY_DATABASE, relationship
+        if any(
+            host == authority or host.endswith("." + authority)
+            for authority in peer_reviewed_hosts
+        ):
+            return SourceClass.PEER_REVIEWED, relationship
+        raise RecoveryError(
+            "This URL is not on a validated independent authority route. "
+            "Use the research-source workflow for independent lab, journal, "
+            "or news evidence; recovery cannot self-declare a page "
+            "independent."
+        )
+    if relationship == SourceRelationship.FIRST_PARTY:
+        raise RecoveryError(
+            "The URL is not on a saved official, label, or VSL source. "
+            "Update the product's official source record before treating it "
+            "as first-party evidence."
+        )
+    if relationship == SourceRelationship.SECOND_PARTY:
+        raise RecoveryError(
+            "The URL does not match the saved affiliate/reseller source. "
+            "Update the authorized reseller record before recovery."
+        )
+    raise RecoveryError(
+        "The relationship of this URL to the seller is not established. "
+        "Select independent third party only after confirming the source is "
+        "not the seller, its affiliate, or an authorized reseller."
+    )
+
+
 def recover_evidence(url: str, offering_id: str, job_id: str,
-                     target_facts: list, db_path: str = "") -> dict:
+                     target_facts: list, db_path: str = "",
+                     relationship_assertion: str = "") -> dict:
     """Backend handler for evidence recovery — single fetch, full provenance.
 
     Validates job/offering ownership and state before fetching.
@@ -2100,11 +2232,6 @@ def recover_evidence(url: str, offering_id: str, job_id: str,
         )
         raise
 
-    _log_recovery_audit(
-        "recovery_attempt", offering_id, job_id,
-        db_path=db_path, url=url, target_facts=list(target_facts),
-    )
-
     lake = EvidenceLake(db_path=effective_db)
     acq = Acquirer(lake, offering_id=offering_id, job_id=job_id)
 
@@ -2114,12 +2241,37 @@ def recover_evidence(url: str, offering_id: str, job_id: str,
     image_exts = (".png", ".jpg", ".jpeg", ".webp", ".gif")
     is_label_image = url.lower().split("?", 1)[0].endswith(image_exts)
     image_ocr_data = None
+    source_class, source_relationship = _classify_recovery_source(
+        url, recovery_job, relationship_assertion
+    )
+    # A label is seller evidence, never an independence shortcut. Unknown or
+    # reseller image URLs must first be added to the saved source record.
+    if (
+        is_label_image
+        and source_relationship != SourceRelationship.FIRST_PARTY
+    ):
+        raise RecoveryError(
+            "Label recovery is limited to a saved first-party label or "
+            "official seller URL"
+        )
+
+    _log_recovery_audit(
+        "recovery_attempt", offering_id, job_id,
+        db_path=db_path, url=url, target_facts=list(target_facts),
+        result=(
+            f"{source_class.value}/{source_relationship.value}"
+        ),
+    )
 
     # Single fetch — artifact stores this exact response
     try:
         if is_label_image:
             from net import safe_fetch
-            image_result = safe_fetch(url, max_bytes=5_000_000)
+            image_result = safe_fetch(
+                url,
+                max_bytes=5_000_000,
+                allow_tls_fallback=False,
+            )
             if image_result.error or image_result.status_code != 200 \
                     or not image_result.content:
                 raise ValueError(
@@ -2131,6 +2283,7 @@ def recover_evidence(url: str, offering_id: str, job_id: str,
                 source_description=url,
                 source_url=url,
                 phase="EVIDENCE_RECOVERY",
+                fetch_result=image_result,
             )
             suffix = os.path.splitext(url.split("?", 1)[0])[1] or ".png"
             tmp_path = ""
@@ -2145,10 +2298,31 @@ def recover_evidence(url: str, offering_id: str, job_id: str,
                     os.unlink(tmp_path)
             text_content = ""  # Images have no literal text excerpt.
         else:
-            art_id, text_content = acq.fetch_third_party(
-                url, phase="EVIDENCE_RECOVERY",
-                notes="Recovery fetch for missing mandatory facts",
-            )
+            if source_relationship == SourceRelationship.FIRST_PARTY:
+                art_id, text_content = acq.fetch_official_page(
+                    url, phase="EVIDENCE_RECOVERY",
+                )
+            elif source_relationship == SourceRelationship.SECOND_PARTY:
+                art_id, text_content = acq.fetch_authorized_reseller(
+                    url, phase="EVIDENCE_RECOVERY",
+                )
+            elif source_class == SourceClass.REGULATORY_DATABASE:
+                art_id, text_content = acq.fetch_regulatory(
+                    url,
+                    source_name="Validated recovery authority",
+                    phase="EVIDENCE_RECOVERY",
+                )
+            elif source_class == SourceClass.PEER_REVIEWED:
+                art_id, text_content = acq.fetch_peer_reviewed(
+                    url,
+                    source_name="Validated recovery authority",
+                    phase="EVIDENCE_RECOVERY",
+                )
+            else:
+                raise RecoveryError(
+                    "Independent recovery source has no validated authority "
+                    "acquisition route."
+                )
     except Exception as fetch_err:
         _log_recovery_audit(
             "recovery_failure", offering_id, job_id,
@@ -2160,6 +2334,42 @@ def recover_evidence(url: str, offering_id: str, job_id: str,
     # Load artifact properties for authority scoring
     source_artifact = lake.get(art_id)
     if source_artifact:
+        if not is_label_image:
+            final_source_url = (
+                source_artifact.final_url
+                or source_artifact.source_url
+                or url
+            )
+            try:
+                final_class, final_relationship = (
+                    _classify_recovery_source(
+                        final_source_url,
+                        recovery_job,
+                        relationship_assertion,
+                    )
+                )
+            except RecoveryError as redirect_error:
+                _log_recovery_audit(
+                    "recovery_failure",
+                    offering_id,
+                    job_id,
+                    db_path=db_path,
+                    url=url,
+                    target_facts=list(target_facts),
+                    artifact_id=art_id,
+                    error=f"Redirect provenance failed: {redirect_error}",
+                )
+                raise
+            if (
+                final_class != source_class
+                or final_relationship != source_relationship
+            ):
+                raise RecoveryError(
+                    "Recovery source changed authority classification after "
+                    f"redirect ({source_class.value}/"
+                    f"{source_relationship.value} → {final_class.value}/"
+                    f"{final_relationship.value}); no claims were created."
+                )
         sc = SourceClass(source_artifact.source_class) \
             if isinstance(source_artifact.source_class, str) \
             else source_artifact.source_class
@@ -2282,13 +2492,19 @@ def recover_evidence(url: str, offering_id: str, job_id: str,
                     # the same immutable image upgrades metadata in place.
                     if is_label_image:
                         existing_claim = existing_by_key.get(dedup_key)
-                        if existing_claim:
-                            existing_claim.extraction_method = "machine_ocr"
-                            existing_claim.metadata["image_ocr"] = True
-                            existing_claim.metadata[
-                                "artifact_transcription_verified"
-                            ] = True
-                            ledger.add_claim(existing_claim)
+                        if (
+                            existing_claim
+                            and existing_claim.review_status
+                            != ReviewStatus.ACCEPTED
+                        ):
+                            ledger.update_evidence_metadata(
+                                existing_claim.claim_id,
+                                extraction_method="machine_ocr",
+                                metadata_updates={
+                                    "image_ocr": True,
+                                    "artifact_transcription_verified": True,
+                                },
+                            )
                     duplicates_skipped += 1
                     claims_created_for_fact += 1  # Count as found
                     continue
@@ -2330,6 +2546,7 @@ def recover_evidence(url: str, offering_id: str, job_id: str,
                         ),
                         "excerpt_is_literal": bool(excerpt),
                         "recovery_source": url,
+                        "source_relationship": sr.value,
                         "image_ocr": is_label_image,
                         "artifact_transcription_verified": is_label_image,
                         "source_of_record": True,
@@ -2338,7 +2555,7 @@ def recover_evidence(url: str, offering_id: str, job_id: str,
                             else "submitted_page_contents"
                         ),
                     },
-                ))
+                ), attest_literal_evidence=True)
                 existing_keys.add(dedup_key)
                 claims_added += 1
                 claims_created_for_fact += 1
@@ -2970,9 +3187,11 @@ def handle_review(job: Job) -> dict:
                 quarantined_rules.append(rule_id or "unnamed_rule")
         substitution_audit = []
         if automatic_substitutions:
+            from claims import ReviewStatus
             substitution_audit = _apply_substitutions(
                 job, automatic_substitutions, results,
                 "source-intelligence-automation",
+                replacement_status=ReviewStatus.AUTO_SUBSTITUTED,
             )
         return {
             "auto_approved": True,
@@ -3045,8 +3264,10 @@ def handle_review(job: Job) -> dict:
 
             if resolved_rules and not unresolved and not invalid and not reasons:
                 # Apply substitutions: reject matched claims, create replacements
+                from claims import ReviewStatus
                 substitution_audit = _apply_substitutions(
-                    job, resolved_rules, results, reviewer
+                    job, resolved_rules, results, reviewer,
+                    replacement_status=ReviewStatus.ACCEPTED,
                 )
                 return {
                     "auto_approved": False,
@@ -3073,8 +3294,14 @@ def handle_review(job: Job) -> dict:
     }
 
 
-def _apply_substitutions(job: Job, resolved_rules: list,
-                         compliance_results: list, reviewer: str) -> list:
+def _apply_substitutions(
+    job: Job,
+    resolved_rules: list,
+    compliance_results: list,
+    reviewer: str,
+    *,
+    replacement_status,
+) -> list:
     """Apply substitute resolutions to the claims ledger.
 
     For each resolved rule with action=substitute:
@@ -3095,6 +3322,10 @@ def _apply_substitutions(job: Job, resolved_rules: list,
 
     if not substitutes:
         return audit
+    if not str(job.offering_id or "").strip():
+        # Legacy/unit-created jobs have no claim scope. Never let an empty
+        # identity query or mutate the shared claim ledger.
+        return audit
 
     # Build a lookup: rule_id → matched_text from compliance results
     matched_texts = {}
@@ -3107,7 +3338,31 @@ def _apply_substitutions(job: Job, resolved_rules: list,
 
     try:
         import sqlite3
-        from claims import ClaimsLedger, Claim, ClaimType, ReviewStatus
+        from datetime import datetime, timezone
+        from claims import (
+            ClaimsLedger,
+            Claim,
+            ClaimType,
+            ReviewStatus,
+            is_human_reviewer,
+        )
+
+        if not isinstance(replacement_status, ReviewStatus):
+            replacement_status = ReviewStatus(str(replacement_status))
+        automated = replacement_status == ReviewStatus.AUTO_SUBSTITUTED
+        if replacement_status == ReviewStatus.ACCEPTED and not is_human_reviewer(
+            reviewer
+        ):
+            raise ValueError(
+                "ACCEPTED substitutions require a named human reviewer"
+            )
+        if replacement_status not in {
+            ReviewStatus.ACCEPTED,
+            ReviewStatus.AUTO_SUBSTITUTED,
+        }:
+            raise ValueError(
+                "Replacement status must be ACCEPTED or AUTO_SUBSTITUTED"
+            )
 
         ledger = ClaimsLedger()
         all_claims = ledger.get_claims(job.offering_id)
@@ -3123,7 +3378,10 @@ def _apply_substitutions(job: Job, resolved_rules: list,
 
             # Find claims whose text contains the matched compliance text
             for claim in all_claims:
-                if claim.review_status == ReviewStatus.REJECTED:
+                if claim.review_status in {
+                    ReviewStatus.REJECTED,
+                    ReviewStatus.CONFLICTED,
+                }:
                     continue
                 if matched_lower not in claim.claim_text.lower():
                     continue
@@ -3134,6 +3392,20 @@ def _apply_substitutions(job: Job, resolved_rules: list,
                 )
 
                 # Create replacement claim
+                now = datetime.now(timezone.utc).isoformat()
+                replacement_metadata = deepcopy(claim.metadata or {})
+                replacement_metadata.update({
+                    "supersedes_claim_id": claim.claim_id,
+                    "original_text": claim.claim_text,
+                    "substitution_rule_id": rule_id,
+                    "substitution_note": note,
+                    "substitution_origin": (
+                        "automated_policy" if automated else "human_review"
+                    ),
+                    # The replacement is generated policy language. The
+                    # retained excerpt supports the original statement only.
+                    "excerpt_is_literal": False,
+                })
                 replacement = Claim(
                     offering_id=claim.offering_id,
                     claim_text=substitute_text,
@@ -3143,17 +3415,25 @@ def _apply_substitutions(job: Job, resolved_rules: list,
                     page_location=claim.page_location,
                     source_class=claim.source_class,
                     confidence=claim.confidence,
-                    extraction_method="reviewer_substitution",
-                    review_status=ReviewStatus.ACCEPTED,
-                    reviewed_by=reviewer,
-                    metadata={
-                        "supersedes_claim_id": claim.claim_id,
-                        "original_text": claim.claim_text,
-                        "substitution_rule_id": rule_id,
-                        "substitution_note": note,
-                    },
+                    extraction_method=(
+                        "automated_policy_substitution"
+                        if automated else "reviewer_substitution"
+                    ),
+                    review_status=(
+                        ReviewStatus.AUTO_SUBSTITUTED
+                        if automated else ReviewStatus.UNREVIEWED
+                    ),
+                    reviewed_by=(reviewer if automated else None),
+                    reviewed_at=(now if automated else None),
+                    metadata=replacement_metadata,
                 )
                 replacement_id = ledger.add_claim(replacement)
+                if not automated:
+                    ledger.update_review(
+                        replacement_id,
+                        ReviewStatus.ACCEPTED,
+                        reviewer=reviewer,
+                    )
 
                 audit.append({
                     "original_claim_id": claim.claim_id,
@@ -3161,6 +3441,11 @@ def _apply_substitutions(job: Job, resolved_rules: list,
                     "rule_id": rule_id,
                     "original_text": claim.claim_text,
                     "substitute_text": substitute_text,
+                    "review_status": replacement_status.value,
+                    "reviewer": reviewer,
+                    "substitution_origin": (
+                        "automated_policy" if automated else "human_review"
+                    ),
                 })
 
     except ImportError:
@@ -3205,13 +3490,16 @@ def handle_source_pack(job: Job) -> dict:
 
     # Load claims and evidence
     claims_by_type = {}
+    claim_review_inventory = []
     artifacts_used = {}
     all_artifacts = {}
+    claims_ledger = None
     try:
         from claims import ClaimsLedger, ClaimType, ReviewStatus
         from evidence import EvidenceLake
 
         ledger = ClaimsLedger()
+        claims_ledger = ledger
         lake = EvidenceLake()
 
         all_claims = ledger.get_claims(job.offering_id)
@@ -3230,21 +3518,54 @@ def handle_source_pack(job: Job) -> dict:
                 if reused:
                     acquired_artifacts.append(reused)
                     acquired_ids.add(acquired_id)
-        for art in acquired_artifacts:
-            all_artifacts[art.artifact_id] = {
-                "artifact_type": art.artifact_type.value
-                    if hasattr(art.artifact_type, "value") else art.artifact_type,
-                "source_url": art.source_url,
-                "source_class": art.source_class.value
-                    if hasattr(art.source_class, "value") else art.source_class,
-                "captured_at": art.captured_at,
-                "tls_verified": bool(art.tls_verified),
-                "is_usable": art.is_usable,
-                "acquisition_phase": art.acquisition_phase,
-            }
+
+        # Resolve every retained byte stream at the sealing boundary. Signed
+        # capture metadata proves what was stored originally; this live read
+        # proves the bytes still present in the evidence lake match that
+        # identity now. One missing or altered artifact blocks the whole pack
+        # before any source contract can be sealed.
+        referenced_artifact_ids = {
+            str(art.artifact_id or "").strip()
+            for art in acquired_artifacts
+            if str(art.artifact_id or "").strip()
+        } | {
+            str(claim.source_artifact_id or "").strip()
+            for claim in all_claims
+            if str(claim.source_artifact_id or "").strip()
+        }
+        verified_artifacts = lake.resolve_current_integrity(
+            sorted(referenced_artifact_ids)
+        )
+        all_artifacts.update(verified_artifacts)
 
         # Group claims by type, prioritizing accepted > unreviewed > rejected
         for c in all_claims:
+            claim_status = (
+                c.review_status.value
+                if hasattr(c.review_status, "value")
+                else c.review_status
+            )
+            claim_review_inventory.append({
+                "claim_id": c.claim_id,
+                "offering_id": c.offering_id,
+                "claim_type": (
+                    c.claim_type.value
+                    if hasattr(c.claim_type, "value")
+                    else c.claim_type
+                ),
+                "review_status": claim_status,
+                "reviewed_by": c.reviewed_by,
+                "reviewed_at": c.reviewed_at,
+                "artifact_id": c.source_artifact_id,
+                "excerpt": c.exact_excerpt,
+                "location": c.page_location,
+                "captured_at": c.captured_at,
+                "effective_market": c.effective_market,
+                "source_class": c.source_class,
+                "extraction_method": c.extraction_method,
+                "metadata": c.metadata,
+                "text": c.claim_text,
+            })
             if c.review_status in {
                 ReviewStatus.REJECTED,
                 ReviewStatus.CONFLICTED,
@@ -3254,30 +3575,43 @@ def handle_source_pack(job: Job) -> dict:
             if ct not in claims_by_type:
                 claims_by_type[ct] = []
             claims_by_type[ct].append({
+                "claim_id": c.claim_id,
+                "offering_id": c.offering_id,
+                "claim_type": ct,
                 "text": c.claim_text,
                 "excerpt": c.exact_excerpt,
                 "location": c.page_location,
                 "confidence": c.confidence,
                 "source_class": c.source_class,
-                "review_status": c.review_status.value
-                    if hasattr(c.review_status, 'value') else c.review_status,
+                "captured_at": c.captured_at,
+                "effective_market": c.effective_market,
+                "review_status": claim_status,
+                "reviewed_by": c.reviewed_by,
+                "reviewed_at": c.reviewed_at,
                 "artifact_id": c.source_artifact_id,
                 "extraction_method": c.extraction_method,
                 "metadata": c.metadata,
             })
             # Track which artifacts contributed
             if c.source_artifact_id and c.source_artifact_id not in artifacts_used:
-                art = lake.get(c.source_artifact_id)
-                if art:
-                    artifacts_used[c.source_artifact_id] = {
-                        "source_url": art.source_url,
-                        "source_class": art.source_class.value
-                            if hasattr(art.source_class, 'value')
-                            else art.source_class,
-                        "captured_at": art.captured_at,
-                        "tls_verified": bool(art.tls_verified),
-                        "is_usable": art.is_usable,
-                    }
+                artifact_record = verified_artifacts.get(
+                    c.source_artifact_id
+                )
+                if artifact_record:
+                    artifacts_used[c.source_artifact_id] = artifact_record
+    except EvidenceIntegrityError as exc:
+        raise ReviewBlockError(
+            "Cannot seal the source pack because retained evidence failed its "
+            f"current integrity check ({exc}). Reacquire or restore the exact "
+            "source artifact before continuing.",
+            details={
+                "review_owner": "source_evidence_repair",
+                "repair_required": True,
+                "repair_action": "reacquire_or_restore_evidence",
+                "paid_call_allowed": False,
+                "integrity_error": str(exc),
+            },
+        ) from exc
     except ImportError:
         pass  # Ledgers not available — fall back to legacy data
 
@@ -3400,11 +3734,29 @@ def handle_source_pack(job: Job) -> dict:
                         "original_text": meta.get("original_text", ""),
                         "substitute_text": claim["text"],
                         "rule_id": meta.get("substitution_rule_id", ""),
+                        "reviewer": claim.get("reviewed_by", ""),
+                        "review_status": claim.get("review_status", ""),
+                        "substitution_origin": meta.get(
+                            "substitution_origin", ""
+                        ),
                     })
     if substitutions:
-        sections.append("COMPLIANCE SUBSTITUTIONS (reviewer-approved)")
+        sections.append("COMPLIANCE SUBSTITUTIONS")
         sections.append("-" * 40)
         for sub in substitutions:
+            origin = sub.get("substitution_origin") or (
+                "automated_policy"
+                if sub.get("reviewer") == "source-intelligence-automation"
+                else "human_review"
+            )
+            sections.append(
+                "  Review state: "
+                + (
+                    "policy-automated; requires human verification"
+                    if origin == "automated_policy"
+                    else "accepted by named human reviewer"
+                )
+            )
             sections.append(f"  Rule: {sub.get('rule_id', 'unknown')}")
             sections.append(f"  Original:    \"{sub.get('original_text', '')}\"")
             sections.append(f"  Replaced by: \"{sub.get('substitute_text', '')}\"")
@@ -3417,7 +3769,10 @@ def handle_source_pack(job: Job) -> dict:
         for claim in claims_by_type.get(ct_key, []):
             meta = claim.get("metadata", {}) if isinstance(claim, dict) else {}
             is_literal = meta.get("excerpt_is_literal", True)
-            needs_ver = claim.get("review_status") == "needs_verification"
+            needs_ver = claim.get("review_status") in {
+                "needs_verification",
+                "auto_substituted",
+            }
             if not is_literal or needs_ver:
                 unverified_high_risk.append(claim)
     if unverified_high_risk:
@@ -3651,6 +4006,7 @@ def handle_source_pack(job: Job) -> dict:
         "product": product_data,
         "offering_id": job.offering_id,
         "claims_by_type": claims_by_type,
+        "claim_review_inventory": claim_review_inventory,
         "artifacts_used": artifacts_used,
         "all_artifacts": all_artifacts,
         "intake_manifest": intake_manifest,
@@ -3669,11 +4025,39 @@ def handle_source_pack(job: Job) -> dict:
         "total_artifacts": len(all_artifacts),
         "required_facts": required_facts_result,
     }
-    from source_pack_contract import seal_source_pack, validate_source_pack
-    full_data = seal_source_pack(full_data)
+    from source_pack_contract import (
+        requires_source_verification,
+        seal_source_pack,
+        validate_source_pack,
+    )
+    full_data = seal_source_pack(
+        full_data,
+        claims_ledger=claims_ledger,
+    )
     # Never persist a blocked contract as "Research complete" and defer the
     # failure to the paid workbench. Limited packs are intentionally valid.
     validate_source_pack(full_data, allow_limited=True)
+    if requires_source_verification(full_data):
+        unverified = (
+            full_data["source_pack_contract"].get(
+                "unverified_mandatory_facts"
+            ) or []
+        )
+        raise ReviewBlockError(
+            "Mandatory source facts need human acceptance or independent "
+            "corroboration before automated drafting: "
+            + ", ".join(unverified),
+            details={
+                "review_owner": "source_verification",
+                "blocked_facts": unverified,
+                "readiness": "limited",
+                "readiness_reasons": (
+                    full_data["source_pack_contract"].get(
+                        "readiness_reasons"
+                    ) or []
+                ),
+            },
+        )
 
     return {
         "doc_text": doc_text,
@@ -3752,9 +4136,18 @@ def create_update_pipeline(existing_data: dict,
             offering_type_str = "unknown"
 
         # Preserve original offering_id — critical for update provenance
-        original_offering_id = existing_data.get("offering_id", "")
-        if original_offering_id:
-            job.offering_id = original_offering_id
+        original_offering_id = str(
+            existing_data.get("offering_id", "") or ""
+        ).strip()
+        if not original_offering_id:
+            # Legacy packs predate offering IDs. Derive the same stable
+            # identity used by a fresh IDENTIFY stage before any claim query,
+            # so an empty key can never expose another legacy product's rows.
+            from entities import Offering
+            original_offering_id = Offering.from_legacy_product_data(
+                product
+            ).offering_id
+        job.offering_id = original_offering_id
 
         return {
             "product_data": product,

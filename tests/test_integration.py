@@ -934,6 +934,56 @@ class TestRealHandlerPipeline:
             result = pipeline.run(job)
             return result, pipeline
 
+    def _accept_mandatory_claims(self, job, db_path, reviewer="Test Reviewer"):
+        """Perform the claim-level action required by Readiness v3 tests."""
+        from claims import ClaimsLedger, ReviewStatus
+        from entities import OfferingType
+        from intelligence_packs import get_mandatory_facts
+        from workflow import PipelineStage
+
+        offering_type = OfferingType(
+            job.get_stage_result(PipelineStage.IDENTIFY)["offering_type"]
+        )
+        mandatory = set(get_mandatory_facts(offering_type))
+        ledger = ClaimsLedger(db_path=db_path)
+        accepted = 0
+        for claim in ledger.get_claims(job.offering_id):
+            if (
+                (claim.metadata or {}).get("fact_key") in mandatory
+                and claim.source_artifact_id
+                and claim.review_status not in {
+                    ReviewStatus.REJECTED,
+                    ReviewStatus.CONFLICTED,
+                }
+            ):
+                ledger.update_review_status(
+                    claim.claim_id, ReviewStatus.ACCEPTED, reviewer
+                )
+                accepted += 1
+        return accepted
+
+    def _resume_with_verified_claims(self, job, pipeline, db_path):
+        """Resolve compliance, then the typed source-verification handoff."""
+        from unittest.mock import patch
+        from workflow import JobStatus, PipelineStage
+
+        with patch("config.DB_PATH", db_path):
+            if job.status == JobStatus.AWAITING_REVIEW:
+                job = pipeline.approve_review(
+                    job.job_id, reviewer="Test Reviewer"
+                )
+            if (
+                job.status == JobStatus.AWAITING_REVIEW
+                and job.get_stage_result(PipelineStage.SOURCE_PACK).get(
+                    "review_owner"
+                ) == "source_verification"
+            ):
+                assert self._accept_mandatory_claims(job, db_path) > 0
+                job = pipeline.approve_review(
+                    job.job_id, reviewer="Test Reviewer"
+                )
+        return job
+
     def test_full_pipeline_runs_to_completion(self, pipeline_db):
         """Real handlers must execute all stages through to COMPLETED."""
         from workflow import JobStatus
@@ -1056,18 +1106,17 @@ class TestRealHandlerPipeline:
         assert research_result.get("research_skipped") is False
 
     def test_review_gate_evaluates_compliance(self, pipeline_db):
-        """handle_review must block on non-low risk or pass on low risk."""
+        """Compliance and source-verification gates remain independently typed."""
         from workflow import PipelineStage, JobStatus
 
         job, _ = self._run_pipeline_with_mocks(pipeline_db)
 
-        # "Boosts testosterone by up to 42%" is a strong health claim
-        # that should trigger compliance concerns
+        review_result = job.get_stage_result(PipelineStage.REVIEW)
         if job.status == JobStatus.AWAITING_REVIEW:
-            review_result = job.get_stage_result(PipelineStage.REVIEW)
-            assert review_result.get("blocked") is True
+            source_block = job.get_stage_result(PipelineStage.SOURCE_PACK)
+            assert review_result.get("auto_approved") is True
+            assert source_block.get("review_owner") == "source_verification"
         else:
-            review_result = job.get_stage_result(PipelineStage.REVIEW)
             assert review_result.get("auto_approved") is True
 
     def test_unattended_jobs_quarantine_findings_without_stopping(self, pipeline_db):
@@ -1113,6 +1162,115 @@ class TestRealHandlerPipeline:
         assert review["conflicts_quarantined"] == 2
         assert review["rules_quarantined"] == ["UNSUBSTANTIATED_RETURN"]
 
+    def test_unattended_safe_alternative_is_auto_substituted(self, pipeline_db):
+        """Automation may rewrite for policy, but it may not self-attest."""
+        from unittest.mock import patch
+        from claims import ClaimsLedger, Claim, ClaimType, ReviewStatus
+        from stage_handlers import handle_review
+        from workflow import Job, PipelineStage
+
+        job = Job.create(
+            url="https://example.com/product",
+            product_name="Test Product",
+            unattended=True,
+        )
+        job.offering_id = "auto-substitution-offering"
+        job.set_stage_result(PipelineStage.IDENTIFY, {
+            "offering_type": "supplement",
+        })
+        job.set_stage_result(PipelineStage.RECONCILE, {
+            "conflicts_found": 0,
+        })
+        job.set_stage_result(PipelineStage.COMPLY, {
+            "risk_level": "high",
+            "compliance": {
+                "results": [{
+                    "rule_id": "NO_CURE",
+                    "state": "blocked",
+                    "matched_text": "cures diabetes",
+                    "safe_alternative": "supports metabolic wellness",
+                }],
+            },
+        })
+        ledger = ClaimsLedger(db_path=pipeline_db)
+        original_id = ledger.add_claim(Claim(
+            offering_id=job.offering_id,
+            claim_text="This formula cures diabetes",
+            claim_type=ClaimType.MANUFACTURER_CLAIM,
+            source_artifact_id="official-artifact",
+            source_class="official_vendor",
+            metadata={
+                "fact_key": "health_benefit",
+                "excerpt_is_literal": True,
+            },
+        ))
+
+        with patch("config.DB_PATH", pipeline_db):
+            result = handle_review(job)
+
+        claims = ClaimsLedger(db_path=pipeline_db).get_claims(job.offering_id)
+        original = next(c for c in claims if c.claim_id == original_id)
+        replacement = next(c for c in claims if c.claim_id != original_id)
+
+        assert original.review_status == ReviewStatus.REJECTED
+        assert replacement.review_status == ReviewStatus.AUTO_SUBSTITUTED
+        assert replacement.reviewed_by == "source-intelligence-automation"
+        assert replacement.reviewed_at
+        assert replacement.metadata["fact_key"] == "health_benefit"
+        assert replacement.metadata["excerpt_is_literal"] is False
+        assert replacement.metadata["substitution_origin"] == (
+            "automated_policy"
+        )
+        assert result["substitutions_applied"][0]["review_status"] == (
+            "auto_substituted"
+        )
+
+    def test_unattended_source_verification_has_human_queue_owner(
+        self, pipeline_db
+    ):
+        """Typed source verification remains resumable for unattended jobs."""
+        from workflow import (
+            Job,
+            JobStatus,
+            JobStore,
+            Pipeline,
+            PipelineStage,
+            ReviewBlockError,
+        )
+
+        pipeline = Pipeline(JobStore(db_path=pipeline_db))
+
+        def verification_gate(job):
+            raise ReviewBlockError(
+                "mandatory claim needs verification",
+                details={
+                    "review_owner": "source_verification",
+                    "blocked_facts": ["key_features"],
+                },
+            )
+
+        pipeline.register(PipelineStage.IDENTIFY, verification_gate)
+        job = Job.create(
+            url="https://example.com/device",
+            product_name="Test Device",
+            unattended=True,
+        )
+
+        result = pipeline.run(job)
+
+        assert result.status == JobStatus.AWAITING_REVIEW
+        block = result.get_stage_result(PipelineStage.IDENTIFY)
+        assert block["review_owner"] == "source_verification"
+        assert block["blocked_facts"] == ["key_features"]
+
+        resumed = pipeline.approve_review(
+            result.job_id, reviewer="Test Human Reviewer"
+        )
+        assert resumed.status == JobStatus.AWAITING_REVIEW
+        resumed_block = resumed.get_stage_result(PipelineStage.IDENTIFY)
+        assert resumed_block["review_owner"] == "source_verification"
+        assert resumed_block["blocked_facts"] == ["key_features"]
+
     def test_approve_and_complete_real_handlers(self, pipeline_db):
         """Pipeline must complete after approval when using real handlers."""
         from workflow import JobStatus
@@ -1120,11 +1278,12 @@ class TestRealHandlerPipeline:
         job, pipeline = self._run_pipeline_with_mocks(pipeline_db)
 
         if job.status == JobStatus.AWAITING_REVIEW:
-            # Approve and resume
-            final = pipeline.approve_review(job.job_id, reviewer="test_admin")
+            final = self._resume_with_verified_claims(
+                job, pipeline, pipeline_db
+            )
             assert final is not None
             assert final.status == JobStatus.COMPLETED
-            assert final.metadata.get("review_approved_by") == "test_admin"
+            assert final.metadata.get("review_approved_by") == "Test Reviewer"
         else:
             # Auto-approved — already completed
             assert job.status == JobStatus.COMPLETED
@@ -1308,8 +1467,9 @@ class TestRealHandlerPipeline:
         job, pipeline = self._run_pipeline_with_mocks(
             db_path, expect_review=True
         )
-        if job.status == JobStatus.AWAITING_REVIEW:
-            job = pipeline.approve_review(job.job_id, reviewer="test")
+        job = self._resume_with_verified_claims(
+            job, pipeline, db_path
+        )
 
         pack = job.get_stage_result(PipelineStage.SOURCE_PACK)
 
@@ -1332,6 +1492,34 @@ class TestRealHandlerPipeline:
         assert "claims_by_type" in full_data
         assert "artifacts_used" in full_data
         assert full_data["total_claims"] > 0
+        assert full_data["all_artifacts"]
+        assert all(
+            artifact.get("source_relationship")
+            in {"first_party", "second_party", "third_party"}
+            for artifact in full_data["all_artifacts"].values()
+        )
+        assert all(
+            artifact.get("source_relationship")
+            in {"first_party", "second_party", "third_party"}
+            for artifact in full_data["artifacts_used"].values()
+        )
+        provenance_fields = {
+            "final_url",
+            "status_code",
+            "content_hash",
+            "content_length",
+            "error",
+            "notes",
+            "is_usable",
+        }
+        assert all(
+            provenance_fields <= set(artifact)
+            for artifact in full_data["all_artifacts"].values()
+        )
+        assert all(
+            provenance_fields <= set(artifact)
+            for artifact in full_data["artifacts_used"].values()
+        )
 
     def test_source_pack_excludes_rejected_claims(self, pipeline_db):
         """Source pack must not include claims that were rejected during review."""
@@ -1343,6 +1531,7 @@ class TestRealHandlerPipeline:
         db_path = pipeline_db
         # Run the pipeline first to populate claims
         job, _ = self._run_pipeline_with_mocks(db_path)
+        self._accept_mandatory_claims(job, db_path)
 
         # Reject one ingredient claim
         ledger = ClaimsLedger(db_path=db_path)
@@ -1384,8 +1573,7 @@ class TestRealHandlerPipeline:
 
         # First run the full pipeline to get existing data
         job, pipeline = self._run_pipeline_with_mocks(db_path)
-        if job.status == JobStatus.AWAITING_REVIEW:
-            job = pipeline.approve_review(job.job_id, reviewer="test")
+        job = self._resume_with_verified_claims(job, pipeline, db_path)
 
         existing_data = job.get_stage_result(PipelineStage.SOURCE_PACK).get(
             "full_data", {}
@@ -1524,8 +1712,7 @@ class TestRealHandlerPipeline:
 
         # Run full pipeline first
         job, pipeline = self._run_pipeline_with_mocks(db_path)
-        if job.status == JobStatus.AWAITING_REVIEW:
-            job = pipeline.approve_review(job.job_id, reviewer="test")
+        job = self._resume_with_verified_claims(job, pipeline, db_path)
 
         existing_data = job.get_stage_result(PipelineStage.SOURCE_PACK).get(
             "full_data", {}
@@ -1586,8 +1773,11 @@ class TestRealHandlerPipeline:
             )
             result = update_pipeline.run(update_job)
             if result.status == JobStatus.AWAITING_REVIEW:
+                self._accept_mandatory_claims(
+                    result, db_path, reviewer="Update Test Reviewer"
+                )
                 result = update_pipeline.approve_review(
-                    result.job_id, reviewer="test",
+                    result.job_id, reviewer="Update Test Reviewer",
                     rule_resolutions={
                         "CLAIM_CONFLICTS": {
                             "action": "accept",
@@ -1653,8 +1843,7 @@ class TestRealHandlerPipeline:
 
         # --- ORIGINAL RUN ---
         job, pipeline = self._run_pipeline_with_mocks(db_path)
-        if job.status == JobStatus.AWAITING_REVIEW:
-            job = pipeline.approve_review(job.job_id, reviewer="test")
+        job = self._resume_with_verified_claims(job, pipeline, db_path)
         assert job.status == JobStatus.COMPLETED
 
         original_offering_id = job.offering_id
@@ -1712,7 +1901,10 @@ class TestRealHandlerPipeline:
                     {"name": "Magnesium", "amount": "400mg"},
                 ],
             },
-            "pricing": {"1 bottle": "$59.99"},  # Same price — no conflict
+            # Deliberately changed so REVIEW pauses before SOURCE_PACK. This
+            # gives the named reviewer a real claim-level verification
+            # boundary for the newly extracted formula.
+            "pricing": {"1 bottle": "$69.99"},
             "claims": [],
         }
 
@@ -1733,8 +1925,11 @@ class TestRealHandlerPipeline:
             )
             result = update_pipeline.run(update_job)
             if result.status == JobStatus.AWAITING_REVIEW:
+                self._accept_mandatory_claims(
+                    result, db_path, reviewer="Update Test Reviewer"
+                )
                 result = update_pipeline.approve_review(
-                    result.job_id, reviewer="test",
+                    result.job_id, reviewer="Update Test Reviewer",
                     rule_resolutions={
                         "CLAIM_CONFLICTS": {
                             "action": "accept",
@@ -1941,8 +2136,7 @@ class TestRealHandlerPipeline:
 
         db_path = pipeline_db
         job, pipeline = self._run_pipeline_with_mocks(db_path)
-        if job.status == JobStatus.AWAITING_REVIEW:
-            job = pipeline.approve_review(job.job_id, reviewer="test")
+        self._accept_mandatory_claims(job, db_path)
 
         # Add an unverified high-risk claim to the ledger
         with patch("config.DB_PATH", db_path):
@@ -1974,8 +2168,7 @@ class TestRealHandlerPipeline:
 
         db_path = pipeline_db
         job, pipeline = self._run_pipeline_with_mocks(db_path)
-        if job.status == JobStatus.AWAITING_REVIEW:
-            job = pipeline.approve_review(job.job_id, reviewer="test")
+        self._accept_mandatory_claims(job, db_path)
 
         with patch("config.DB_PATH", db_path):
             pack = handle_source_pack(job)
@@ -2011,8 +2204,7 @@ class TestRealHandlerPipeline:
 
         db_path = pipeline_db
         job, pipeline = self._run_pipeline_with_mocks(db_path)
-        if job.status == JobStatus.AWAITING_REVIEW:
-            job = pipeline.approve_review(job.job_id, reviewer="test")
+        self._accept_mandatory_claims(job, db_path)
 
         # Manually add claims for every missing supplement required fact
         with patch("config.DB_PATH", db_path):
@@ -2080,7 +2272,8 @@ class TestRealHandlerPipeline:
             }]
 
             audit = _apply_substitutions(
-                job, resolved_rules, compliance_results, "test_reviewer"
+                job, resolved_rules, compliance_results, "test_reviewer",
+                replacement_status=ReviewStatus.ACCEPTED,
             )
 
         assert len(audit) == 1
@@ -2114,8 +2307,7 @@ class TestRealHandlerPipeline:
 
         db_path = pipeline_db
         job, pipeline = self._run_pipeline_with_mocks(db_path)
-        if job.status == JobStatus.AWAITING_REVIEW:
-            job = pipeline.approve_review(job.job_id, reviewer="test")
+        self._accept_mandatory_claims(job, db_path)
 
         # Insert a claim with substitution metadata
         with patch("config.DB_PATH", db_path):
@@ -2130,11 +2322,11 @@ class TestRealHandlerPipeline:
             ))
 
             # Add the replacement claim with audit metadata
-            ledger.add_claim(Claim(
+            replacement_id = ledger.add_claim(Claim(
                 offering_id=job.offering_id,
                 claim_text="May help support overall wellness",
                 claim_type=ClaimType.MANUFACTURER_CLAIM,
-                review_status=ReviewStatus.ACCEPTED,
+                review_status=ReviewStatus.UNREVIEWED,
                 extraction_method="reviewer_substitution",
                 metadata={
                     "supersedes_claim_id": original_id,
@@ -2143,6 +2335,11 @@ class TestRealHandlerPipeline:
                     "substitution_note": "Replaced absolute claim",
                 },
             ))
+            ledger.update_review(
+                replacement_id,
+                ReviewStatus.ACCEPTED,
+                reviewer="Alice Example",
+            )
 
             pack = handle_source_pack(job)
 
@@ -2178,8 +2375,7 @@ class TestRealHandlerPipeline:
 
         db_path = pipeline_db
         job, pipeline = self._run_pipeline_with_mocks(db_path)
-        if job.status == JobStatus.AWAITING_REVIEW:
-            job = pipeline.approve_review(job.job_id, reviewer="test")
+        self._accept_mandatory_claims(job, db_path)
 
         with patch("config.DB_PATH", db_path):
             ledger = ClaimsLedger(db_path=db_path)
@@ -2194,17 +2390,22 @@ class TestRealHandlerPipeline:
             ))
 
             # Add the replacement
-            ledger.add_claim(Claim(
+            replacement_id = ledger.add_claim(Claim(
                 offering_id=job.offering_id,
                 claim_text="REPLACEMENT_SAFE_CLAIM_TEXT_XYZ",
                 claim_type=ClaimType.HEALTH_BENEFIT,
-                review_status=ReviewStatus.ACCEPTED,
+                review_status=ReviewStatus.UNREVIEWED,
                 extraction_method="reviewer_substitution",
                 metadata={
                     "excerpt_is_literal": True,
                     "supersedes_claim_id": "original-id",
                 },
             ))
+            ledger.update_review(
+                replacement_id,
+                ReviewStatus.ACCEPTED,
+                reviewer="Alice Example",
+            )
 
             pack = handle_source_pack(job)
 
@@ -2225,8 +2426,7 @@ class TestRealHandlerPipeline:
 
         db_path = pipeline_db
         job, pipeline = self._run_pipeline_with_mocks(db_path)
-        if job.status == JobStatus.AWAITING_REVIEW:
-            job = pipeline.approve_review(job.job_id, reviewer="test")
+        self._accept_mandatory_claims(job, db_path)
 
         # Reject ALL ingredient and serving claims to remove mandatory facts
         with patch("config.DB_PATH", db_path):
@@ -2250,8 +2450,7 @@ class TestRealHandlerPipeline:
 
         db_path = pipeline_db
         job, pipeline = self._run_pipeline_with_mocks(db_path)
-        if job.status == JobStatus.AWAITING_REVIEW:
-            job = pipeline.approve_review(job.job_id, reviewer="test")
+        self._accept_mandatory_claims(job, db_path)
 
         # The pipeline extracts ingredients and serving_size — mandatory facts
         # are present. Non-mandatory required facts (allergens, etc.) are missing
@@ -2510,7 +2709,10 @@ class TestRealHandlerPipeline:
             job = pipeline.approve_review(job.job_id, reviewer="test")
 
         image_bytes = b"\x89PNG\r\n\x1a\n" + (b"label" * 100)
-        image_url = "https://cdn.example.com/supplement-facts.png"
+        # Label recovery is intentionally limited to a saved first-party
+        # source. A same-site label URL proves the OCR path without teaching
+        # the test that an arbitrary CDN is seller-controlled.
+        image_url = job.url.rstrip("/") + "/supplement-facts.png"
         image_fetch = FetchResult(
             content=image_bytes,
             text="",
@@ -2635,6 +2837,120 @@ class TestRealHandlerPipeline:
                 )
                 assert rc.extraction_method == "llm_extraction"
 
+    def test_recovering_job_url_remains_first_party_and_cannot_self_corroborate(
+        self, pipeline_db
+    ):
+        """The official seller URL must never be relabeled third-party merely
+        because it is fetched again from the recovery UI."""
+        from unittest.mock import patch
+        from evidence import EvidenceLake
+        from stage_handlers import recover_evidence
+        from workflow import JobStatus
+
+        job, pipeline = self._run_pipeline_with_mocks(pipeline_db)
+        if job.status == JobStatus.AWAITING_REVIEW:
+            job = pipeline.approve_review(job.job_id, reviewer="test")
+        page = "<div>Serving Size: 4 capsules</div>"
+        extracted = {
+            "product_name": job.product_name,
+            "supplement_facts": {"serving_size": "4 capsules"},
+        }
+        fetched = self._make_recovery_fetch_result(page, job.url)
+
+        with patch("config.DB_PATH", pipeline_db), \
+             patch("net.safe_fetch", return_value=fetched), \
+             patch(
+                 "research_product.phase1_extract_product",
+                 return_value=extracted,
+             ):
+            result = recover_evidence(
+                url=job.url,
+                offering_id=job.offering_id,
+                job_id=job.job_id,
+                target_facts=["serving_size"],
+                db_path=pipeline_db,
+            )
+
+        artifact = EvidenceLake(db_path=pipeline_db).get(
+            result["artifact_id"]
+        )
+        assert artifact.source_class.value == "official_vendor"
+        assert artifact.source_relationship.value == "first_party"
+
+    def test_unknown_recovery_url_fails_closed_before_fetch(
+        self, pipeline_db
+    ):
+        """A different domain is not independent evidence until the operator
+        explicitly establishes that relationship."""
+        from unittest.mock import patch
+        from stage_handlers import RecoveryError, recover_evidence
+        from workflow import JobStatus
+
+        job, pipeline = self._run_pipeline_with_mocks(pipeline_db)
+        if job.status == JobStatus.AWAITING_REVIEW:
+            job = pipeline.approve_review(job.job_id, reviewer="test")
+
+        with patch("config.DB_PATH", pipeline_db), \
+             patch("net.safe_fetch") as fetch:
+            with pytest.raises(
+                RecoveryError,
+                match="relationship of this URL",
+            ):
+                recover_evidence(
+                    url="https://independent.invalid/source",
+                    offering_id=job.offering_id,
+                    job_id=job.job_id,
+                    target_facts=["serving_size"],
+                    db_path=pipeline_db,
+                )
+        fetch.assert_not_called()
+
+    def test_independent_recovery_redirect_to_seller_creates_no_claims(
+        self, pipeline_db
+    ):
+        """A validated authority URL that resolves onto the seller cannot keep
+        its pre-redirect third-party classification."""
+        from unittest.mock import patch
+        from acquire import AcquisitionError
+        from claims import ClaimsLedger
+        from stage_handlers import recover_evidence
+        from workflow import JobStatus
+
+        job, pipeline = self._run_pipeline_with_mocks(pipeline_db)
+        if job.status == JobStatus.AWAITING_REVIEW:
+            job = pipeline.approve_review(job.job_id, reviewer="test")
+        authority_url = "https://fda.gov/device-record"
+        redirected = self._make_recovery_fetch_result(
+            "<div>Serving size: 4 capsules</div>",
+            authority_url,
+        )
+        redirected.final_url = job.url
+        ledger = ClaimsLedger(db_path=pipeline_db)
+        before = len(ledger.get_claims(job.offering_id))
+
+        with patch("config.DB_PATH", pipeline_db), \
+             patch("net.safe_fetch", return_value=redirected), \
+             patch(
+                 "research_product.phase1_extract_product",
+                 side_effect=AssertionError(
+                     "redirected seller content must not be extracted"
+                 ),
+             ):
+            with pytest.raises(
+                AcquisitionError,
+                match="allowlisted HTTPS authority URL",
+            ):
+                recover_evidence(
+                    url=authority_url,
+                    offering_id=job.offering_id,
+                    job_id=job.job_id,
+                    target_facts=["serving_size"],
+                    db_path=pipeline_db,
+                    relationship_assertion="third_party",
+                )
+
+        assert len(ledger.get_claims(job.offering_id)) == before
+
     def test_recover_evidence_only_adds_facts_present_in_content(
         self, pipeline_db
     ):
@@ -2688,12 +3004,11 @@ class TestRealHandlerPipeline:
         from unittest.mock import patch
         from stage_handlers import recover_evidence, handle_source_pack
         from claims import ClaimsLedger, ClaimType, ReviewStatus
-        from workflow import ReviewBlockError, JobStatus
+        from workflow import ReviewBlockError, JobStatus, PipelineStage
 
         db_path = pipeline_db
         job, pipeline = self._run_pipeline_with_mocks(db_path)
-        if job.status == JobStatus.AWAITING_REVIEW:
-            job = pipeline.approve_review(job.job_id, reviewer="test")
+        job = self._resume_with_verified_claims(job, pipeline, db_path)
 
         with patch("config.DB_PATH", db_path):
             ledger = ClaimsLedger(db_path=db_path)
@@ -2840,7 +3155,9 @@ class TestRealHandlerPipeline:
             for c in ledger.get_claims(job.offering_id):
                 if c.metadata.get("recovery_source"):
                     ledger.update_review_status(
-                        c.claim_id, ReviewStatus.ACCEPTED, "reviewer"
+                        c.claim_id,
+                        ReviewStatus.ACCEPTED,
+                        "Recovery Test Reviewer",
                     )
 
             pack = handle_source_pack(job)
@@ -2911,8 +3228,7 @@ class TestRealHandlerPipeline:
 
         db_path = pipeline_db
         job, pipeline = self._run_pipeline_with_mocks(db_path)
-        if job.status == JobStatus.AWAITING_REVIEW:
-            job = pipeline.approve_review(job.job_id, reviewer="test")
+        job = self._resume_with_verified_claims(job, pipeline, db_path)
 
         with patch("config.DB_PATH", db_path):
             ledger = ClaimsLedger(db_path=db_path)
@@ -3070,7 +3386,7 @@ class TestRealHandlerPipeline:
         from unittest.mock import patch
         from stage_handlers import handle_source_pack
         from claims import ClaimsLedger, Claim, ClaimType, ReviewStatus
-        from workflow import ReviewBlockError, JobStatus
+        from workflow import ReviewBlockError, JobStatus, PipelineStage
 
         db_path = pipeline_db
         job, pipeline = self._run_pipeline_with_mocks(db_path)
@@ -3079,6 +3395,9 @@ class TestRealHandlerPipeline:
 
         with patch("config.DB_PATH", db_path):
             ledger = ClaimsLedger(db_path=db_path)
+            retained_artifact_id = job.get_stage_result(
+                PipelineStage.ACQUIRE
+            )["artifacts"][0]["artifact_id"]
 
             # Reject all existing mandatory claims
             for c in ledger.get_claims(job.offering_id):
@@ -3094,7 +3413,7 @@ class TestRealHandlerPipeline:
                 offering_id=job.offering_id,
                 claim_text="Vitamin C: 500mg",
                 claim_type=ClaimType.INGREDIENT_AMOUNT,
-                source_artifact_id="art-inferred-1",
+                source_artifact_id=retained_artifact_id,
                 review_status=ReviewStatus.UNREVIEWED,
                 extraction_method="llm_extraction",
                 metadata={"fact_key": "ingredients_with_amounts",
@@ -3104,7 +3423,7 @@ class TestRealHandlerPipeline:
                 offering_id=job.offering_id,
                 claim_text="Serving size: 2 capsules",
                 claim_type=ClaimType.SERVING_INFO,
-                source_artifact_id="art-inferred-2",
+                source_artifact_id=retained_artifact_id,
                 review_status=ReviewStatus.UNREVIEWED,
                 extraction_method="llm_extraction",
                 metadata={"fact_key": "serving_size",
@@ -3124,7 +3443,7 @@ class TestRealHandlerPipeline:
         from unittest.mock import patch
         from stage_handlers import handle_source_pack
         from claims import ClaimsLedger, Claim, ClaimType, ReviewStatus
-        from workflow import JobStatus
+        from workflow import JobStatus, PipelineStage
 
         db_path = pipeline_db
         job, pipeline = self._run_pipeline_with_mocks(db_path)
@@ -3133,6 +3452,9 @@ class TestRealHandlerPipeline:
 
         with patch("config.DB_PATH", db_path):
             ledger = ClaimsLedger(db_path=db_path)
+            retained_artifact_id = job.get_stage_result(
+                PipelineStage.ACQUIRE
+            )["artifacts"][0]["artifact_id"]
 
             # Reject all existing mandatory claims
             for c in ledger.get_claims(job.offering_id):
@@ -3142,27 +3464,34 @@ class TestRealHandlerPipeline:
                         c.claim_id, ReviewStatus.REJECTED, "test"
                     )
 
-            # Add non-literal but ACCEPTED claims
-            ledger.add_claim(Claim(
+            # Add non-literal claims, then accept them through the audited
+            # transition path so each acceptance has a signed attestation.
+            ingredient_id = ledger.add_claim(Claim(
                 offering_id=job.offering_id,
                 claim_text="Vitamin C: 500mg",
                 claim_type=ClaimType.INGREDIENT_AMOUNT,
-                source_artifact_id="art-inferred-3",
-                review_status=ReviewStatus.ACCEPTED,
+                source_artifact_id=retained_artifact_id,
+                review_status=ReviewStatus.UNREVIEWED,
                 extraction_method="llm_extraction",
                 metadata={"fact_key": "ingredients_with_amounts",
                            "excerpt_is_literal": False},
             ))
-            ledger.add_claim(Claim(
+            serving_id = ledger.add_claim(Claim(
                 offering_id=job.offering_id,
                 claim_text="Serving size: 2 capsules",
                 claim_type=ClaimType.SERVING_INFO,
-                source_artifact_id="art-inferred-4",
-                review_status=ReviewStatus.ACCEPTED,
+                source_artifact_id=retained_artifact_id,
+                review_status=ReviewStatus.UNREVIEWED,
                 extraction_method="llm_extraction",
                 metadata={"fact_key": "serving_size",
                            "excerpt_is_literal": False},
             ))
+            for claim_id in (ingredient_id, serving_id):
+                ledger.update_review(
+                    claim_id,
+                    ReviewStatus.ACCEPTED,
+                    reviewer="Alice Example",
+                )
 
             # Accepted non-literal claims should pass strict mode
             pack = handle_source_pack(job)

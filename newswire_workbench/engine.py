@@ -50,7 +50,9 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "grounding-first-device-depth-v40-terminal-report-reconciliation"
 )
-WORKBENCH_RUNTIME_REVISION = "audit-residual-reconciliation-20260730-r43"
+WORKBENCH_RUNTIME_REVISION = (
+    "readiness-v3-human-or-corroborated-20260730-r44"
+)
 
 STAGES = (
     "source_ready",
@@ -73,6 +75,15 @@ PAID_CALL_STAGES = frozenset({
     "seo_optimized",
     "seo_repair_needed",
     "seo_repaired",
+})
+SOURCE_AUTHORITY_BLOCKER_IDS = frozenset({
+    "SOURCE-CONTRACT-INTEGRITY",
+    "SOURCE-CONTRACT-VERSION",
+    "SOURCE-REVIEW-HEAD",
+    "SOURCE-VERIFICATION",
+    "SOURCE-CLAIMS",
+    "SOURCE-COVERAGE",
+    "POLICY-SNAPSHOT",
 })
 LOCKED_STAGE_PURPOSE = {
     "source_ready": "draft",
@@ -214,6 +225,75 @@ def _provenance_findings(ledger):
             ),
         })
     return findings
+
+
+def _article_action_anchor(article_text):
+    """Return visible current-article text for article-level repair findings."""
+    raw = str(article_text or "").strip()
+    soup = BeautifulSoup(raw, "html.parser")
+    for node in soup.find_all(
+        ["p", "li", "h1", "h2", "h3", "h4", "blockquote"]
+    ):
+        visible = re.sub(
+            r"\s+", " ", node.get_text(" ", strip=True)
+        ).strip()
+        if visible:
+            return visible[:1000]
+    visible = re.sub(
+        r"\s+", " ", soup.get_text(" ", strip=True)
+    ).strip()
+    return visible[:1000] or raw[:1000] or (
+        "The current article requires a system-owned editorial repair."
+    )
+
+
+def _actionable_system_finding(
+    finding,
+    article_text,
+    *,
+    finding_id,
+    category,
+    issue,
+    replacement,
+):
+    """Make a locally generated blocker satisfy the strict edit contract."""
+    normalized = copy.deepcopy(
+        finding if isinstance(finding, dict) else {}
+    )
+    fallbacks = {
+        "id": finding_id,
+        "category": category,
+        "issue": issue,
+        "exact_text": _article_action_anchor(article_text),
+        "replacement": replacement,
+    }
+    for field, fallback in fallbacks.items():
+        if not str(normalized.get(field) or "").strip():
+            normalized[field] = fallback
+    return normalized
+
+
+def _recheck_live_review_heads(pack, claims_ledger=None):
+    """Revalidate sealed acceptances against the production claims ledger."""
+    try:
+        if claims_ledger is None:
+            from claims import ClaimsLedger
+            claims_ledger = ClaimsLedger()
+        from source_pack_contract import recheck_review_head_checkpoint
+        return recheck_review_head_checkpoint(
+            pack,
+            claims_ledger=claims_ledger,
+            # Offline fixture checkpoints are deliberately never accepted at
+            # a Workbench authority boundary.
+            allow_offline_review_fixtures=False,
+        )
+    except Exception as exc:
+        return {
+            "valid": False,
+            "mode": "",
+            "stale_claim_ids": [],
+            "reasons": [f"review ledger unavailable: {exc}"],
+        }
 
 
 def _pack_fact_source_hash(pack):
@@ -465,6 +545,8 @@ class WorkbenchEngine:
                     estimated_cost REAL DEFAULT 0,
                     status TEXT NOT NULL,
                     error TEXT DEFAULT '',
+                    expected_candidate_count INTEGER DEFAULT -1,
+                    expected_candidate_set_hash TEXT DEFAULT '',
                     created_at TEXT NOT NULL
                 );
                 CREATE TRIGGER IF NOT EXISTS trg_events_no_update
@@ -547,6 +629,8 @@ class WorkbenchEngine:
                 ("request_hash", "TEXT DEFAULT ''"),
                 ("input_article_hash", "TEXT DEFAULT ''"),
                 ("input_source_hash", "TEXT DEFAULT ''"),
+                ("expected_candidate_count", "INTEGER DEFAULT -1"),
+                ("expected_candidate_set_hash", "TEXT DEFAULT ''"),
             ):
                 if name not in llm_columns:
                     add_column_if_missing("llm_calls", name, declaration)
@@ -597,18 +681,73 @@ class WorkbenchEngine:
             infer_niche,
             retrieve_exemplars,
         )
-        from source_pack_contract import seal_source_pack, validate_source_pack
+        from source_pack_contract import (
+            CONTRACT_VERSION,
+            migrate_source_pack,
+            requires_source_verification,
+            seal_source_pack,
+            validate_source_pack,
+        )
+        from claims import ClaimsLedger
         from policy_intelligence import format_policy_context
-        validate_source_pack(pack, allow_limited=True)
+        caller_pack = pack
+        claims_ledger = ClaimsLedger()
+        incoming_contract = copy.deepcopy(
+            pack.get("source_pack_contract") or {}
+        )
+        migrated_contract = (
+            incoming_contract.get("version") != CONTRACT_VERSION
+        )
+        if migrated_contract:
+            reconciled_pack = migrate_source_pack(
+                pack, claims_ledger=claims_ledger
+            )
+        else:
+            validate_source_pack(pack, allow_limited=True)
+            review_head_status = _recheck_live_review_heads(
+                pack, claims_ledger
+            )
+            if not review_head_status["valid"]:
+                raise ValueError(
+                    "Source review-head checkpoint is stale or unavailable: "
+                    + "; ".join(
+                        review_head_status.get("reasons") or [
+                            "accepted claims no longer match the durable ledger"
+                        ]
+                    )
+                )
+            # Apply deterministic current-contract reconciliations to stored
+            # reports before selecting exemplars or hashing the fact source.
+            reconciled_pack = seal_source_pack(
+                pack, claims_ledger=claims_ledger
+            )
         # Apply deterministic contract migrations to already-sealed stored
         # reports (for example, newly supported literal seller headings)
         # before selecting exemplars or calculating the immutable fact hash.
         # This adds no external facts and prevents yesterday's valid capture
         # from remaining artificially thin after the engine improves.
-        reconciled_pack = seal_source_pack(pack)
-        pack.clear()
-        pack.update(reconciled_pack)
+        pack = reconciled_pack
         validate_source_pack(pack, allow_limited=True)
+        review_head_status = _recheck_live_review_heads(
+            pack, claims_ledger
+        )
+        if not review_head_status["valid"]:
+            raise ValueError(
+                "Source review-head checkpoint is stale or unavailable: "
+                + "; ".join(
+                    review_head_status.get("reasons") or [
+                        "accepted claims no longer match the durable ledger"
+                    ]
+                )
+            )
+        if requires_source_verification(pack):
+            facts = pack["source_pack_contract"].get(
+                "unverified_mandatory_facts"
+            ) or []
+            raise ValueError(
+                "Source verification required before workbench import: "
+                + ", ".join(facts)
+            )
         product = pack.get("product") or {}
         manifest = pack.get("intake_manifest") or {}
         title = str(product.get("product_name") or "Untitled source project").strip()
@@ -653,16 +792,6 @@ class WorkbenchEngine:
             pack_text,
         ) if part)
         source_hash = _hash(source_text)
-        with self._connect() as conn:
-            existing = conn.execute(
-                "SELECT id FROM projects WHERE source_hash=? AND platform=? ORDER BY created_at DESC LIMIT 1",
-                (source_hash, platform),
-            ).fetchone()
-        if existing:
-            # Project creation is idempotent. A caller must explicitly request
-            # a new immutable transaction; an overloaded admin/package state
-            # must never silently discard a resumable or diagnosable run.
-            return existing["id"]
         # Claim the one active project for this exact pack/platform/workflow
         # inside a write transaction. Multiple Streamlit tabs must converge on
         # the same run instead of creating competing "authoritative" projects.
@@ -670,55 +799,133 @@ class WorkbenchEngine:
         pid = ""
         created = False
         now = _now()
+        migration_payload = {
+            "from_version": incoming_contract.get("version"),
+            "to_version": CONTRACT_VERSION,
+            "prior_sha256": incoming_contract.get("sha256", ""),
+            "new_sha256": pack["source_pack_contract"].get("sha256", ""),
+            "prior_readiness": incoming_contract.get("readiness", ""),
+            "new_readiness": pack["source_pack_contract"].get(
+                "readiness", ""
+            ),
+        }
+
+        def insert_event(conn, event_type, payload):
+            conn.execute(
+                """INSERT INTO events(
+                    project_id,event_type,stage,article_hash,payload,created_at
+                ) VALUES(?,?,?,?,?,?)""",
+                (
+                    pid,
+                    event_type,
+                    "source_ready",
+                    "",
+                    json.dumps(payload, ensure_ascii=False),
+                    now,
+                ),
+            )
+
+        def insert_migration_once(conn):
+            if not migrated_contract:
+                return
+            rows = conn.execute(
+                """SELECT payload FROM events
+                WHERE project_id=? AND event_type=?
+                ORDER BY id ASC""",
+                (pid, "source_pack_contract_migrated"),
+            ).fetchall()
+            for row in rows:
+                try:
+                    prior = json.loads(row["payload"] or "{}")
+                except (TypeError, ValueError):
+                    continue
+                if (
+                    prior.get("prior_sha256")
+                    == migration_payload["prior_sha256"]
+                    and prior.get("new_sha256")
+                    == migration_payload["new_sha256"]
+                ):
+                    return
+            insert_event(
+                conn,
+                "source_pack_contract_migrated",
+                {
+                    **migration_payload,
+                    "project_reused": not created,
+                },
+            )
+
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            active = conn.execute(
+            existing = conn.execute(
                 """SELECT id FROM projects
-                WHERE fact_source_hash=? AND platform=?
-                AND source_text LIKE ?
-                AND stage IN (
-                    'source_ready','drafted','compliance_reviewed','revised',
-                    'signed_off','seo_optimized','seo_repair_needed',
-                    'seo_repaired','post_seo_signed_off'
-                )
-                ORDER BY created_at DESC, updated_at DESC, rowid DESC
-                LIMIT 1""",
-                (
-                    fact_source_hash,
-                    platform,
-                    "%AUTOMATION CONTEXT VERSION: "
-                    + WORKBENCH_SOURCE_CONTEXT_VERSION + "%",
-                ),
+                WHERE source_hash=? AND platform=?
+                ORDER BY created_at DESC LIMIT 1""",
+                (source_hash, platform),
             ).fetchone()
-            if active:
-                pid = active["id"]
+            if existing:
+                # Project creation is idempotent. Reuse must still preserve a
+                # legacy-to-current migration transition supplied on retry.
+                pid = existing["id"]
             else:
-                pid = uuid.uuid4().hex[:12]
-                conn.execute(
-                    """INSERT INTO projects
-                    (id,title,release_title,platform,vertical,stage,source_text,
-                     source_hash,fact_source_hash,article_text,article_hash,
-                     last_report,revision_round,run_token,run_started_at,
-                     created_at,updated_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                active = conn.execute(
+                    """SELECT id FROM projects
+                    WHERE fact_source_hash=? AND platform=?
+                    AND source_text LIKE ?
+                    AND stage IN (
+                        'source_ready','drafted','compliance_reviewed','revised',
+                        'signed_off','seo_optimized','seo_repair_needed',
+                        'seo_repaired','post_seo_signed_off'
+                    )
+                    ORDER BY created_at DESC, updated_at DESC, rowid DESC
+                    LIMIT 1""",
                     (
-                        pid, title, title, platform, resolved_vertical,
-                        "source_ready", source_text, source_hash,
-                        fact_source_hash, "", "", "{}", 0, "", "", now, now,
+                        fact_source_hash,
+                        platform,
+                        "%AUTOMATION CONTEXT VERSION: "
+                        + WORKBENCH_SOURCE_CONTEXT_VERSION + "%",
                     ),
-                )
-                created = True
-        if not created:
-            return pid
-        self._event(pid, "project_created", "source_ready", "", {
-            "source_hash": source_hash, "vertical": resolved_vertical,
-        })
-        self._write(pid, "00-source-record.txt", source_text)
-        self._event(pid, "sealed_source_pack_imported", "source_ready", "", {
-            "contract": pack["source_pack_contract"],
-            "automation_context_version": WORKBENCH_SOURCE_CONTEXT_VERSION,
-            "approved_exemplar_count": len(exemplars),
-        })
+                ).fetchone()
+                if active:
+                    pid = active["id"]
+                else:
+                    pid = uuid.uuid4().hex[:12]
+                    conn.execute(
+                        """INSERT INTO projects
+                        (id,title,release_title,platform,vertical,stage,
+                         source_text,source_hash,fact_source_hash,article_text,
+                         article_hash,last_report,revision_round,run_token,
+                         run_started_at,created_at,updated_at)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            pid, title, title, platform, resolved_vertical,
+                            "source_ready", source_text, source_hash,
+                            fact_source_hash, "", "", "{}", 0, "", "", now,
+                            now,
+                        ),
+                    )
+                    created = True
+                    insert_event(conn, "project_created", {
+                        "source_hash": source_hash,
+                        "vertical": resolved_vertical,
+                    })
+                    insert_event(conn, "sealed_source_pack_imported", {
+                        "contract": pack["source_pack_contract"],
+                        "automation_context_version":
+                            WORKBENCH_SOURCE_CONTEXT_VERSION,
+                        "approved_exemplar_count": len(exemplars),
+                    })
+            insert_migration_once(conn)
+
+        # Only expose the reconciled pack to the caller after the project and
+        # its audit events are durably committed. Failed imports leave caller
+        # state untouched.
+        caller_pack.clear()
+        caller_pack.update(copy.deepcopy(pack))
+        durable_source = (
+            source_text if created else self.get(pid)["source_text"]
+        )
+        self._write(pid, "00-source-record.txt", durable_source)
         return pid
 
     def article_diagnostics(self, project_id):
@@ -868,9 +1075,21 @@ class WorkbenchEngine:
                 and wordpress.get("remote_status") == "draft"
             ),
         }
+        export_path = self.export_path(project_id)
+        export_valid = bool(
+            p["stage"] == "package_ready"
+            and self._package_export_is_current(p, export_path)
+        )
+        result["package_export"] = {
+            "present": export_path.exists(),
+            "path": str(export_path),
+            "exact_hash_match": export_valid,
+        }
         result["publication_ready"] = bool(
             result["ready_for_packaging"]
             and p["stage"] == "package_ready"
+            and result["pre_run_authorized"]
+            and export_valid
             and result["wordpress_delivery"]["exact_hash_match"]
         )
         return result
@@ -1185,6 +1404,19 @@ class WorkbenchEngine:
     def send_to_wordpress_draft(self, project_id):
         from .wordpress import WordPressDraftPublisher
         p = self.get(project_id)
+        source_blockers = [
+            item for item in self._prepaid_contract_blockers(p)
+            if item.get("id") in SOURCE_AUTHORITY_BLOCKER_IDS
+        ]
+        if source_blockers:
+            raise RuntimeError(
+                "WordPress handoff is blocked by the sealed source "
+                "authority contract: "
+                + ", ".join(
+                    str(item.get("id") or "unknown")
+                    for item in source_blockers
+                )
+            )
         if p["stage"] != "package_ready" or p["last_report"].get("verdict") != "approved":
             raise RuntimeError("Only a currently approved submission package can be sent to WordPress")
         repaired = repair_publication_gates(
@@ -1216,6 +1448,18 @@ class WorkbenchEngine:
                 "WordPress handoff requires a purpose-bound independent "
                 "editorial approval."
             )
+        approved_article_hash = p["article_hash"]
+        export_path = self._ensure_package_export(p)
+        p = self.get(project_id)
+        if (
+            p["stage"] != "package_ready"
+            or not self._package_export_is_current(p, export_path)
+        ):
+            raise RuntimeError(
+                "WordPress handoff requires a verified submission archive "
+                "bound to the exact current approved article, source, policy, "
+                "and provenance hashes."
+            )
         findings = deterministic_findings(
             p["article_text"], p["platform"], p["vertical"],
             _source_platform_link(p["source_text"], p["platform"]),
@@ -1244,6 +1488,28 @@ class WorkbenchEngine:
                     for item in _provenance_findings(claim_ledger)
                 )
             )
+        # Re-read both authorities at the last local boundary before any
+        # WordPress network call. Package recovery and local diagnostics can
+        # take long enough for a policy snapshot or source record to change.
+        p = self.get(project_id)
+        source_blockers = [
+            item for item in self._prepaid_contract_blockers(p)
+            if item.get("id") in SOURCE_AUTHORITY_BLOCKER_IDS
+        ]
+        if source_blockers:
+            raise RuntimeError(
+                "WordPress handoff is blocked by the current source or policy "
+                "authority contract: "
+                + ", ".join(
+                    str(item.get("id") or "unknown")
+                    for item in source_blockers
+                )
+            )
+        if not self._package_export_is_current(p, export_path):
+            raise RuntimeError(
+                "WordPress handoff detected a changed or invalid submission "
+                "archive before the remote call."
+            )
         publisher = WordPressDraftPublisher()
         manifest_path = self.projects_dir / project_id / "submission-manifest.json"
         manifest = (
@@ -1271,6 +1537,42 @@ class WorkbenchEngine:
             # timeout/read-back failure. The deterministic identity prevents a
             # retry from creating a second draft.
             existing_post_id = publisher.find_draft_by_slug(delivery_slug)
+        # WordPress connection and reconciliation are remote operations. Re-read
+        # every delivery authority after they return and immediately before the
+        # mutating POST, so a concurrent source/policy/package/article change
+        # cannot cross the final publication boundary on a stale approval.
+        p = self.get(project_id)
+        source_blockers = [
+            item for item in self._prepaid_contract_blockers(p)
+            if item.get("id") in SOURCE_AUTHORITY_BLOCKER_IDS
+        ]
+        if source_blockers:
+            raise RuntimeError(
+                "WordPress handoff is blocked by a source or policy authority "
+                "change detected immediately before delivery: "
+                + ", ".join(
+                    str(item.get("id") or "unknown")
+                    for item in source_blockers
+                )
+            )
+        if (
+            p["stage"] != "package_ready"
+            or p["article_hash"] != approved_article_hash
+            or p["last_report"].get("verdict") != "approved"
+            or p["last_report"].get("reviewed_article_hash")
+            != p["article_hash"]
+            or p["last_report"].get("approval_purpose")
+            not in allowed_purposes
+        ):
+            raise RuntimeError(
+                "WordPress handoff detected a changed stage, article, or "
+                "exact-hash approval immediately before delivery."
+            )
+        if not self._package_export_is_current(p, export_path):
+            raise RuntimeError(
+                "WordPress handoff detected a changed or invalid submission "
+                "archive immediately before delivery."
+            )
         result = publisher.save_draft(
             p.get("release_title") or p["title"], p["article_text"],
             existing_post_id=existing_post_id,
@@ -1800,6 +2102,11 @@ class WorkbenchEngine:
     def can_run_terminal_identity_recovery_signoff(self, project_id):
         """Allow one last judgment call after the duplicate-ID recovery path."""
         project = self.get(project_id)
+        # This method is itself a paid-call authorization boundary. Historical
+        # admin-review rows must satisfy the current source contract here even
+        # when a caller bypasses the normal runner/action dispatcher.
+        if self._prepaid_contract_blockers(project):
+            return False
         if (
             project["stage"] != "admin_review"
             or not self._uses_locked_call_path(project)
@@ -2238,6 +2545,80 @@ class WorkbenchEngine:
             "reason": "The project is in a typed state with no automatic owner.",
             "may_start_paid_call": False,
         }
+        prepaid = self._prepaid_contract_blockers(project)
+        source_authority = [
+            item for item in prepaid
+            if item.get("id") in SOURCE_AUTHORITY_BLOCKER_IDS
+        ]
+        if source_authority:
+            ids = {item.get("id") for item in source_authority}
+            if "SOURCE-REVIEW-HEAD" in ids:
+                return {
+                    **action,
+                    "action": "reconcile_review_heads_and_reseal",
+                    "label": "Reconcile Review Heads and Reseal",
+                    "reason": next(
+                        item["issue"] for item in source_authority
+                        if item.get("id") == "SOURCE-REVIEW-HEAD"
+                    ),
+                    "owner": "source_verification",
+                    "disabled": True,
+                    "may_start_paid_call": False,
+                }
+            if "SOURCE-VERIFICATION" in ids:
+                return {
+                    **action,
+                    "action": "review_source_claims",
+                    "label": "Review Mandatory Source Claims",
+                    "reason": next(
+                        item["issue"] for item in source_authority
+                        if item.get("id") == "SOURCE-VERIFICATION"
+                    ),
+                    "may_start_paid_call": False,
+                }
+            if "SOURCE-CONTRACT-VERSION" in ids:
+                return {
+                    **action,
+                    "action": "rebuild_source_contract",
+                    "label": "Migrate and Reseal Source Pack",
+                    "reason": next(
+                        item["issue"] for item in source_authority
+                        if item.get("id") == "SOURCE-CONTRACT-VERSION"
+                    ),
+                    "may_start_paid_call": False,
+                }
+            return {
+                **action,
+                "action": "refresh_source_policy",
+                "label": "Refresh Source Contract",
+                "reason": (
+                    "Publication is blocked by the sealed source contract: "
+                    + ", ".join(sorted(ids))
+                ),
+                "may_start_paid_call": False,
+            }
+        reviewer_scope_failure = next(
+            (
+                event for event in reversed(self.events(project_id))
+                if event.get("event_type") == "reviewer_scope_mismatch"
+                and event.get("article_hash") == project["article_hash"]
+            ),
+            None,
+        )
+        if stage == "admin_review" and reviewer_scope_failure:
+            return {
+                **action,
+                "action": "review_reviewer_scope_failure",
+                "label": "Review Invalid Reviewer Scope",
+                "reason": (
+                    "The paid independent-review response did not attest every "
+                    "expected article-to-source candidate. Its call is consumed "
+                    "and non-replayable; the exact response is preserved for "
+                    "operator review."
+                ),
+                "owner": "admin_review_queue",
+                "may_start_paid_call": False,
+            }
         if stage == "package_ready":
             semantic = preflight["semantic_review"]
             if preflight["blockers"] and semantic["remaining_calls"] == 0:
@@ -2254,6 +2635,43 @@ class WorkbenchEngine:
                     "may_start_paid_call": True,
                 }
             if preflight["publication_ready"]:
+                # ``offline_preflight`` is a snapshot. Revalidate the mutable
+                # policy/source authorities and the durable archive at the
+                # exact terminal-decision boundary so a concurrent refresh or
+                # package replacement cannot be reported as complete.
+                current = self.get(project_id)
+                terminal_authority = [
+                    item
+                    for item in self._prepaid_contract_blockers(current)
+                    if item.get("id") in SOURCE_AUTHORITY_BLOCKER_IDS
+                ]
+                if terminal_authority:
+                    return {
+                        **action,
+                        "action": "refresh_source_policy",
+                        "label": "Refresh Source or Policy Contract",
+                        "reason": (
+                            "Completion was revoked by the current authority "
+                            "contract: "
+                            + ", ".join(
+                                str(item.get("id") or "unknown")
+                                for item in terminal_authority
+                            )
+                        ),
+                        "may_start_paid_call": False,
+                    }
+                if not self._package_export_is_current(current):
+                    return {
+                        **action,
+                        "action": "retry_wordpress",
+                        "label": "Recover Package and Retry WordPress",
+                        "reason": (
+                            "The exact submission archive changed after "
+                            "preflight and must be recovered and verified "
+                            "before completion."
+                        ),
+                        "may_start_paid_call": False,
+                    }
                 return {
                     **action,
                     "action": "complete",
@@ -2288,21 +2706,6 @@ class WorkbenchEngine:
                     "current hash still needs a verified WordPress draft."
                 ),
             }
-        if (
-            current_workflow_version
-            and diagnostics["workflow_version"] != current_workflow_version
-        ):
-            return {
-                **action,
-                "action": "rebuild_obsolete_workflow",
-                "label": "Rebuild With Latest Workflow",
-                "reason": (
-                    "This transaction belongs to an obsolete workflow "
-                    "contract and cannot continue under the current workflow."
-                ),
-                "may_start_paid_call": True,
-            }
-        prepaid = self._prepaid_contract_blockers(project)
         if prepaid and (
             stage in PAID_CALL_STAGES or stage == "admin_review"
         ):
@@ -2328,6 +2731,28 @@ class WorkbenchEngine:
                     ),
                     "reason": prompt_budget["issue"],
                 }
+            if "SOURCE-VERIFICATION" in ids:
+                return {
+                    **action,
+                    "action": "review_source_claims",
+                    "label": "Review Mandatory Source Claims",
+                    "reason": next(
+                        item["issue"] for item in prepaid
+                        if item.get("id") == "SOURCE-VERIFICATION"
+                    ),
+                    "may_start_paid_call": False,
+                }
+            if "SOURCE-CONTRACT-VERSION" in ids:
+                return {
+                    **action,
+                    "action": "rebuild_source_contract",
+                    "label": "Migrate and Reseal Source Pack",
+                    "reason": next(
+                        item["issue"] for item in prepaid
+                        if item.get("id") == "SOURCE-CONTRACT-VERSION"
+                    ),
+                    "may_start_paid_call": False,
+                }
             return {
                 **action,
                 "action": "refresh_source_policy",
@@ -2336,6 +2761,20 @@ class WorkbenchEngine:
                     "Paid generation is blocked before execution: "
                     + ", ".join(sorted(ids))
                 ),
+            }
+        if (
+            current_workflow_version
+            and diagnostics["workflow_version"] != current_workflow_version
+        ):
+            return {
+                **action,
+                "action": "rebuild_obsolete_workflow",
+                "label": "Rebuild With Latest Workflow",
+                "reason": (
+                    "This transaction belongs to an obsolete workflow "
+                    "contract and cannot continue under the current workflow."
+                ),
+                "may_start_paid_call": True,
             }
         if stage == "source_ready":
             return {
@@ -2668,11 +3107,97 @@ class WorkbenchEngine:
 
     def _prepaid_contract_blockers(self, project):
         """Validate immutable source and policy prerequisites before paid work."""
+        if _hash(project.get("source_text") or "") != str(
+            project.get("source_hash") or ""
+        ):
+            return [{
+                "id": "SOURCE-CONTRACT-INTEGRITY",
+                "issue": (
+                    "The queued source record no longer matches its stored "
+                    "source hash. Restore the immutable record from audit "
+                    "history, then validate and reseal it before any paid, "
+                    "packaging, or delivery action."
+                ),
+            }]
         if not self._uses_locked_call_path(project):
             return []
         blockers = []
         from article_provenance import extract_sealed_pack
-        pack = extract_sealed_pack(project["source_text"])
+        try:
+            pack = extract_sealed_pack(project["source_text"])
+        except Exception as exc:
+            return [{
+                "id": "SOURCE-CONTRACT-INTEGRITY",
+                "issue": (
+                    "The sealed source record cannot be parsed or verified: "
+                    f"{exc}. Restore and reseal it before continuing."
+                ),
+            }]
+        from source_pack_contract import (
+            CONTRACT_VERSION,
+            requires_source_verification,
+            validate_source_pack,
+        )
+        contract = pack.get("source_pack_contract") or {}
+        if contract.get("version") != CONTRACT_VERSION:
+            blockers.append({
+                "id": "SOURCE-CONTRACT-VERSION",
+                "issue": (
+                    "The queued transaction contains retired source-pack "
+                    f"contract v{contract.get('version')}; v{CONTRACT_VERSION} "
+                    "must be migrated, reassessed, and resealed before any "
+                    "additional paid call."
+                ),
+            })
+        else:
+            try:
+                validate_source_pack(pack, allow_limited=True)
+            except (KeyError, TypeError, ValueError) as exc:
+                return [{
+                    "id": "SOURCE-CONTRACT-INTEGRITY",
+                    "issue": (
+                        "The current source-pack contract failed integrity or "
+                        f"canonical-readiness validation: {exc}. Restore and "
+                        "reseal the source pack before continuing."
+                    ),
+                }]
+            review_head_status = _recheck_live_review_heads(pack)
+            if not review_head_status["valid"]:
+                stale_claim_ids = list(
+                    review_head_status.get("stale_claim_ids") or []
+                )
+                reasons = list(review_head_status.get("reasons") or [])
+                blockers.append({
+                    "id": "SOURCE-REVIEW-HEAD",
+                    "issue": (
+                        "The sealed source pack's accepted-claim checkpoint no "
+                        "longer matches the durable ClaimsLedger. Reconcile the "
+                        "latest claim dispositions and reseal the source pack "
+                        "before any paid, packaging, or delivery action."
+                        + (
+                            " Stale claim IDs: "
+                            + ", ".join(stale_claim_ids)
+                            if stale_claim_ids else ""
+                        )
+                        + (
+                            " Reasons: " + "; ".join(reasons)
+                            if reasons else ""
+                        )
+                    ),
+                })
+        if (
+            contract.get("version") == CONTRACT_VERSION
+            and requires_source_verification(pack)
+        ):
+            facts = contract.get("unverified_mandatory_facts") or []
+            blockers.append({
+                "id": "SOURCE-VERIFICATION",
+                "issue": (
+                    "Mandatory source facts require named human acceptance "
+                    "or independent corroboration before paid drafting: "
+                    + ", ".join(facts)
+                ),
+            })
         claim_count = sum(
             len(items or [])
             for items in (pack.get("publication_claims") or {}).values()
@@ -2929,20 +3454,28 @@ class WorkbenchEngine:
 
     def _quarantine_prepaid_contract_blockers(self, project):
         """Move a blocked paid stage to an observable zero-call boundary."""
-        if project["stage"] not in PAID_CALL_STAGES:
-            return []
         blockers = self._prepaid_contract_blockers(project)
+        if (
+            project["stage"] not in PAID_CALL_STAGES
+            and project["stage"] != "admin_review"
+        ):
+            blockers = [
+                item for item in blockers
+                if item.get("id") in SOURCE_AUTHORITY_BLOCKER_IDS
+            ]
         if not blockers:
             return []
         blocked_stage = project["stage"]
         usage_before_block = self.usage_summary(project["id"])
-        self._set_stage(project["id"], "admin_review")
+        if blocked_stage != "admin_review":
+            self._set_stage(project["id"], "admin_review")
         self._event(
             project["id"],
             "prepaid_contract_blocked",
             "admin_review",
             project["article_hash"],
             {
+                "budget_block_schema": 2,
                 "blocked_stage": blocked_stage,
                 "blockers": blockers,
                 "operator_decision_required": False,
@@ -4876,7 +5409,16 @@ class WorkbenchEngine:
             self._assert_call_budget(p["id"], purpose, route)
             self._assert_prompt_budget(p["id"], purpose, prompt)
             call_id = self._begin_llm_call(
-                p["id"], purpose, route, request_hash
+                p["id"],
+                purpose,
+                route,
+                request_hash,
+                expected_candidate_count=len(
+                    truth_audit["review_candidates"]
+                ),
+                expected_candidate_set_hash=truth_audit[
+                    "review_candidate_set_hash"
+                ],
             )
             try:
                 reviewer_system = (
@@ -5067,6 +5609,7 @@ class WorkbenchEngine:
                 f"{purpose} returned a contradictory structured report; its "
                 "reserved call was consumed and will not be replayed"
             ) from exc
+        scope_attestation_errors = []
         truth_review = report.get("editorial_truth_review")
         if isinstance(truth_review, dict):
             expected = {
@@ -5126,6 +5669,15 @@ class WorkbenchEngine:
             }
             uncovered_unsupported = False
             if attestation_errors:
+                scope_attestation_errors = sorted(set(attestation_errors))
+                scope_exact_text = next(
+                    (
+                        str(item.get("exact_text") or "").strip()
+                        for item in truth_audit["review_candidates"]
+                        if str(item.get("exact_text") or "").strip()
+                    ),
+                    str(p.get("article_text") or "").strip()[:500],
+                )
                 existing.append({
                     "id": "E-REVIEW-SCOPE",
                     "category": "Editorial truth review coverage",
@@ -5133,9 +5685,12 @@ class WorkbenchEngine:
                         "The independent reviewer did not account for every "
                         "material article-to-source candidate with valid "
                         "source evidence: "
-                        + ", ".join(sorted(set(attestation_errors)))
+                        + ", ".join(scope_attestation_errors)
                     ),
-                    "exact_text": "",
+                    "exact_text": (
+                        scope_exact_text
+                        or "The current article requires editorial truth review."
+                    ),
                     "replacement": (
                         "Repeat the exact-hash semantic review and classify "
                         "every supplied candidate against its source excerpt."
@@ -5196,6 +5751,49 @@ class WorkbenchEngine:
                 "reviewed_article_hash": p["article_hash"],
             },
         )
+        if scope_attestation_errors:
+            # A scope-invalid paid response is evidence, but never a replayable
+            # approval. Persist it once, consume its call lifecycle, and move the
+            # exact project into a named human-owned queue instead of retrying or
+            # silently leaving the transaction in its paid stage.
+            self._set_report(
+                p,
+                report,
+                "admin_review",
+                "reviewer-scope-mismatch.json",
+            )
+            self._event(
+                p["id"],
+                "reviewer_scope_mismatch",
+                "admin_review",
+                p["article_hash"],
+                {
+                    "purpose": purpose,
+                    "call_id": call_id,
+                    "errors": scope_attestation_errors,
+                    "expected_candidate_count": len(
+                        truth_audit["review_candidates"]
+                    ),
+                    "expected_candidate_set_hash": truth_audit[
+                        "review_candidate_set_hash"
+                    ],
+                    "returned_candidate_count": len(
+                        truth_review.get("decisions") or []
+                    ),
+                    "returned_candidate_set_hash": str(
+                        truth_review.get("candidate_set_hash") or ""
+                    ),
+                    "paid_call_consumed": True,
+                    "owner": "admin_review_queue",
+                    "action": "review_reviewer_scope_failure",
+                    "operator_decision_required": True,
+                },
+            )
+            raise RuntimeError(
+                "Independent reviewer scope attestation failed; the paid "
+                "response was consumed and the exact transaction is queued for "
+                "review without replay."
+            )
         report = self._remove_house_rule_conflicts(report, p["article_text"])
         deterministic = deterministic_findings(
             p["article_text"], p["platform"], p["vertical"],
@@ -5207,7 +5805,21 @@ class WorkbenchEngine:
             for item in deterministic:
                 blockers, _ = partition_findings([item])
                 if blockers and item["id"] not in existing_ids:
-                    existing.append(item)
+                    existing.append(_actionable_system_finding(
+                        item,
+                        p["article_text"],
+                        finding_id=str(item.get("id") or "D-SYSTEM"),
+                        category="Deterministic publication gate",
+                        issue=(
+                            "A deterministic publication requirement remains "
+                            "unresolved."
+                        ),
+                        replacement=(
+                            "Repair the identified publication requirement "
+                            "against the exact current article."
+                        ),
+                    ))
+                    existing_ids.add(item["id"])
                 elif not blockers:
                     report.setdefault("recommended_edits", []).append(item)
             report["mandatory_count"] = len(existing)
@@ -5228,16 +5840,24 @@ class WorkbenchEngine:
                 finding_id = f"P-COVERAGE-{index}"
                 if finding_id in existing_ids:
                     continue
-                existing.append({
+                existing.append(_actionable_system_finding({
                     "id": finding_id,
                     "category": "Claim provenance",
                     "issue": violation["issue"],
-                    "exact_text": "",
                     "replacement": (
                         "Use distinct, relevant permitted claims from the sealed "
                         "record with the required seller/source attribution."
                     ),
-                })
+                }, p["article_text"],
+                    finding_id=finding_id,
+                    category="Claim provenance",
+                    issue="Required sealed-claim coverage is incomplete.",
+                    replacement=(
+                        "Use distinct, relevant permitted claims from the sealed "
+                        "record with the required seller/source attribution."
+                    ),
+                ))
+                existing_ids.add(finding_id)
             report["mandatory_count"] = len(existing)
             report["verdict"] = "not_approved"
         if provenance["attribution_violations"]:
@@ -5261,7 +5881,7 @@ class WorkbenchEngine:
                     if treatment == "seller_attribution_required"
                     else "According to the recorded source,"
                 )
-                existing.append({
+                existing.append(_actionable_system_finding({
                     "id": finding_id,
                     "category": "Claim provenance",
                     "issue": (
@@ -5278,7 +5898,19 @@ class WorkbenchEngine:
                         "permitted claim texts, without adding a bridge fact: "
                         + " | ".join(claim_texts)
                     ),
-                })
+                }, p["article_text"],
+                    finding_id=finding_id,
+                    category="Claim provenance",
+                    issue=(
+                        "A mapped publication claim is missing required "
+                        "source attribution."
+                    ),
+                    replacement=(
+                        "Reconstruct the sentence using only a permitted "
+                        "claim and its required attribution."
+                    ),
+                ))
+                existing_ids.add(finding_id)
             report["mandatory_count"] = len(existing)
             report["verdict"] = "not_approved"
         editorial_truth_findings = [
@@ -5290,7 +5922,24 @@ class WorkbenchEngine:
             existing_ids = {item.get("id") for item in existing}
             for item in editorial_truth_findings:
                 if item.get("id") not in existing_ids:
-                    existing.append(item)
+                    normalized = _actionable_system_finding(
+                        item,
+                        p["article_text"],
+                        finding_id=str(
+                            item.get("id") or "E-TRUTH-SYSTEM"
+                        ),
+                        category="Article-to-source grounding",
+                        issue=(
+                            "A deterministic editorial-truth requirement "
+                            "remains unresolved."
+                        ),
+                        replacement=(
+                            "Delete the unsupported expansion or replace it "
+                            "with a sentence entailed by the sealed record."
+                        ),
+                    )
+                    existing.append(normalized)
+                    existing_ids.add(normalized["id"])
             report["mandatory_count"] = len(existing)
             report["verdict"] = "not_approved"
             report["conditional_approval_after_exact_edits"] = False
@@ -5298,32 +5947,77 @@ class WorkbenchEngine:
                 "The deterministic bidirectional editorial-truth or CTA "
                 "integrity gate found a material false-pass condition."
             )
+        try:
+            self._validate_report(report)
+        except ValueError as exc:
+            # The provider response is already paid and must not become
+            # replayable merely because local deterministic augmentation
+            # produced an invalid composite report.
+            self._mark_llm_call_lifecycle(call_id, "invalid")
+            current = self.get(p["id"])
+            if current["stage"] != "admin_review":
+                self._set_stage(p["id"], "admin_review")
+            self._event(
+                p["id"],
+                "system_augmented_report_invalid",
+                "admin_review",
+                p["article_hash"],
+                {
+                    "purpose": purpose,
+                    "call_id": call_id,
+                    "error": str(exc),
+                    "paid_call_consumed": True,
+                    "owner": "admin_review_queue",
+                    "operator_decision_required": True,
+                },
+            )
+            raise RuntimeError(
+                "The paid reviewer response became invalid during local "
+                "deterministic augmentation; its call was consumed and the "
+                "transaction was queued without replay."
+            ) from exc
         return report
 
     def _record_llm_call(
         self, project_id, stage, route, input_tokens=0,
         output_tokens=0, status="success", error="", raw_output="",
         lifecycle="applied", request_hash="",
+        expected_candidate_count=None,
+        expected_candidate_set_hash="",
     ):
         cost = estimated_cost(route, input_tokens, output_tokens)
         project = self.get(project_id)
+        expected_count = (
+            int(expected_candidate_count)
+            if expected_candidate_count is not None
+            else -1
+        )
         with self._connect() as conn:
             cursor = conn.execute(
                 """INSERT INTO llm_calls(project_id,stage,provider,model,input_tokens,
                 output_tokens,estimated_cost,status,error,created_at,lifecycle,
                 raw_output,output_hash,request_hash,input_article_hash,
-                input_source_hash)
-                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                input_source_hash,expected_candidate_count,
+                expected_candidate_set_hash)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (project_id, stage, route.provider, route.model, input_tokens,
                  output_tokens, cost, status, error[:2000], _now(), lifecycle,
                  raw_output, _hash(raw_output) if raw_output else "",
                  request_hash, project.get("article_hash") or "",
-                 project.get("source_hash") or ""),
+                 project.get("source_hash") or "", expected_count,
+                 str(expected_candidate_set_hash or "").strip()),
             )
             return cursor.lastrowid
 
     def _begin_llm_call(
-        self, project_id, stage, route, request_hash
+        self,
+        project_id,
+        stage,
+        route,
+        request_hash,
+        *,
+        expected_candidate_count=None,
+        expected_candidate_set_hash="",
     ):
         """Persist provider intent before network I/O.
 
@@ -5332,6 +6026,38 @@ class WorkbenchEngine:
         state visible and billable-conservative, so recovery never silently
         repeats a possibly charged call.
         """
+        project = self.get(project_id)
+        authority_blockers = [
+            item for item in self._prepaid_contract_blockers(project)
+            if item.get("id") in SOURCE_AUTHORITY_BLOCKER_IDS
+        ]
+        if authority_blockers:
+            blocked_stage = project["stage"]
+            usage = self.usage_summary(project_id)
+            if blocked_stage != "admin_review":
+                self._set_stage(project_id, "admin_review")
+            self._event(
+                project_id,
+                "provider_authority_blocked",
+                "admin_review",
+                project["article_hash"],
+                {
+                    "purpose": stage,
+                    "blockers": authority_blockers,
+                    "paid_calls_before_block": usage["calls"],
+                    "paid_attempts_before_block": usage["attempts"],
+                    "paid_call_started_for_blocked_stage": False,
+                    "operator_decision_required": False,
+                },
+            )
+            raise RuntimeError(
+                "Paid provider request is blocked by the current source or "
+                "policy authority contract: "
+                + ", ".join(
+                    str(item.get("id") or "unknown")
+                    for item in authority_blockers
+                )
+            )
         return self._record_llm_call(
             project_id,
             stage,
@@ -5339,6 +6065,8 @@ class WorkbenchEngine:
             status="started",
             lifecycle="request_started",
             request_hash=request_hash,
+            expected_candidate_count=expected_candidate_count,
+            expected_candidate_set_hash=expected_candidate_set_hash,
         )
 
     def _complete_llm_call(
@@ -6124,10 +6852,47 @@ class WorkbenchEngine:
             raise ValueError("Compliance response contradicts itself: approved with mandatory edits")
         if report["verdict"] == "not_approved" and not edits:
             raise ValueError("Compliance response is not approved but supplies no actionable mandatory edits")
+        seen_edit_ids = set()
+        required_edit_fields = (
+            "id", "category", "issue", "exact_text", "replacement"
+        )
+        for index, edit in enumerate(edits):
+            if not isinstance(edit, dict):
+                raise ValueError(
+                    f"Compliance mandatory edit {index} is not an object"
+                )
+            blank = [
+                field for field in required_edit_fields
+                if not str(edit.get(field) or "").strip()
+            ]
+            if blank:
+                raise ValueError(
+                    "Compliance mandatory edit is not actionable; blank "
+                    "fields: " + ", ".join(blank)
+                )
+            edit_id = str(edit["id"]).strip()
+            if edit_id in seen_edit_ids:
+                raise ValueError(
+                    f"Compliance mandatory edit id is duplicated: {edit_id}"
+                )
+            seen_edit_ids.add(edit_id)
         report["mandatory_count"] = len(edits)
 
     def _build_package(self, p):
         current = self.get(p["id"])
+        source_blockers = [
+            item for item in self._prepaid_contract_blockers(current)
+            if item.get("id") in SOURCE_AUTHORITY_BLOCKER_IDS
+        ]
+        if source_blockers:
+            raise RuntimeError(
+                "Package creation is blocked by the sealed source authority "
+                "contract: "
+                + ", ".join(
+                    str(item.get("id") or "unknown")
+                    for item in source_blockers
+                )
+            )
         if (
             current["stage"] != "signed_off"
             or current["article_hash"] != p["article_hash"]
@@ -6249,6 +7014,16 @@ class WorkbenchEngine:
 
     def export_path(self, project_id):
         return self.exports_dir / f"{project_id}-submission-package.zip"
+
+    def _package_export_is_current(self, project, path=None):
+        """Fail closed when the durable package is absent or unverifiable."""
+        export_path = path or self.export_path(project["id"])
+        if not export_path.exists():
+            return False
+        try:
+            return self._package_export_matches(export_path, project)
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+            return False
 
     def _ensure_package_export(self, project):
         """Finish or rebuild an exact-hash package after an interrupted handoff."""

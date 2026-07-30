@@ -150,12 +150,32 @@ class TestAcquirerSuccess:
 
     @patch("net.safe_fetch")
     def test_regulatory_stores_correctly(self, mock_fetch, acquirer, lake):
-        mock_fetch.return_value = _good_fetch_result()
+        regulatory_url = "https://dsld.od.nih.gov/api/test"
+        mock_fetch.return_value = _good_fetch_result(regulatory_url)
         aid, text = acquirer.fetch_regulatory(
-            "https://dsld.od.nih.gov/api/test", source_name="DSLD"
+            regulatory_url, source_name="DSLD"
         )
         artifact = lake.get(aid)
         assert artifact.source_class == SourceClass.REGULATORY_DATABASE
+        assert artifact.corroboration_eligible is True
+        assert artifact.capture_route == "regulatory_allowlisted"
+        assert artifact.capture_attestation
+        assert lake.resolve_current_integrity([aid])[aid]["is_usable"] is True
+
+    @patch("net.safe_fetch")
+    def test_peer_reviewed_validated_route_mints_capability(
+        self, mock_fetch, acquirer, lake
+    ):
+        peer_url = "https://pubmed.ncbi.nlm.nih.gov/12345"
+        mock_fetch.return_value = _good_fetch_result(peer_url)
+
+        aid, _ = acquirer.fetch_peer_reviewed(peer_url, source_name="PubMed")
+
+        artifact = lake.get(aid)
+        assert artifact.source_class == SourceClass.PEER_REVIEWED
+        assert artifact.corroboration_eligible is True
+        assert artifact.capture_route == "peer_reviewed_allowlisted"
+        assert artifact.capture_attestation
 
     @patch("net.safe_fetch")
     def test_third_party_stores_correctly(self, mock_fetch, acquirer, lake):

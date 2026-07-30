@@ -108,6 +108,8 @@ class BrowserSession:
         self._playwright = None
         self._browser = None
         self._context = None
+        self.last_status_code = 0
+        self.last_final_url = ""
 
     def __enter__(self):
         if not PLAYWRIGHT_AVAILABLE:
@@ -151,6 +153,8 @@ class BrowserSession:
         """Fetch a URL using a real browser. Returns HTML string or empty string."""
         if not self.available:
             return ""
+        self.last_status_code = 0
+        self.last_final_url = ""
 
         # Validate URL before browser navigation (SSRF protection)
         try:
@@ -167,7 +171,12 @@ class BrowserSession:
             # Block unnecessary resources + validate all outbound URLs (SSRF)
             page.route('**/*', self._safe_route_handler)
 
-            page.goto(url, wait_until=wait_until, timeout=timeout_ms)
+            response = page.goto(
+                url, wait_until=wait_until, timeout=timeout_ms
+            )
+            if response is not None:
+                self.last_status_code = int(response.status or 0)
+                self.last_final_url = str(response.url or "")
 
             # Extra wait for late-loading JS content
             page.wait_for_timeout(2000)
@@ -180,6 +189,10 @@ class BrowserSession:
             self._expand_hidden_content(page)
 
             html = page.content()
+            # JavaScript navigation may occur after the initial response. The
+            # post-render page URL is the provenance boundary, not the first
+            # response URL.
+            self.last_final_url = str(page.url or self.last_final_url or "")
             page.close()
             page = None
 

@@ -1,5 +1,6 @@
 """Trust-boundary tests for submitted source material."""
 
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -167,6 +168,7 @@ def test_accesswire_r12_adapter_reports_rewrite_term_not_missing_field_fail():
 def test_label_artifact_preserves_original_source_url(tmp_path):
     from acquire import Acquirer
     from evidence import EvidenceLake
+    from net import FetchResult
 
     db_path = str(tmp_path / "provenance.db")
     from database import ProductDatabase
@@ -174,10 +176,18 @@ def test_label_artifact_preserves_original_source_url(tmp_path):
     lake = EvidenceLake(db_path=db_path)
     acquirer = Acquirer(lake, offering_id="off-label", job_id="job-label")
     source_url = "https://cdn.example.com/supplement-facts.png"
+    image_bytes = b"\x89PNG\r\n\x1a\nfixture-label"
+    fetched = FetchResult(
+        content=image_bytes,
+        final_url=source_url,
+        status_code=200,
+        tls_verified=True,
+    )
     artifact_id = acquirer.store_label_image(
-        b"not-a-real-png-but-valid-evidence-bytes",
+        image_bytes,
         source_description="downloaded intake label",
         source_url=source_url,
+        fetch_result=fetched,
     )
 
     assert lake.get(artifact_id).source_url == source_url
@@ -232,6 +242,74 @@ def test_blocked_source_pack_is_not_reported_as_research_complete(tmp_path):
         ValueError, match="Source pack is blocked"
     ):
         handle_source_pack(job)
+    db.close()
+
+
+def test_source_pack_blocks_on_current_retained_evidence_tamper(tmp_path):
+    from database import ProductDatabase
+    from evidence import (
+        Artifact,
+        EvidenceLake,
+        SourceClass,
+        SourceRelationship,
+    )
+    from stage_handlers import handle_source_pack
+    from workflow import Job, PipelineStage, ReviewBlockError
+
+    db_path = str(tmp_path / "source-pack-integrity.db")
+    db = ProductDatabase(db_path=db_path)
+    lake = EvidenceLake(db_path=db_path)
+    job = Job.create(
+        url="https://vendor.example/product",
+        product_name="Integrity Device",
+        channel="Accesswire",
+    )
+    job.offering_id = "off-source-pack-integrity"
+    content = b"retained source bytes " + (b"x" * 150_000)
+    artifact_id = lake.store(
+        Artifact(
+            source_url=job.url,
+            final_url=job.url,
+            source_class=SourceClass.OFFICIAL_VENDOR,
+            source_relationship=SourceRelationship.FIRST_PARTY,
+            offering_id=job.offering_id,
+            job_id=job.job_id,
+            acquisition_phase="ACQUIRE",
+            capture_route="official_page",
+        ),
+        content,
+    )
+    stored = lake.get(artifact_id)
+    artifact_path = os.path.join(lake._artifacts_dir, stored.content_path)
+    os.chmod(artifact_path, 0o644)
+    with open(artifact_path, "wb") as handle:
+        handle.write(b"tampered after capture")
+
+    job.set_stage_result(PipelineStage.IDENTIFY, {
+        "product_data": {
+            "product_name": job.product_name,
+            "product_type": "device",
+        },
+        "offering_type": "device",
+    })
+    job.set_stage_result(PipelineStage.ACQUIRE, {
+        "artifacts": [{"artifact_id": artifact_id, "type": "official_page"}],
+        "source_manifest": [],
+    })
+
+    with patch("config.DB_PATH", db_path), pytest.raises(
+        ReviewBlockError,
+        match="retained evidence failed",
+    ) as blocked:
+        handle_source_pack(job)
+
+    assert blocked.value.details == {
+        "review_owner": "source_evidence_repair",
+        "repair_required": True,
+        "repair_action": "reacquire_or_restore_evidence",
+        "paid_call_allowed": False,
+        "integrity_error": "Evidence bytes failed SHA-256 integrity verification",
+    }
     db.close()
 
 
@@ -647,10 +725,12 @@ def test_verified_label_ocr_satisfies_strict_mandatory_gate(tmp_path):
     db.close()
 
 
-def test_initial_label_ocr_flows_through_extract_and_clears_gate(tmp_path):
+def test_initial_label_ocr_flows_through_extract_without_human_attestation(
+    tmp_path,
+):
     import hashlib
 
-    from claims import ClaimsLedger
+    from claims import ClaimsLedger, ReviewStatus
     from database import ProductDatabase
     from net import FetchResult
     from stage_handlers import handle_acquire, handle_extract
@@ -659,7 +739,7 @@ def test_initial_label_ocr_flows_through_extract_and_clears_gate(tmp_path):
     db_path = str(tmp_path / "initial-label.db")
     db = ProductDatabase(db_path=db_path)
     label_path = tmp_path / "tmx.png"
-    label_path.write_bytes(b"representative-label-image-bytes")
+    label_path.write_bytes(b"\x89PNG\r\n\x1a\nrepresentative-label")
     page = b"<html><body>T-Max official product page</body></html>"
     fetch = FetchResult(
         content=page,
@@ -708,7 +788,21 @@ def test_initial_label_ocr_flows_through_extract_and_clears_gate(tmp_path):
         ["ingredients_with_amounts", "serving_size"],
         strict=True,
     )
+    ledger = ClaimsLedger(db_path=db_path)
     assert strict["missing"] == []
+    mandatory = [
+        claim
+        for claim in ledger.get_claims(job.offering_id)
+        if (claim.metadata or {}).get("fact_key") in {
+            "ingredients_with_amounts",
+            "serving_size",
+        }
+    ]
+    assert mandatory
+    assert all(
+        claim.review_status == ReviewStatus.UNREVIEWED
+        for claim in mandatory
+    )
     assert strict["needs_review"] == []
     label_claims = ClaimsLedger(db_path=db_path).get_claims(job.offering_id)
     assert all(c.metadata.get("source_of_record") for c in label_claims)

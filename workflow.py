@@ -392,9 +392,18 @@ class Pipeline:
 
             except ReviewBlockError as e:
                 # Production VA runs never open an editorial questionnaire.
-                # Any ReviewBlockError that survives the unattended handlers is
-                # a genuine source/system repair condition, not a human choice.
-                if job.metadata.get("unattended", False):
+                # Claim-level source verification is the one typed exception:
+                # it has a named human owner and must remain resumable even
+                # when the research run itself was unattended.
+                verification_handoff = (
+                    e.details.get("review_owner") == "source_verification"
+                )
+                # Any other ReviewBlockError that survives the unattended
+                # handlers is a genuine source/system repair condition.
+                if (
+                    job.metadata.get("unattended", False)
+                    and not verification_handoff
+                ):
                     stage_elapsed = time.time() - stage_start
                     job.elapsed_seconds = elapsed_before_run + (time.time() - start_time)
                     failure_result = {

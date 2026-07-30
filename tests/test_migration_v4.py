@@ -150,8 +150,8 @@ def _get_columns(conn, table):
 
 
 class TestMigrationV4:
-    def test_schema_version_is_6(self):
-        assert CURRENT_SCHEMA_VERSION == 6
+    def test_schema_version_is_8(self):
+        assert CURRENT_SCHEMA_VERSION == 8
 
     def test_fresh_db_creates_all_tables(self, tmp_db_path):
         """A brand new database should have all tables with all columns."""

@@ -17,7 +17,11 @@ from typing import Optional
 _db_lock = threading.Lock()
 
 # Schema version — increment when adding migrations
-CURRENT_SCHEMA_VERSION = 6
+#
+# V8 is intentionally separate from the partially deployed v7 transition.
+# Some databases may already be stamped v7 even though they predate the
+# capture/review attestation columns and the durable legacy-repair queue.
+CURRENT_SCHEMA_VERSION = 8
 
 
 def _slugify(name: str) -> str:
@@ -40,16 +44,63 @@ def persist_completed_pack(research_data: dict, preferred_key: str = "",
     """
     if not isinstance(research_data, dict) or not research_data:
         raise ValueError("Cannot persist an empty completed source pack")
-    from source_pack_contract import seal_source_pack
-    research_data = seal_source_pack(research_data)
+    from source_pack_contract import (
+        CONTRACT_NAME,
+        CONTRACT_VERSION,
+        LEGACY_CONTRACT_VERSIONS,
+        migrate_source_pack,
+        seal_source_pack,
+    )
+
+    migration_event = None
+    if "source_pack_contract" in research_data:
+        input_contract = research_data.get("source_pack_contract")
+        if not isinstance(input_contract, dict):
+            raise ValueError("Source pack contract must be a JSON object")
+        prior_contract = dict(input_contract)
+        research_data = migrate_source_pack(research_data)
+        if (
+            prior_contract.get("name") == CONTRACT_NAME
+            and prior_contract.get("version") in LEGACY_CONTRACT_VERSIONS
+        ):
+            new_contract = research_data["source_pack_contract"]
+            prior_reasons = prior_contract.get("readiness_reasons") or []
+            if not isinstance(prior_reasons, list):
+                prior_reasons = [str(prior_reasons)]
+            migration_event = {
+                "event_type": "source_pack_contract_migrated",
+                "from_version": prior_contract.get("version"),
+                "to_version": CONTRACT_VERSION,
+                "prior_sha256": str(prior_contract.get("sha256") or ""),
+                "new_sha256": str(new_contract.get("sha256") or ""),
+                "prior_readiness": str(
+                    prior_contract.get("readiness") or ""
+                ),
+                "new_readiness": str(new_contract.get("readiness") or ""),
+                "status": "success",
+                "error": "",
+                "payload": {
+                    "migration": "mandatory-assurance-v3-reassessment",
+                    "prior_readiness_reasons": list(prior_reasons),
+                },
+            }
+    else:
+        research_data = seal_source_pack(research_data)
     product = research_data.get("product", {}) or {}
     product_name = str(product.get("product_name", "")).strip()
     product_key = (preferred_key or _slugify(product_name)).strip()
     if not product_key:
         raise ValueError("Completed source pack has no product identity")
     db = ProductDatabase(db_path=db_path)
-    db.upsert_product(product_key, research_data)
-    return product_key
+    try:
+        _, persisted_key = db.persist_product_with_migration_event(
+            product_key,
+            research_data,
+            migration_event=migration_event,
+        )
+        return persisted_key
+    finally:
+        db.close()
 
 
 class ProductDatabase:
@@ -61,6 +112,26 @@ class ProductDatabase:
             db_path = DB_PATH
         self.db_path = db_path
         self._conn = None
+        # Probe before CREATE/ALTER statements.  Opening a database produced by
+        # a newer runtime must not mutate it and then relabel it as this schema.
+        if (
+            db_path != ":memory:"
+            and os.path.exists(db_path)
+            and os.path.getsize(db_path) > 0
+        ):
+            probe = sqlite3.connect(db_path)
+            try:
+                discovered = int(
+                    probe.execute("PRAGMA user_version").fetchone()[0]
+                )
+            finally:
+                probe.close()
+            if discovered > CURRENT_SCHEMA_VERSION:
+                raise RuntimeError(
+                    "Database schema version "
+                    f"{discovered} is newer than this runtime supports "
+                    f"({CURRENT_SCHEMA_VERSION}); refusing to open"
+                )
         self._ensure_tables()
 
     @property
@@ -161,6 +232,12 @@ class ProductDatabase:
     def _run_migrations(self):
         """Run any pending schema migrations."""
         current = self._get_schema_version()
+        if current > CURRENT_SCHEMA_VERSION:
+            raise RuntimeError(
+                "Database schema version "
+                f"{current} is newer than this runtime supports "
+                f"({CURRENT_SCHEMA_VERSION}); refusing to downgrade or write"
+            )
         if current < 1:
             self._migrate_v1()
         if current < 2:
@@ -173,6 +250,10 @@ class ProductDatabase:
             self._migrate_v5()
         if current < 6:
             self._migrate_v6()
+        if current < 7:
+            self._migrate_v7()
+        if current < 8:
+            self._migrate_v8()
         self._set_schema_version(CURRENT_SCHEMA_VERSION)
 
     def _migrate_v1(self):
@@ -307,10 +388,14 @@ class ProductDatabase:
                 error TEXT DEFAULT '',
                 content_path TEXT DEFAULT '',
                 content_inline TEXT DEFAULT '',
+                content_inline_blob BLOB,
                 offering_id TEXT,
                 job_id TEXT,
                 acquisition_phase TEXT DEFAULT '',
-                notes TEXT DEFAULT ''
+                notes TEXT DEFAULT '',
+                capture_attestation_json TEXT NOT NULL DEFAULT '{}',
+                capture_route TEXT NOT NULL DEFAULT '',
+                corroboration_eligible INTEGER NOT NULL DEFAULT 0
             )""",
 
             # Claims ledger — atomic fact/claim records with source tracing
@@ -442,10 +527,14 @@ class ProductDatabase:
                 "error": "TEXT DEFAULT ''",
                 "content_path": "TEXT DEFAULT ''",
                 "content_inline": "TEXT DEFAULT ''",
+                "content_inline_blob": "BLOB",
                 "offering_id": "TEXT",
                 "job_id": "TEXT",
                 "acquisition_phase": "TEXT DEFAULT ''",
                 "notes": "TEXT DEFAULT ''",
+                "capture_attestation_json": "TEXT NOT NULL DEFAULT '{}'",
+                "capture_route": "TEXT NOT NULL DEFAULT ''",
+                "corroboration_eligible": "INTEGER NOT NULL DEFAULT 0",
             },
             "claims": {
                 "claim_id": "TEXT PRIMARY KEY",
@@ -512,6 +601,32 @@ class ProductDatabase:
         ]
 
         repairs = []
+        # SQLite cannot add NOT NULL columns without a usable default when rows
+        # already exist.  These conservative values keep legacy artifact rows
+        # readable while ensuring they are anonymous/non-corroborating until a
+        # fresh capture supplies complete provenance.
+        additive_overrides = {
+            ("artifacts", "artifact_type"): "TEXT DEFAULT 'html_snapshot'",
+            ("artifacts", "source_class"): "TEXT DEFAULT 'anonymous'",
+            (
+                "artifacts",
+                "source_relationship",
+            ): "TEXT DEFAULT 'third_party'",
+            ("artifacts", "captured_at"): "TEXT DEFAULT ''",
+            ("artifacts", "content_hash"): "TEXT DEFAULT ''",
+            ("artifacts", "content_length"): "INTEGER DEFAULT 0",
+            ("artifacts", "tls_verified"): "INTEGER DEFAULT 0",
+            ("artifacts", "status_code"): "INTEGER DEFAULT 0",
+            ("artifacts", "error"): "TEXT DEFAULT ''",
+            ("artifacts", "content_path"): "TEXT DEFAULT ''",
+            ("artifacts", "content_inline"): "TEXT DEFAULT ''",
+            (
+                "artifacts",
+                "capture_attestation_json",
+            ): "TEXT DEFAULT '{}'",
+            ("artifacts", "capture_route"): "TEXT DEFAULT ''",
+            ("artifacts", "corroboration_eligible"): "INTEGER DEFAULT 0",
+        }
 
         for table, columns in expected.items():
             # Check if table exists
@@ -524,7 +639,15 @@ class ProductDatabase:
                 # Table missing entirely — create it from v3 definition
                 repairs.append(f"table:{table}:created")
                 self._migrate_v3()  # Re-run v3 to create all missing tables
-                break  # v3 creates everything, no need to continue
+                exists = self.conn.execute(
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type='table' AND name=?",
+                    (table,),
+                ).fetchone()
+                if not exists:
+                    raise RuntimeError(
+                        f"Schema repair could not create required table: {table}"
+                    )
 
             # Table exists — check for missing columns
             existing_cols = {
@@ -536,10 +659,12 @@ class ProductDatabase:
                 if col_name not in existing_cols:
                     # Extract just the type and default for ALTER TABLE
                     # PRIMARY KEY and NOT NULL can't be added via ALTER
-                    add_def = col_def.replace("PRIMARY KEY", "")
-                    add_def = add_def.replace("AUTOINCREMENT", "")
-                    add_def = add_def.replace("NOT NULL", "")
-                    add_def = add_def.strip()
+                    add_def = additive_overrides.get((table, col_name), "")
+                    if not add_def:
+                        add_def = col_def.replace("PRIMARY KEY", "")
+                        add_def = add_def.replace("AUTOINCREMENT", "")
+                        add_def = add_def.replace("NOT NULL", "")
+                        add_def = add_def.strip()
                     if not add_def:
                         add_def = "TEXT"
                     try:
@@ -636,6 +761,468 @@ class ProductDatabase:
                 self.conn.execute(sql)
             except sqlite3.OperationalError:
                 pass  # Already exists
+        self.conn.commit()
+
+    def _migrate_v7(self):
+        """V7: correct automation statuses and reassess stored v2 packs.
+
+        Older unattended review runs stored policy-generated replacement text
+        as ``accepted`` under the automation principal. Preserve the reviewer
+        and timestamp while correcting the semantic status. Valid sealed v2
+        CRM packs are migrated to v3 with an immutable transition event;
+        invalid legacy packs remain untouched and receive a failed event.
+        """
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS source_pack_migration_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                product_id INTEGER NOT NULL REFERENCES products(id),
+                product_key TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                from_version INTEGER,
+                to_version INTEGER,
+                prior_sha256 TEXT,
+                new_sha256 TEXT,
+                prior_readiness TEXT,
+                new_readiness TEXT,
+                status TEXT NOT NULL,
+                error TEXT DEFAULT '',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_pack_migration_product
+                ON source_pack_migration_events(product_id);
+            CREATE TRIGGER IF NOT EXISTS trg_pack_migration_no_update
+                BEFORE UPDATE ON source_pack_migration_events
+                BEGIN SELECT RAISE(
+                    ABORT,
+                    'source_pack_migration_events is immutable: updates are prohibited'
+                ); END;
+            CREATE TRIGGER IF NOT EXISTS trg_pack_migration_no_delete
+                BEFORE DELETE ON source_pack_migration_events
+                BEGIN SELECT RAISE(
+                    ABORT,
+                    'source_pack_migration_events is immutable: deletes are prohibited'
+                ); END;
+            CREATE TABLE IF NOT EXISTS claim_review_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                claim_id TEXT NOT NULL,
+                offering_id TEXT NOT NULL,
+                prior_status TEXT NOT NULL,
+                new_status TEXT NOT NULL,
+                reviewer TEXT NOT NULL,
+                reviewed_at TEXT NOT NULL,
+                event_hash TEXT NOT NULL UNIQUE,
+                claim_snapshot_json TEXT NOT NULL DEFAULT '{}',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                signature_json TEXT NOT NULL DEFAULT '{}',
+                key_id TEXT NOT NULL DEFAULT ''
+            );
+            CREATE TRIGGER IF NOT EXISTS trg_claim_review_no_update
+                BEFORE UPDATE ON claim_review_events
+                BEGIN SELECT RAISE(
+                    ABORT,
+                    'claim_review_events is immutable'
+                ); END;
+            CREATE TRIGGER IF NOT EXISTS trg_claim_review_no_delete
+                BEFORE DELETE ON claim_review_events
+                BEGIN SELECT RAISE(
+                    ABORT,
+                    'claim_review_events is immutable'
+                ); END;
+        """)
+        try:
+            self.conn.execute(
+                """UPDATE claims
+                SET review_status = 'auto_substituted'
+                WHERE review_status = 'accepted'
+                AND lower(trim(coalesce(reviewed_by, ''))) =
+                    'source-intelligence-automation'"""
+            )
+        except sqlite3.OperationalError:
+            pass  # Claims table is repaired/created by the earlier migrations.
+
+        from source_pack_contract import (
+            CONTRACT_NAME,
+            CONTRACT_VERSION,
+            migrate_source_pack,
+        )
+
+        rows = self.conn.execute(
+            """SELECT id, product_key, research_json, research_version
+            FROM products WHERE research_json IS NOT NULL"""
+        ).fetchall()
+        migrated_at = datetime.utcnow().isoformat()
+        for row in rows:
+            try:
+                research_data = json.loads(row["research_json"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(research_data, dict):
+                continue
+            contract = research_data.get("source_pack_contract") or {}
+            if not isinstance(contract, dict):
+                continue
+            if (
+                contract.get("name") != CONTRACT_NAME
+                or contract.get("version") != 2
+            ):
+                continue
+            prior_sha = str(contract.get("sha256") or "")
+            prior_readiness = str(contract.get("readiness") or "")
+            prior_reasons = contract.get("readiness_reasons") or []
+            if not isinstance(prior_reasons, list):
+                prior_reasons = [str(prior_reasons)]
+            event_payload = {
+                "migration": "mandatory-assurance-v3-reassessment",
+                "prior_readiness_reasons": list(prior_reasons),
+            }
+            savepoint = f"source_pack_v7_{int(row['id'])}"
+            self.conn.execute(f"SAVEPOINT {savepoint}")
+            try:
+                migrated = migrate_source_pack(research_data)
+                new_contract = migrated["source_pack_contract"]
+                serialized = json.dumps(migrated)
+                quality_score, quality_flags = (
+                    self.compute_completeness_score(migrated)
+                )
+                self.conn.execute(
+                    """UPDATE products SET
+                        research_json = ?,
+                        research_hash = ?,
+                        research_version = ?,
+                        quality_score = ?,
+                        quality_flags = ?
+                    WHERE id = ?""",
+                    (
+                        serialized,
+                        hashlib.sha256(serialized.encode()).hexdigest(),
+                        int(row["research_version"] or 0) + 1,
+                        quality_score,
+                        json.dumps(quality_flags),
+                        row["id"],
+                    ),
+                )
+                self.conn.execute(
+                    """INSERT INTO source_pack_migration_events (
+                        product_id, product_key, event_type,
+                        from_version, to_version, prior_sha256, new_sha256,
+                        prior_readiness, new_readiness, status, error,
+                        payload_json, created_at
+                    )
+                    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM source_pack_migration_events
+                        WHERE product_id=?
+                          AND event_type=?
+                          AND coalesce(prior_sha256, '')=?
+                          AND to_version=?
+                          AND status=?
+                    )""",
+                    (
+                        row["id"],
+                        row["product_key"],
+                        "source_pack_contract_migrated",
+                        2,
+                        CONTRACT_VERSION,
+                        prior_sha,
+                        str(new_contract.get("sha256") or ""),
+                        prior_readiness,
+                        str(new_contract.get("readiness") or ""),
+                        "success",
+                        "",
+                        json.dumps(event_payload, sort_keys=True),
+                        migrated_at,
+                        row["id"],
+                        "source_pack_contract_migrated",
+                        prior_sha,
+                        CONTRACT_VERSION,
+                        "success",
+                    ),
+                )
+                self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            except (TypeError, ValueError, KeyError, AttributeError) as exc:
+                self.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                self.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                self.conn.execute(
+                    """INSERT INTO source_pack_migration_events (
+                        product_id, product_key, event_type,
+                        from_version, to_version, prior_sha256, new_sha256,
+                        prior_readiness, new_readiness, status, error,
+                        payload_json, created_at
+                    )
+                    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM source_pack_migration_events
+                        WHERE product_id=?
+                          AND event_type=?
+                          AND coalesce(prior_sha256, '')=?
+                          AND to_version=?
+                          AND status=?
+                    )""",
+                    (
+                        row["id"],
+                        row["product_key"],
+                        "source_pack_contract_migration_failed",
+                        2,
+                        CONTRACT_VERSION,
+                        prior_sha,
+                        "",
+                        prior_readiness,
+                        "",
+                        "failed",
+                        str(exc)[:2000],
+                        json.dumps(event_payload, sort_keys=True),
+                        migrated_at,
+                        row["id"],
+                        "source_pack_contract_migration_failed",
+                        prior_sha,
+                        CONTRACT_VERSION,
+                        "failed",
+                    ),
+                )
+        self.conn.commit()
+
+    def _migrate_v8(self):
+        """V8: finish the attestation schema and expose migration repairs.
+
+        V7 reached production in more than one shape.  Re-running its
+        idempotent work first catches valid v2 packs that a partial deployment
+        may have skipped.  V8 then adds the capture/review proof columns
+        additively and records every pack-shaped row that still cannot be
+        validated.  A schema version is never used as evidence that every row
+        migrated successfully; unresolved rows have a durable operator owner.
+        """
+        # A database may already be stamped v7 even though an earlier additive
+        # repair or the row loop was interrupted.  V4 repairs foundational
+        # tables, and v7 uses savepoints plus idempotent event inserts, so both
+        # are safe to replay.
+        self._migrate_v4()
+        self._migrate_v7()
+
+        artifact_columns = {
+            "content_inline_blob": "BLOB",
+            "capture_attestation_json": "TEXT NOT NULL DEFAULT '{}'",
+            "capture_route": "TEXT NOT NULL DEFAULT ''",
+            "corroboration_eligible": "INTEGER NOT NULL DEFAULT 0",
+        }
+        review_event_columns = {
+            "claim_snapshot_json": "TEXT NOT NULL DEFAULT '{}'",
+            "payload_json": "TEXT NOT NULL DEFAULT '{}'",
+            "signature_json": "TEXT NOT NULL DEFAULT '{}'",
+            "key_id": "TEXT NOT NULL DEFAULT ''",
+        }
+        for table, columns in (
+            ("artifacts", artifact_columns),
+            ("claim_review_events", review_event_columns),
+        ):
+            existing = {
+                row[1]
+                for row in self.conn.execute(
+                    f"PRAGMA table_info({table})"
+                ).fetchall()
+            }
+            for column, definition in columns.items():
+                if column in existing:
+                    continue
+                self.conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {column} {definition}"
+                )
+
+        # Do not let the version marker stand in for a usable evidence schema.
+        # V4 is additive, so validate the complete runtime contract explicitly
+        # before v8 can be stamped.
+        required_artifact_columns = {
+            "artifact_id",
+            "artifact_type",
+            "source_url",
+            "final_url",
+            "source_class",
+            "source_relationship",
+            "captured_at",
+            "content_hash",
+            "content_length",
+            "tls_verified",
+            "status_code",
+            "elapsed_ms",
+            "error",
+            "content_path",
+            "content_inline",
+            "content_inline_blob",
+            "offering_id",
+            "job_id",
+            "acquisition_phase",
+            "notes",
+            "capture_attestation_json",
+            "capture_route",
+            "corroboration_eligible",
+        }
+        artifact_info = {
+            row[1]: row
+            for row in self.conn.execute(
+                "PRAGMA table_info(artifacts)"
+            ).fetchall()
+        }
+        missing_artifact_columns = sorted(
+            required_artifact_columns - set(artifact_info)
+        )
+        if missing_artifact_columns:
+            raise RuntimeError(
+                "Artifact schema repair is incomplete; missing columns: "
+                + ", ".join(missing_artifact_columns)
+            )
+        if int(artifact_info["artifact_id"][5] or 0) != 1:
+            raise RuntimeError(
+                "Artifact schema repair requires artifact_id to remain the "
+                "primary key; manual repair is required"
+            )
+        self.conn.executescript("""
+            CREATE TRIGGER IF NOT EXISTS trg_artifacts_no_update
+                BEFORE UPDATE ON artifacts
+                BEGIN SELECT RAISE(
+                    ABORT, 'artifacts are immutable'
+                ); END;
+            CREATE TRIGGER IF NOT EXISTS trg_artifacts_no_delete
+                BEFORE DELETE ON artifacts
+                BEGIN SELECT RAISE(
+                    ABORT, 'artifacts are immutable'
+                ); END;
+        """)
+
+        from source_pack_contract import (
+            CONTRACT_NAME,
+            CONTRACT_VERSION,
+            validate_source_pack,
+        )
+
+        def record_repair(row, message, *, contract=None, reason=""):
+            contract = contract if isinstance(contract, dict) else {}
+            payload = {
+                "migration": "mandatory-assurance-v3-reassessment",
+                "repair_owner": "source_pack_contract",
+                "reason": str(reason or "unmigrated_source_pack"),
+            }
+            prior_sha = str(contract.get("sha256") or "")
+            from_version = contract.get("version")
+            error = str(message or "Source pack requires repair")[:2000]
+            self.conn.execute(
+                """INSERT INTO source_pack_migration_events (
+                    product_id, product_key, event_type,
+                    from_version, to_version, prior_sha256, new_sha256,
+                    prior_readiness, new_readiness, status, error,
+                    payload_json, created_at
+                )
+                SELECT ?, ?, ?, ?, ?, ?, '', ?, '', ?, ?, ?, ?
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM source_pack_migration_events
+                    WHERE product_id=?
+                      AND event_type='source_pack_contract_repair_required'
+                      AND coalesce(from_version, -1)=coalesce(?, -1)
+                      AND coalesce(prior_sha256, '')=?
+                      AND status='requires_repair'
+                      AND error=?
+                )""",
+                (
+                    row["id"],
+                    row["product_key"],
+                    "source_pack_contract_repair_required",
+                    from_version,
+                    CONTRACT_VERSION,
+                    prior_sha,
+                    str(contract.get("readiness") or ""),
+                    "requires_repair",
+                    error,
+                    json.dumps(payload, sort_keys=True),
+                    datetime.utcnow().isoformat(),
+                    row["id"],
+                    from_version,
+                    prior_sha,
+                    error,
+                ),
+            )
+
+        rows = self.conn.execute(
+            """SELECT id, product_key, research_json
+            FROM products WHERE research_json IS NOT NULL"""
+        ).fetchall()
+        for row in rows:
+            try:
+                research_data = json.loads(row["research_json"])
+            except (json.JSONDecodeError, TypeError) as exc:
+                record_repair(
+                    row,
+                    f"Stored research JSON cannot be parsed: {exc}",
+                    reason="malformed_research_json",
+                )
+                continue
+            if not isinstance(research_data, dict):
+                record_repair(
+                    row,
+                    "Stored research JSON is not an object",
+                    reason="non_object_research_json",
+                )
+                continue
+
+            pack_shaped = any(
+                key in research_data
+                for key in (
+                    "source_pack_contract",
+                    "claims_by_type",
+                    "publication_claims",
+                    "all_artifacts",
+                    "required_facts",
+                )
+            )
+            if not pack_shaped:
+                # Ordinary pre-contract CRM research is not silently promoted
+                # into a source pack and is outside this migration.
+                continue
+            contract = research_data.get("source_pack_contract")
+            if not isinstance(contract, dict):
+                record_repair(
+                    row,
+                    "Source pack contract is missing or is not an object",
+                    reason="missing_or_malformed_contract",
+                )
+                continue
+            if contract.get("name") != CONTRACT_NAME:
+                record_repair(
+                    row,
+                    "Source pack contract name is missing or unsupported",
+                    contract=contract,
+                    reason="unsupported_contract_name",
+                )
+                continue
+            if contract.get("version") != CONTRACT_VERSION:
+                # Valid v2 rows were retried above.  Anything still on v2 has
+                # a v7 failure event; unknown versions get an explicit repair
+                # event here instead of disappearing behind user_version=8.
+                prior_failure = self.conn.execute(
+                    """SELECT 1 FROM source_pack_migration_events
+                    WHERE product_id=?
+                      AND status IN ('failed', 'requires_repair')
+                      AND coalesce(from_version, -1)=coalesce(?, -1)
+                    LIMIT 1""",
+                    (row["id"], contract.get("version")),
+                ).fetchone()
+                if not prior_failure:
+                    record_repair(
+                        row,
+                        "Source pack contract version could not be migrated: "
+                        f"{contract.get('version')!r}",
+                        contract=contract,
+                        reason="unsupported_or_unmigrated_contract_version",
+                    )
+                continue
+            try:
+                validate_source_pack(research_data, allow_limited=True)
+            except (KeyError, TypeError, ValueError) as exc:
+                record_repair(
+                    row,
+                    f"Current source pack failed validation: {exc}",
+                    contract=contract,
+                    reason="current_contract_validation_failed",
+                )
+
         self.conn.commit()
 
     def _execute_write(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
@@ -1005,16 +1592,15 @@ class ProductDatabase:
     # PRODUCT CRUD
     # ──────────────────────────────────────────────────────────────────
 
-    def upsert_product(self, product_key: str, research_data: dict) -> int:
-        """
-        Insert or update a product with research data.
-        Returns the product id.
+    def _upsert_product_uncommitted(
+        self,
+        product_key: str,
+        research_data: dict,
+    ) -> tuple:
+        """Insert/update a product inside the caller's transaction.
 
-        Detects key collisions: if product_key already exists with a DIFFERENT
-        product name, appends a numeric suffix to avoid silent data merging.
-
-        Hash-based freshness: research_updated_at only changes when
-        research_json content actually changes (not on every touch).
+        Returns ``(product_id, persisted_key)`` so callers can attach audit
+        records to the collision-resolved CRM identity before committing.
         """
         product = research_data.get("product", {})
         now = datetime.utcnow().isoformat()
@@ -1034,100 +1620,242 @@ class ProductDatabase:
         research_json = json.dumps(research_data)
         new_hash = hashlib.sha256(research_json.encode()).hexdigest()
 
-        # Atomic read-check-write under lock
-        with _db_lock:
-            # Check for existing record
-            existing = self.conn.execute(
-                "SELECT id, research_version, product_name, research_hash "
-                "FROM products WHERE product_key = ?",
-                (product_key,)
-            ).fetchone()
+        existing = self.conn.execute(
+            "SELECT id, research_version, product_name, research_hash "
+            "FROM products WHERE product_key = ?",
+            (product_key,),
+        ).fetchone()
 
-            # Collision detection: same key, different product name
-            if existing and existing["product_name"] and new_name:
-                existing_name_key = _slugify(existing["product_name"])
-                new_name_key = _slugify(new_name)
-                if existing_name_key != new_name_key:
-                    import logging
-                    logging.warning(
-                        f"Product key collision: '{product_key}' exists as "
-                        f"'{existing['product_name']}', new product '{new_name}'. "
-                        f"Creating distinct key."
-                    )
-                    suffix = 2
-                    while True:
-                        candidate = f"{product_key}-{suffix}"
-                        check = self.conn.execute(
-                            "SELECT id FROM products WHERE product_key = ?",
-                            (candidate,)
-                        ).fetchone()
-                        if not check:
-                            product_key = candidate
-                            existing = None
-                            break
-                        suffix += 1
+        # Collision detection: same key, different product name
+        if existing and existing["product_name"] and new_name:
+            existing_name_key = _slugify(existing["product_name"])
+            new_name_key = _slugify(new_name)
+            if existing_name_key != new_name_key:
+                import logging
+                logging.warning(
+                    f"Product key collision: '{product_key}' exists as "
+                    f"'{existing['product_name']}', new product '{new_name}'. "
+                    f"Creating distinct key."
+                )
+                suffix = 2
+                while True:
+                    candidate = f"{product_key}-{suffix}"
+                    check = self.conn.execute(
+                        "SELECT id FROM products WHERE product_key = ?",
+                        (candidate,),
+                    ).fetchone()
+                    if not check:
+                        product_key = candidate
+                        existing = None
+                        break
+                    suffix += 1
 
-            if existing:
-                version = (existing["research_version"] or 0) + 1
-                # Only update research_updated_at if content actually changed
-                old_hash = existing["research_hash"] if existing else None
-                research_changed = (old_hash is None or old_hash != new_hash)
+        if existing:
+            version = (existing["research_version"] or 0) + 1
+            old_hash = existing["research_hash"]
+            research_changed = old_hash is None or old_hash != new_hash
 
-                if research_changed:
-                    self.conn.execute("""
-                        UPDATE products SET
-                            product_name = ?, brand = ?, product_type = ?, category = ?,
-                            product_url = ?, risk_level = ?, ingredient_count = ?,
-                            study_count = ?, research_json = ?, last_updated = ?,
-                            research_updated_at = ?, research_hash = ?,
-                            research_version = ?, quality_score = ?, quality_flags = ?
-                        WHERE id = ?
-                    """, (
-                        product.get("product_name", product_key),
-                        product.get("brand_name", ""),
-                        product.get("product_type", "unknown"),
-                        product.get("category", ""),
-                        product.get("official_url", ""),
-                        research_data.get("compliance", {}).get("risk_level", "Unknown"),
-                        ing_count, study_count, research_json, now, now, new_hash,
-                        version, quality_score, json.dumps(quality_flags),
-                        existing["id"],
-                    ))
-                else:
-                    # Data unchanged — update administrative timestamp only
-                    self.conn.execute("""
-                        UPDATE products SET
-                            last_updated = ?, quality_score = ?, quality_flags = ?
-                        WHERE id = ?
-                    """, (now, quality_score, json.dumps(quality_flags), existing["id"]))
-
-                self.conn.commit()
-                return existing["id"]
-            else:
-                cursor = self.conn.execute("""
-                    INSERT INTO products (
-                        product_key, product_name, brand, product_type, category,
-                        product_url, risk_level, ingredient_count, study_count,
-                        research_json, first_researched, last_updated,
-                        research_updated_at, research_hash,
-                        research_version, quality_score, quality_flags
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            if research_changed:
+                self.conn.execute("""
+                    UPDATE products SET
+                        product_name = ?, brand = ?, product_type = ?, category = ?,
+                        product_url = ?, risk_level = ?, ingredient_count = ?,
+                        study_count = ?, research_json = ?, last_updated = ?,
+                        research_updated_at = ?, research_hash = ?,
+                        research_version = ?, quality_score = ?, quality_flags = ?
+                    WHERE id = ?
                 """, (
-                    product_key,
                     product.get("product_name", product_key),
                     product.get("brand_name", ""),
                     product.get("product_type", "unknown"),
                     product.get("category", ""),
                     product.get("official_url", ""),
-                    research_data.get("compliance", {}).get("risk_level", "Unknown"),
-                    ing_count, study_count, research_json, now, now, now, new_hash,
-                    quality_score, json.dumps(quality_flags),
+                    research_data.get("compliance", {}).get(
+                        "risk_level", "Unknown"
+                    ),
+                    ing_count,
+                    study_count,
+                    research_json,
+                    now,
+                    now,
+                    new_hash,
+                    version,
+                    quality_score,
+                    json.dumps(quality_flags),
+                    existing["id"],
                 ))
+            else:
+                self.conn.execute("""
+                    UPDATE products SET
+                        last_updated = ?, quality_score = ?, quality_flags = ?
+                    WHERE id = ?
+                """, (
+                    now,
+                    quality_score,
+                    json.dumps(quality_flags),
+                    existing["id"],
+                ))
+            return existing["id"], product_key
+
+        cursor = self.conn.execute("""
+            INSERT INTO products (
+                product_key, product_name, brand, product_type, category,
+                product_url, risk_level, ingredient_count, study_count,
+                research_json, first_researched, last_updated,
+                research_updated_at, research_hash,
+                research_version, quality_score, quality_flags
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+        """, (
+            product_key,
+            product.get("product_name", product_key),
+            product.get("brand_name", ""),
+            product.get("product_type", "unknown"),
+            product.get("category", ""),
+            product.get("official_url", ""),
+            research_data.get("compliance", {}).get(
+                "risk_level", "Unknown"
+            ),
+            ing_count,
+            study_count,
+            research_json,
+            now,
+            now,
+            now,
+            new_hash,
+            quality_score,
+            json.dumps(quality_flags),
+        ))
+        return cursor.lastrowid, product_key
+
+    def upsert_product(self, product_key: str, research_data: dict) -> int:
+        """Insert or update a product and return its product ID."""
+        with _db_lock:
+            try:
+                product_id, _ = self._upsert_product_uncommitted(
+                    product_key,
+                    research_data,
+                )
                 self.conn.commit()
-                return cursor.lastrowid
+                return product_id
+            except Exception:
+                self.conn.rollback()
+                raise
+
+    def persist_product_with_migration_event(
+        self,
+        product_key: str,
+        research_data: dict,
+        migration_event: dict = None,
+    ) -> tuple:
+        """Atomically persist a CRM pack and its immutable migration event."""
+        with _db_lock:
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                if migration_event:
+                    # A replay of the same immutable legacy handoff is the
+                    # same migration, even though a fresh review-head lease
+                    # gives the newly reconciled v3 pack a different hash.
+                    # Do not overwrite the already migrated CRM row or append
+                    # a second transition event.
+                    replay = self.conn.execute(
+                        """SELECT p.id, p.product_key
+                        FROM source_pack_migration_events e
+                        JOIN products p ON p.id=e.product_id
+                        WHERE e.product_key=?
+                          AND e.event_type=?
+                          AND e.from_version IS ?
+                          AND e.to_version IS ?
+                          AND e.prior_sha256=?
+                          AND e.status=?
+                        ORDER BY e.id ASC LIMIT 1""",
+                        (
+                            product_key,
+                            str(
+                                migration_event.get("event_type")
+                                or "source_pack_contract_migrated"
+                            ),
+                            migration_event.get("from_version"),
+                            migration_event.get("to_version"),
+                            str(
+                                migration_event.get("prior_sha256") or ""
+                            ),
+                            str(
+                                migration_event.get("status") or "success"
+                            ),
+                        ),
+                    ).fetchone()
+                    if replay:
+                        self.conn.commit()
+                        return replay["id"], replay["product_key"]
+                product_id, persisted_key = (
+                    self._upsert_product_uncommitted(
+                        product_key,
+                        research_data,
+                    )
+                )
+                if migration_event:
+                    payload = migration_event.get("payload") or {}
+                    event_values = (
+                        product_id,
+                        persisted_key,
+                        str(
+                            migration_event.get("event_type")
+                            or "source_pack_contract_migrated"
+                        ),
+                        migration_event.get("from_version"),
+                        migration_event.get("to_version"),
+                        str(migration_event.get("prior_sha256") or ""),
+                        str(migration_event.get("new_sha256") or ""),
+                        str(migration_event.get("prior_readiness") or ""),
+                        str(migration_event.get("new_readiness") or ""),
+                        str(migration_event.get("status") or "success"),
+                        str(migration_event.get("error") or "")[:2000],
+                        json.dumps(payload, sort_keys=True),
+                        datetime.utcnow().isoformat(),
+                    )
+                    self.conn.execute(
+                        """INSERT INTO source_pack_migration_events (
+                            product_id, product_key, event_type,
+                            from_version, to_version,
+                            prior_sha256, new_sha256,
+                            prior_readiness, new_readiness,
+                            status, error, payload_json, created_at
+                        )
+                        SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM source_pack_migration_events
+                            WHERE product_id = ?
+                            AND event_type = ?
+                            AND from_version IS ?
+                            AND to_version IS ?
+                            AND prior_sha256 = ?
+                            AND new_sha256 = ?
+                            AND status = ?
+                        )""",
+                        event_values + (
+                            product_id,
+                            event_values[2],
+                            event_values[3],
+                            event_values[4],
+                            event_values[5],
+                            event_values[6],
+                            event_values[9],
+                        ),
+                    )
+                self.conn.commit()
+                return product_id, persisted_key
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def get_product(self, product_key: str) -> Optional[dict]:
-        """Get full product record with parsed research JSON."""
+        """Get a product record, including a repair shell for malformed JSON.
+
+        Durable repair-queue rows must remain openable.  The original bytes stay
+        in ``research_json`` while ``research_data`` becomes a minimal,
+        explicitly marked shell that the operator can use to rebuild and reseal
+        the product instead of crashing before the named repair action opens.
+        """
         row = self.conn.execute(
             "SELECT * FROM products WHERE product_key = ?", (product_key,)
         ).fetchone()
@@ -1135,10 +1863,285 @@ class ProductDatabase:
             return None
         d = dict(row)
         if d.get("research_json"):
-            d["research_data"] = json.loads(d["research_json"])
+            try:
+                parsed = json.loads(d["research_json"])
+                if not isinstance(parsed, dict):
+                    raise TypeError("Stored research JSON is not an object")
+                d["research_data"] = parsed
+            except (json.JSONDecodeError, TypeError) as exc:
+                raw = str(d["research_json"])
+                repair_error = (
+                    f"Stored research JSON requires repair: {exc}"
+                )
+                d["research_parse_error"] = repair_error
+                d["research_data"] = {
+                    "product": {
+                        "product_name": d.get("product_name") or product_key,
+                        "brand_name": d.get("brand") or "",
+                        "product_type": d.get("product_type") or "unknown",
+                        "category": d.get("category") or "",
+                        "official_url": d.get("product_url") or "",
+                    },
+                    "source_pack_repair": {
+                        "repair_required": True,
+                        "repair_owner": "source_pack_contract",
+                        "error": repair_error,
+                        "raw_research_json": raw,
+                        "raw_research_json_sha256": hashlib.sha256(
+                            raw.encode()
+                        ).hexdigest(),
+                    },
+                }
         if d.get("quality_flags"):
-            d["quality_flags_list"] = json.loads(d["quality_flags"])
+            try:
+                d["quality_flags_list"] = json.loads(d["quality_flags"])
+            except (json.JSONDecodeError, TypeError):
+                d["quality_flags_list"] = []
         return d
+
+    def list_source_verification_queue(self, limit: int = 100) -> list:
+        """Return source packs with a concrete, unpaid repair/review owner.
+
+        A claim-review action is offered only when the product-scoped ledger
+        contains at least one artifact-backed, non-rejected claim for one of
+        the exact mandatory fact keys named by the sealed contract.  An
+        unrelated claim under the same offering must not turn a broken ledger
+        into an executable-looking review action.
+
+        Failed/skipped contract migrations share this queue with a distinct
+        ``repair_source_contract`` action, making a stamped schema version
+        insufficient to hide row-level migration failures.
+        """
+        from source_pack_contract import (
+            CONTRACT_NAME,
+            CONTRACT_VERSION,
+            validate_source_pack,
+        )
+
+        rows = self.conn.execute(
+            """SELECT
+                p.id AS product_id,
+                p.product_key,
+                p.product_name,
+                p.product_type,
+                p.research_json,
+                p.research_updated_at,
+                p.last_updated,
+                (
+                    SELECT MAX(e.created_at)
+                    FROM source_pack_migration_events AS e
+                    WHERE e.product_id=p.id AND e.status='success'
+                ) AS migrated_at,
+                (
+                    SELECT e.status
+                    FROM source_pack_migration_events AS e
+                    WHERE e.product_id=p.id
+                    ORDER BY e.id DESC LIMIT 1
+                ) AS migration_status,
+                (
+                    SELECT e.error
+                    FROM source_pack_migration_events AS e
+                    WHERE e.product_id=p.id
+                    ORDER BY e.id DESC LIMIT 1
+                ) AS migration_error,
+                (
+                    SELECT e.event_type
+                    FROM source_pack_migration_events AS e
+                    WHERE e.product_id=p.id
+                    ORDER BY e.id DESC LIMIT 1
+                ) AS migration_event_type,
+                (
+                    SELECT e.created_at
+                    FROM source_pack_migration_events AS e
+                    WHERE e.product_id=p.id
+                    ORDER BY e.id DESC LIMIT 1
+                ) AS migration_event_at
+            FROM products AS p
+            WHERE p.research_json IS NOT NULL
+            ORDER BY COALESCE(p.research_updated_at, p.last_updated, '') ASC,
+                     p.id ASC"""
+        ).fetchall()
+        queue = []
+        for row in rows:
+            repair_reason = ""
+            try:
+                research_data = json.loads(row["research_json"])
+            except (json.JSONDecodeError, TypeError) as exc:
+                research_data = {}
+                repair_reason = (
+                    row["migration_error"]
+                    or f"Stored research JSON cannot be parsed: {exc}"
+                )
+            if not isinstance(research_data, dict):
+                research_data = {}
+                repair_reason = (
+                    row["migration_error"]
+                    or "Stored research JSON is not an object"
+                )
+            contract = (
+                research_data.get("source_pack_contract") or {}
+                if research_data else {}
+            )
+            pack_shaped = bool(research_data) and any(
+                key in research_data
+                for key in (
+                    "source_pack_contract",
+                    "claims_by_type",
+                    "publication_claims",
+                    "all_artifacts",
+                    "required_facts",
+                )
+            )
+            current_contract_valid = False
+            if (
+                isinstance(contract, dict)
+                and contract.get("name") == CONTRACT_NAME
+                and contract.get("version") == CONTRACT_VERSION
+            ):
+                try:
+                    validate_source_pack(
+                        research_data, allow_limited=True
+                    )
+                    current_contract_valid = True
+                except (KeyError, TypeError, ValueError) as exc:
+                    repair_reason = (
+                        repair_reason
+                        or f"Current source pack failed validation: {exc}"
+                    )
+            elif pack_shaped and not repair_reason:
+                repair_reason = (
+                    "Source pack contract is missing, unsupported, or "
+                    "awaiting migration"
+                )
+            if (
+                not current_contract_valid
+                and row["migration_status"] in {"failed", "requires_repair"}
+                and row["migration_event_type"] in {
+                    "source_pack_contract_migration_failed",
+                    "source_pack_contract_repair_required",
+                }
+            ):
+                repair_reason = (
+                    row["migration_error"]
+                    or "Source pack contract requires operator repair"
+                )
+            elif current_contract_valid:
+                # A later valid reseal resolves an older immutable failure
+                # event without rewriting history.
+                repair_reason = ""
+            if repair_reason:
+                queue.append({
+                    "product_key": row["product_key"],
+                    "product_name": row["product_name"],
+                    "product_type": row["product_type"],
+                    "unverified_mandatory_facts": [],
+                    "readiness_reasons": [
+                        "source_pack_contract_repair_required"
+                    ],
+                    "contract_sha256": (
+                        contract.get("sha256", "")
+                        if isinstance(contract, dict) else ""
+                    ),
+                    "updated_at": (
+                        row["migration_event_at"]
+                        or row["research_updated_at"]
+                        or row["last_updated"]
+                        or ""
+                    ),
+                    "offering_id": str(
+                        research_data.get("offering_id") or ""
+                    ).strip(),
+                    "claim_count": 0,
+                    "action": "repair_source_contract",
+                    "action_label": "Repair and Reseal Source Pack",
+                    "repair_reason": repair_reason,
+                    "migration_status": (
+                        row["migration_status"] or "requires_repair"
+                    ),
+                    "may_start_paid_call": False,
+                })
+                if limit and len(queue) >= max(1, int(limit)):
+                    break
+                continue
+            if not isinstance(contract, dict):
+                continue
+            facts = [
+                str(item)
+                for item in (
+                    contract.get("unverified_mandatory_facts") or []
+                )
+                if str(item)
+            ]
+            if contract.get("version") != 3 or not facts:
+                continue
+            offering_id = str(
+                research_data.get("offering_id") or ""
+            ).strip()
+            claim_count = 0
+            if offering_id:
+                try:
+                    candidate_rows = self.conn.execute(
+                        """SELECT
+                            c.source_artifact_id,
+                            c.review_status,
+                            c.metadata_json
+                        FROM claims AS c
+                        INNER JOIN artifacts AS a
+                            ON a.artifact_id=c.source_artifact_id
+                        WHERE c.offering_id=?
+                          AND a.offering_id=?
+                          AND trim(coalesce(c.source_artifact_id, '')) != ''
+                          AND lower(trim(coalesce(c.review_status, '')))
+                              NOT IN ('rejected', 'conflicted')""",
+                        (offering_id, offering_id),
+                    ).fetchall()
+                    fact_set = set(facts)
+                    for claim_row in candidate_rows:
+                        try:
+                            metadata = json.loads(
+                                claim_row["metadata_json"] or "{}"
+                            )
+                        except (json.JSONDecodeError, TypeError):
+                            continue
+                        if not isinstance(metadata, dict):
+                            continue
+                        if str(metadata.get("fact_key") or "") in fact_set:
+                            claim_count += 1
+                except sqlite3.OperationalError:
+                    claim_count = 0
+            review_available = bool(offering_id and claim_count)
+            queue.append({
+                "product_key": row["product_key"],
+                "product_name": row["product_name"],
+                "product_type": row["product_type"],
+                "unverified_mandatory_facts": facts,
+                "readiness_reasons": list(
+                    contract.get("readiness_reasons") or []
+                ),
+                "contract_sha256": contract.get("sha256", ""),
+                "updated_at": (
+                    row["migrated_at"]
+                    or row["research_updated_at"]
+                    or row["last_updated"]
+                    or ""
+                ),
+                "offering_id": offering_id,
+                "claim_count": claim_count,
+                "action": (
+                    "review_source_claims"
+                    if review_available
+                    else "repair_source_ledger"
+                ),
+                "action_label": (
+                    "Review Mandatory Source Claims"
+                    if review_available
+                    else "Rebuild Product-Scoped Claim Ledger"
+                ),
+                "may_start_paid_call": False,
+            })
+            if limit and len(queue) >= max(1, int(limit)):
+                break
+        return queue
 
     def list_products(self, search: str = None, category: str = None,
                       product_type: str = None) -> list:
