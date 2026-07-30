@@ -5766,3 +5766,153 @@ def test_source_grounding_removes_d20_engineering_and_repair_residue():
     assert "harmonic distortion" not in repaired
     assert "utility engineers" not in repaired
     assert "Seller materials state zero maintenance." in repaired
+
+
+# ── F-02/F-09 regression anchors: prepaid feasibility and queue liveness ──
+
+
+def _prompt_budget_pack(claim_text, product_name="Budget Probe Device"):
+    return seal_source_pack({
+        "product": {
+            "product_name": product_name,
+            "official_url": "https://example.com/device",
+            "product_type": "device",
+        },
+        "all_artifacts": [{"artifact_id": "a1"}],
+        "claims_by_type": {
+            "feature": [
+                {
+                    "text": f"{claim_text} {number}",
+                    "artifact_id": "a1",
+                    "source_class": "official_vendor",
+                    "review_status": "unreviewed",
+                    "metadata": {"excerpt_is_literal": True},
+                }
+                for number in range(3)
+            ]
+        },
+        "required_facts": {"missing": []},
+    })
+
+
+def test_prompt_budget_discriminates_normal_and_oversized_packs(tmp_path):
+    normal_engine = WorkbenchEngine(tmp_path / "normal")
+    normal_id = normal_engine.create_project_from_pack(
+        _prompt_budget_pack("Literal product fact"),
+        "AccessNewsWire",
+        force_new=True,
+    )
+    normal_blockers = normal_engine._prepaid_contract_blockers(
+        normal_engine.get(normal_id)
+    )
+    assert "PROMPT-BUDGET" not in {
+        item["id"] for item in normal_blockers
+    }
+
+    oversized_engine = WorkbenchEngine(tmp_path / "oversized")
+    oversized_id = oversized_engine.create_project_from_pack(
+        _prompt_budget_pack("Oversized literal product fact " * 1000),
+        "AccessNewsWire",
+        force_new=True,
+    )
+    oversized_blockers = oversized_engine._prepaid_contract_blockers(
+        oversized_engine.get(oversized_id)
+    )
+    prompt_budget = next(
+        item for item in oversized_blockers
+        if item["id"] == "PROMPT-BUDGET"
+    )
+    assert prompt_budget["estimated_tokens"] > prompt_budget["ceiling_tokens"]
+    assert prompt_budget["projection_mode"] == "pre_draft_route_ceiling"
+    assert (
+        prompt_budget["article_allowance_tokens"]
+        == route_for("draft", "device").max_tokens
+    )
+
+
+@pytest.mark.parametrize("entrypoint", ["run_next", "run_to_completion"])
+def test_oversized_pack_blocks_all_paid_entrypoints_before_attempt(
+    tmp_path, monkeypatch, entrypoint,
+):
+    engine = WorkbenchEngine(tmp_path)
+    project_id = engine.create_project_from_pack(
+        _prompt_budget_pack(
+            "Oversized literal product fact " * 1000,
+            product_name=f"Budget Probe {entrypoint}",
+        ),
+        "AccessNewsWire",
+        force_new=True,
+    )
+
+    def forbidden_provider_call(*_args, **_kwargs):
+        pytest.fail("No provider method may run for a prepaid blocker")
+
+    monkeypatch.setattr(engine, "_claude", forbidden_provider_call)
+    result = getattr(engine, entrypoint)(project_id, "")
+
+    assert result["stage"] == "admin_review"
+    usage = engine.usage_summary(project_id)
+    assert usage["calls"] == 0
+    assert usage["attempts"] == 0
+    blocked_events = [
+        event for event in engine.events(project_id)
+        if event["event_type"] == "prepaid_contract_blocked"
+    ]
+    assert len(blocked_events) == 1
+    payload = json.loads(blocked_events[0]["payload"])
+    assert payload["blocked_stage"] == "source_ready"
+    assert payload["paid_call_started"] is False
+    assert "PROMPT-BUDGET" in {
+        item["id"] for item in payload["blockers"]
+    }
+    action = engine.run_action(
+        project_id, WORKBENCH_SOURCE_CONTEXT_VERSION
+    )
+    assert action["action"] == "refresh_source_policy"
+    assert action["label"] == "Trim and Reseal Source Pack"
+    assert action["may_start_paid_call"] is False
+    assert "Trim low-value claims" in action["reason"]
+
+
+def test_admin_review_queue_is_oldest_first_with_owned_actions(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    newer_id = engine.create_project(
+        "Newer Stuck Release",
+        "AccessNewsWire",
+        "Official URL: https://example.com/newer\nProduct: Device",
+    )
+    older_id = engine.create_project(
+        "Older Stuck Release",
+        "AccessNewsWire",
+        "Official URL: https://example.com/older\nProduct: Device",
+    )
+    engine._set_stage(newer_id, "admin_review")
+    engine._set_stage(older_id, "admin_review")
+    with engine._connect() as conn:
+        conn.execute(
+            "UPDATE projects SET updated_at=? WHERE id=?",
+            ("2000-01-02T00:00:00+00:00", newer_id),
+        )
+        conn.execute(
+            "UPDATE projects SET updated_at=? WHERE id=?",
+            ("2000-01-01T00:00:00+00:00", older_id),
+        )
+
+    queue = engine.admin_review_queue()
+
+    assert [item["project_id"] for item in queue] == [
+        older_id, newer_id,
+    ]
+    assert all(item["age_hours"] is not None for item in queue)
+    assert all(item["action_label"] for item in queue)
+    assert all(item["action_reason"] for item in queue)
+
+
+def test_admin_review_queue_empty_when_nothing_is_stuck(tmp_path):
+    engine = WorkbenchEngine(tmp_path)
+    engine.create_project(
+        "Healthy Release",
+        "AccessNewsWire",
+        "Official URL: https://example.com\nProduct: Device",
+    )
+    assert engine.admin_review_queue() == []

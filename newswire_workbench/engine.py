@@ -89,6 +89,11 @@ def _hash(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _estimate_prompt_tokens(prompt):
+    """Use the same conservative estimator at preflight and provider gates."""
+    return max(1, len(str(prompt or "")) // 4)
+
+
 def _provenance_findings(ledger):
     """Normalize every bidirectional provenance failure into blockers."""
     findings = []
@@ -2070,6 +2075,70 @@ class WorkbenchEngine:
         )
         return replacement_id
 
+    def admin_review_queue(
+        self,
+        current_workflow_version=WORKBENCH_SOURCE_CONTEXT_VERSION,
+    ):
+        """Return every admin-review project, oldest idle item first.
+
+        The queue is an observability surface, not a second workflow engine.
+        Each row delegates recovery ownership to ``run_action`` so the UI
+        cannot invent a different action from the durable transaction.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT id,title,platform,vertical,updated_at,source_text
+                FROM projects
+                WHERE stage='admin_review'
+                ORDER BY updated_at ASC, rowid ASC"""
+            ).fetchall()
+        now = datetime.now(timezone.utc)
+        queue = []
+        for row in rows:
+            age_hours = None
+            try:
+                updated = datetime.fromisoformat(row["updated_at"])
+                if updated.tzinfo is None:
+                    updated = updated.replace(tzinfo=timezone.utc)
+                age_hours = round(
+                    max(0.0, (now - updated).total_seconds() / 3600.0),
+                    2,
+                )
+            except (TypeError, ValueError):
+                pass
+            try:
+                workflow_version = (
+                    current_workflow_version
+                    if self._uses_locked_call_path(row)
+                    else ""
+                )
+                action = self.run_action(row["id"], workflow_version)
+            except Exception as exc:
+                # One corrupt historical transaction must never hide the rest
+                # of the operator queue.
+                action = {
+                    "action": "human_decision",
+                    "label": "Review Required",
+                    "reason": f"Action lookup failed: {exc}",
+                    "may_start_paid_call": False,
+                }
+            queue.append({
+                "project_id": row["id"],
+                "title": row["title"],
+                "platform": row["platform"],
+                "vertical": row["vertical"],
+                "stage": "admin_review",
+                "updated_at": row["updated_at"],
+                "age_hours": age_hours,
+                "action": action.get("action", "human_decision"),
+                "action_label": action.get("label", "Review Required"),
+                "action_reason": action.get("reason", ""),
+                "may_start_paid_call": bool(
+                    action.get("may_start_paid_call", False)
+                ),
+            })
+        return queue
+
     def run_action(self, project_id, current_workflow_version=""):
         """Return the single engine-owned action for the durable project.
 
@@ -2155,6 +2224,20 @@ class WorkbenchEngine:
             stage in PAID_CALL_STAGES or stage == "admin_review"
         ):
             ids = {item.get("id") for item in prepaid}
+            prompt_budget = next(
+                (
+                    item for item in prepaid
+                    if item.get("id") == "PROMPT-BUDGET"
+                ),
+                None,
+            )
+            if prompt_budget:
+                return {
+                    **action,
+                    "action": "refresh_source_policy",
+                    "label": "Trim and Reseal Source Pack",
+                    "reason": prompt_budget["issue"],
+                }
             return {
                 **action,
                 "action": "refresh_source_policy",
@@ -2393,22 +2476,10 @@ class WorkbenchEngine:
                     },
                 )
                 return project
-            contract_blockers = self._prepaid_contract_blockers(project)
-            if (
-                contract_blockers
-                and project["stage"] in PAID_CALL_STAGES
-            ):
-                self._set_stage(project_id, "admin_review")
-                self._event(
-                    project_id,
-                    "prepaid_contract_blocked",
-                    "admin_review",
-                    project["article_hash"],
-                    {
-                        "blockers": contract_blockers,
-                        "operator_decision_required": False,
-                    },
-                )
+            contract_blockers = (
+                self._quarantine_prepaid_contract_blockers(project)
+            )
+            if contract_blockers:
                 return self.get(project_id)
             usage = self.usage_summary(project_id)
             run_calls = usage["calls"]
@@ -2561,6 +2632,105 @@ class WorkbenchEngine:
                     "policy snapshot."
                 ),
             })
+        ceiling = int(
+            os.environ.get("NEWSWIRE_PROMPT_TOKEN_CEILING", "28000")
+        )
+        if project.get("article_text"):
+            _truth_audit, truth_packet = self._editorial_truth_packet(project)
+            review_probe = compliance_prompt(
+                project["source_text"],
+                project["article_text"],
+                project["platform"],
+                project["vertical"],
+                project.get("last_report") or {},
+                final=project["stage"] != "drafted",
+                release_title=project.get(
+                    "release_title", project["title"]
+                ),
+                editorial_truth_packet=truth_packet,
+            )
+            article_allowance_tokens = 0
+            report_allowance_tokens = 0
+            projection_mode = "exact_current_article"
+            estimated_review_tokens = _estimate_prompt_tokens(review_probe)
+        else:
+            draft_route = route_for("draft", project["vertical"])
+            try:
+                configured_article_allowance = int(os.environ.get(
+                    "NEWSWIRE_PREFLIGHT_ARTICLE_ALLOWANCE_TOKENS",
+                    str(draft_route.max_tokens),
+                ))
+            except ValueError:
+                configured_article_allowance = draft_route.max_tokens
+            try:
+                configured_report_allowance = int(os.environ.get(
+                    "NEWSWIRE_PREFLIGHT_REPORT_ALLOWANCE_TOKENS", "0"
+                ))
+            except ValueError:
+                configured_report_allowance = 0
+            article_allowance_tokens = max(
+                0, configured_article_allowance
+            )
+            report_allowance_tokens = max(
+                0, configured_report_allowance
+            )
+            # Match the audit's worst-case draft-output probe using the same
+            # four-characters-per-token estimator as the paid-call gate.
+            placeholder_article = "x" * (
+                article_allowance_tokens * 4
+            )
+            review_probe = compliance_prompt(
+                project["source_text"],
+                placeholder_article,
+                project["platform"],
+                project["vertical"],
+            )
+            projection_mode = "pre_draft_route_ceiling"
+            estimated_review_tokens = (
+                _estimate_prompt_tokens(review_probe)
+                + report_allowance_tokens
+            )
+        if estimated_review_tokens > ceiling:
+            blockers.append({
+                "id": "PROMPT-BUDGET",
+                "issue": (
+                    "The locked call path is not executable end to end: the "
+                    "independent-review context is projected at approximately "
+                    f"{estimated_review_tokens:,} tokens against the "
+                    f"{ceiling:,}-token pre-call ceiling. No paid drafting "
+                    "call may start. Trim low-value claims and oversized "
+                    "artifact excerpts, reseal the source pack, and create a "
+                    "fresh transaction."
+                ),
+                "estimated_tokens": estimated_review_tokens,
+                "ceiling_tokens": ceiling,
+                "projection_mode": projection_mode,
+                "article_allowance_tokens": article_allowance_tokens,
+                "report_allowance_tokens": report_allowance_tokens,
+            })
+        return blockers
+
+    def _quarantine_prepaid_contract_blockers(self, project):
+        """Move a blocked paid stage to an observable zero-call boundary."""
+        if project["stage"] not in PAID_CALL_STAGES:
+            return []
+        blockers = self._prepaid_contract_blockers(project)
+        if not blockers:
+            return []
+        blocked_stage = project["stage"]
+        self._set_stage(project["id"], "admin_review")
+        self._event(
+            project["id"],
+            "prepaid_contract_blocked",
+            "admin_review",
+            project["article_hash"],
+            {
+                "blocked_stage": blocked_stage,
+                "blockers": blockers,
+                "operator_decision_required": False,
+                "paid_call_started": False,
+            },
+        )
         return blockers
 
     def _recover_locked_pre_signoff(self, project_id):
@@ -3878,6 +4048,8 @@ class WorkbenchEngine:
                 },
             )
             return self.get(project_id)
+        if self._quarantine_prepaid_contract_blockers(p):
+            return self.get(project_id)
         if stage == "source_ready":
             memory = "\n".join(filter(None, (
                 self._learned_guidance(p["platform"], p["vertical"]),
@@ -4379,13 +4551,16 @@ class WorkbenchEngine:
             raise RuntimeError("Claude output was truncated at the token limit; no partial article was saved")
         return text
 
-    def _openai_review(self, p, final, purpose=None):
+    def _editorial_truth_packet(self, project):
+        """Build the exact semantic-review packet used by OpenAI prompts."""
         from article_provenance import extract_sealed_pack
         from .editorial_truth import audit_editorial_truth
         truth_audit = audit_editorial_truth(
-            extract_sealed_pack(p["source_text"]),
-            p["article_text"],
-            _source_platform_link(p["source_text"], p["platform"]),
+            extract_sealed_pack(project["source_text"]),
+            project["article_text"],
+            _source_platform_link(
+                project["source_text"], project["platform"]
+            ),
         )
         truth_packet = {
             "candidate_set_hash": truth_audit[
@@ -4411,6 +4586,10 @@ class WorkbenchEngine:
                 for item in truth_audit["review_candidates"]
             ],
         }
+        return truth_audit, truth_packet
+
+    def _openai_review(self, p, final, purpose=None):
+        truth_audit, truth_packet = self._editorial_truth_packet(p)
         prompt = compliance_prompt(
             p["source_text"], p["article_text"], p["platform"], p["vertical"],
             p["last_report"], final=final,
@@ -5158,7 +5337,7 @@ class WorkbenchEngine:
 
     def _assert_prompt_budget(self, project_id, purpose, prompt):
         """Log and bound stage context before any paid provider request."""
-        estimated_tokens = max(1, len(str(prompt or "")) // 4)
+        estimated_tokens = _estimate_prompt_tokens(prompt)
         ceiling = int(
             os.environ.get("NEWSWIRE_PROMPT_TOKEN_CEILING", "28000")
         )
