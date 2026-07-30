@@ -133,3 +133,39 @@ def test_extractor_sanitizer_preserves_complementary_api_rate_axes():
         },
     ]
     assert result["source_conflicts"] == []
+
+
+def test_extractor_sanitizer_expands_compound_api_rate_rows():
+    from research_product import _sanitize_extracted_product_data
+
+    result = _sanitize_extracted_product_data({
+        "product_name": "Claude Fable 5",
+        "pricing": [
+            {
+                "tier": "Standard API",
+                "input_price": "$10 per million tokens",
+                "output_price": "$50 per million tokens",
+            },
+            {
+                "tier": "Cache Reads",
+                "input_price": "$1 per million tokens",
+                "output_price": None,
+            },
+        ],
+        "source_conflicts": [],
+    })
+
+    assert result["pricing"] == [
+        {
+            "package": "Standard API input",
+            "price": "$10 per million tokens",
+        },
+        {
+            "package": "Standard API output",
+            "price": "$50 per million tokens",
+        },
+        {
+            "package": "Cache Reads input",
+            "price": "$1 per million tokens",
+        },
+    ]

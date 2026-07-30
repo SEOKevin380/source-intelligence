@@ -3292,6 +3292,29 @@ class TestRealHandlerPipeline:
             ),
         ]
 
+    def test_pricing_tiers_expand_compound_api_rate_rows(self, pipeline_db):
+        """One API tier may carry separate input and output price fields."""
+        from stage_handlers import _extract_targeted_fact
+
+        facts = _extract_targeted_fact("pricing_tiers", {
+            "pricing": [{
+                "tier": "Standard API",
+                "input_price": "$10 per million tokens",
+                "output_price": "$50 per million tokens",
+            }],
+        })
+
+        assert facts == [
+            (
+                "Standard API input: $10 per million tokens",
+                ["$10 per million tokens"],
+            ),
+            (
+                "Standard API output: $50 per million tokens",
+                ["$50 per million tokens"],
+            ),
+        ]
+
     def test_manual_entry_rejects_invalid_fact_for_offering(self, pipeline_db):
         """record_manual_entry rejects facts not in the offering's pack."""
         from stage_handlers import record_manual_entry, RecoveryError

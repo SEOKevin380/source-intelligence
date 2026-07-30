@@ -835,6 +835,21 @@ def _extract_targeted_fact(fact_key: str, product_data: dict) -> list:
                     continue
                 if not isinstance(item, dict):
                     continue
+                tier = str(item.get("tier") or "").strip()
+                input_price = str(item.get("input_price") or "").strip()
+                output_price = str(item.get("output_price") or "").strip()
+                if tier and (input_price or output_price):
+                    if input_price:
+                        results.append((
+                            f"{tier} input: {input_price}",
+                            [input_price],
+                        ))
+                    if output_price:
+                        results.append((
+                            f"{tier} output: {output_price}",
+                            [output_price],
+                        ))
+                    continue
                 pkg = str(
                     item.get("name", item.get("package", ""))
                 ).strip()

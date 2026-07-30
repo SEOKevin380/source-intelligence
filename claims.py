@@ -26,6 +26,24 @@ from typing import Optional, List
 _claims_lock = threading.Lock()
 
 
+def _pricing_axis(value: str) -> str:
+    """Return the API billing axis encoded in a pricing claim."""
+    folded = " ".join(str(value or "").casefold().split())
+    if "input token" in folded:
+        return "input"
+    if "output token" in folded:
+        return "output"
+    if "cache read" in folded:
+        return "cache_reads"
+    if "cache write" in folded:
+        if "5-minute" in folded or "5 minute" in folded:
+            return "cache_writes_5_minute"
+        if "1-hour" in folded or "1 hour" in folded:
+            return "cache_writes_1_hour"
+        return "cache_writes"
+    return ""
+
+
 class ClaimType(Enum):
     """Categories of atomic claims that can be extracted from sources."""
     INGREDIENT_AMOUNT = "ingredient_amount"
@@ -269,6 +287,59 @@ class ClaimsLedger:
                 for pkg, pkg_claims in by_pkg.items():
                     if len(pkg_claims) > 1:
                         prices = set(c.metadata.get("price", "") for c in pkg_claims)
+                        axes = [
+                            _pricing_axis(
+                                c.metadata.get("price", "")
+                                or c.claim_text
+                            )
+                            for c in pkg_claims
+                        ]
+                        if (
+                            len(axes) >= 2
+                            and all(axes)
+                            and len(set(axes)) == len(axes)
+                        ):
+                            # One API plan commonly has separate input,
+                            # output, and cache rates. Older runs marked those
+                            # complementary axes as conflicts. Heal that stale
+                            # state while preserving any unrelated conflicts.
+                            group_ids = {c.claim_id for c in pkg_claims}
+                            with _claims_lock:
+                                for claim in pkg_claims:
+                                    row = self.conn.execute(
+                                        "SELECT conflicts_json, review_status "
+                                        "FROM claims WHERE claim_id = ?",
+                                        (claim.claim_id,),
+                                    ).fetchone()
+                                    if not row:
+                                        continue
+                                    existing = json.loads(
+                                        row["conflicts_json"] or "[]"
+                                    )
+                                    remaining = [
+                                        claim_id for claim_id in existing
+                                        if claim_id not in group_ids
+                                    ]
+                                    status = row["review_status"]
+                                    if (
+                                        not remaining
+                                        and status
+                                        == ReviewStatus.CONFLICTED.value
+                                    ):
+                                        status = (
+                                            ReviewStatus.UNREVIEWED.value
+                                        )
+                                    self.conn.execute(
+                                        "UPDATE claims SET conflicts_json = ?, "
+                                        "review_status = ? WHERE claim_id = ?",
+                                        (
+                                            json.dumps(remaining),
+                                            status,
+                                            claim.claim_id,
+                                        ),
+                                    )
+                                self.conn.commit()
+                            continue
                         if len(prices) > 1:
                             conflicts.append((
                                 pkg_claims[0].claim_id,

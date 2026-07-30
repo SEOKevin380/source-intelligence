@@ -405,20 +405,40 @@ def _sanitize_extracted_product_data(data):
     # claims ledger performs package-level conflict detection.
     pricing = data.get("pricing")
     if isinstance(pricing, list):
+        normalized_pricing = []
         for item in pricing:
             if not isinstance(item, dict):
+                normalized_pricing.append(item)
+                continue
+            tier = str(item.get("tier") or "").strip()
+            input_price = str(item.get("input_price") or "").strip()
+            output_price = str(item.get("output_price") or "").strip()
+            if tier and (input_price or output_price):
+                if input_price:
+                    normalized_pricing.append({
+                        "package": f"{tier} input",
+                        "price": input_price,
+                    })
+                if output_price:
+                    normalized_pricing.append({
+                        "package": f"{tier} output",
+                        "price": output_price,
+                    })
                 continue
             package_key = (
                 "package" if "package" in item
                 else ("name" if "name" in item else "")
             )
             if not package_key:
+                normalized_pricing.append(item)
                 continue
             package = str(item.get(package_key) or "").strip()
             price = item.get("price", item.get("amount", ""))
             axis = pricing_axis(price)
             if axis and axis not in package.casefold():
                 item[package_key] = f"{package} {axis}".strip()
+            normalized_pricing.append(item)
+        data["pricing"] = normalized_pricing
 
     conflicts = []
     for item in data.get("source_conflicts", []) or []:

@@ -175,6 +175,43 @@ class TestClaimsLedger:
         conflicts = ledger.detect_conflicts("test-1")
         assert len(conflicts) == 0
 
+    def test_complementary_api_rates_are_not_price_conflicts(self, ledger):
+        """Input and output rates under one API plan are separate axes."""
+        input_claim = Claim(
+            offering_id="test-1",
+            claim_text="API - Standard: $10 per million input tokens",
+            claim_type=ClaimType.PRICING,
+            review_status=ReviewStatus.CONFLICTED,
+            conflicts=["output-claim"],
+            metadata={
+                "package": "API - Standard",
+                "price": "$10 per million input tokens",
+            },
+        )
+        input_claim.claim_id = "input-claim"
+        output_claim = Claim(
+            offering_id="test-1",
+            claim_text="API - Standard: $50 per million output tokens",
+            claim_type=ClaimType.PRICING,
+            review_status=ReviewStatus.CONFLICTED,
+            conflicts=["input-claim"],
+            metadata={
+                "package": "API - Standard",
+                "price": "$50 per million output tokens",
+            },
+        )
+        output_claim.claim_id = "output-claim"
+        ledger.add_claim(input_claim)
+        ledger.add_claim(output_claim)
+
+        assert ledger.detect_conflicts("test-1") == []
+        healed_input = ledger.get_claim("input-claim")
+        healed_output = ledger.get_claim("output-claim")
+        assert healed_input.review_status == ReviewStatus.UNREVIEWED
+        assert healed_output.review_status == ReviewStatus.UNREVIEWED
+        assert healed_input.conflicts == []
+        assert healed_output.conflicts == []
+
     def test_count(self, ledger):
         assert ledger.count() == 0
         ledger.add_claim(Claim(
