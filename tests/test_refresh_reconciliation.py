@@ -95,3 +95,41 @@ def test_extractor_sanitizer_removes_contested_nested_value():
     assert result["source_conflicts"][0]["field"] == (
         "specifications.results_timeline"
     )
+
+
+def test_extractor_sanitizer_preserves_complementary_api_rate_axes():
+    from research_product import _sanitize_extracted_product_data
+
+    result = _sanitize_extracted_product_data({
+        "product_name": "Claude Fable 5",
+        "pricing": [
+            {
+                "package": "API - Standard",
+                "price": "$10 per million input tokens",
+            },
+            {
+                "package": "API - Standard",
+                "price": "$50 per million output tokens",
+            },
+        ],
+        "source_conflicts": [{
+            "field": "pricing",
+            "values": [
+                "API - Standard: $10 per million input tokens",
+                "API - Standard: $50 per million output tokens",
+            ],
+            "resolution": "conflicted values quarantined from publication",
+        }],
+    })
+
+    assert result["pricing"] == [
+        {
+            "package": "API - Standard input",
+            "price": "$10 per million input tokens",
+        },
+        {
+            "package": "API - Standard output",
+            "price": "$50 per million output tokens",
+        },
+    ]
+    assert result["source_conflicts"] == []

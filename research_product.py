@@ -373,6 +373,24 @@ def _sanitize_extracted_product_data(data):
         return data
     from source_pack_contract import is_publication_placeholder
 
+    def pricing_axis(value):
+        """Return a distinct API billing axis encoded in a price value."""
+        folded = " ".join(str(value or "").casefold().split())
+        if "input token" in folded:
+            return "input"
+        if "output token" in folded:
+            return "output"
+        if "cache read" in folded:
+            return "cache reads"
+        if "cache write" in folded:
+            duration = ""
+            if re.search(r"\b5[- ]minute\b", folded):
+                duration = " 5-minute"
+            elif re.search(r"\b1[- ]hour\b", folded):
+                duration = " 1-hour"
+            return "cache writes" + duration
+        return ""
+
     company = data.get("company")
     if isinstance(company, dict):
         data["company"] = {
@@ -380,6 +398,27 @@ def _sanitize_extracted_product_data(data):
             for key, value in company.items()
             if not is_publication_placeholder(value)
         }
+
+    # API rate cards often repeat one plan name across input, output, cache,
+    # and batch rows. Those are separate billing axes—not contradictory prices
+    # for one package. Normalize the axis into the package label before the
+    # claims ledger performs package-level conflict detection.
+    pricing = data.get("pricing")
+    if isinstance(pricing, list):
+        for item in pricing:
+            if not isinstance(item, dict):
+                continue
+            package_key = (
+                "package" if "package" in item
+                else ("name" if "name" in item else "")
+            )
+            if not package_key:
+                continue
+            package = str(item.get(package_key) or "").strip()
+            price = item.get("price", item.get("amount", ""))
+            axis = pricing_axis(price)
+            if axis and axis not in package.casefold():
+                item[package_key] = f"{package} {axis}".strip()
 
     conflicts = []
     for item in data.get("source_conflicts", []) or []:
@@ -391,6 +430,17 @@ def _sanitize_extracted_product_data(data):
             for value in item.get("values", []) or []
             if not is_publication_placeholder(value)
         ]
+        if field == "pricing":
+            axes = [pricing_axis(value) for value in values]
+            if (
+                len(axes) >= 2
+                and all(axes)
+                and len(set(axes)) == len(axes)
+            ):
+                # Complementary API billing axes were mislabeled upstream as
+                # one package conflict. Keep the normalized rows and drop only
+                # this false-positive conflict record.
+                continue
         if field and len(set(values)) >= 2:
             clean = dict(item)
             clean["field"] = field
