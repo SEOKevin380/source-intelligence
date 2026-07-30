@@ -1144,17 +1144,14 @@ def _build_cvd_source_block(
         c1_source = "uploaded label image OCR"
 
     if product_type == "research_peptide":
-        block += f"C1 — {c1_label}\n"
-        block += "Source: supplied vendor specifications and research records\n"
-        peptide_fields = [
-            "peptide_sequence", "purity_percentage", "molecular_weight",
-            "cas_number", "form", "amount_per_vial", "storage_requirements",
-            "research_use_only_disclaimer",
-        ]
-        for key in peptide_fields:
-            value = product.get(key)
-            block += f"  {key.replace('_', ' ').title()}: {value or 'NOT ESTABLISHED'}\n"
-        block += "Do not present research-use material as approved for human use.\n"
+        _incomplete_guidance = """HANDLING INCOMPLETE RESEARCH-COMPOUND DATA:
+This is a research-use-only compound listing — not an ingestible consumer
+supplement. Use only the supplied vendor specifications and research records.
+Missing sequence, purity, CAS number, form, storage, or testing data must be
+disclosed as unavailable and omitted from claims. Never present research-use
+material as approved for human use, imply dosing or administration guidance,
+or invent laboratory results, certificates of analysis, or purity figures.
+"""
     elif product_type == "financial":
         _incomplete_guidance = """HANDLING INCOMPLETE FINANCIAL DATA:
 This is a financial publication, research service, newsletter, or advisory—not
@@ -1365,9 +1362,25 @@ provided for reader awareness, not as a contraindication for the product itself.
     c1_label = c1_type_labels.get(product_type, "SUPPLEMENT FACTS")
 
     if product_type == "research_peptide":
-        block += "C19 — VIAL / STORAGE / RESEARCH-USE DETAILS\n"
-        for key in ("amount_per_vial", "form", "storage_requirements", "research_use_only_disclaimer"):
-            block += f"  {key.replace('_', ' ').title()}: {product.get(key) or 'NOT ESTABLISHED'}\n"
+        block += f"C1 — {c1_label}\n"
+        block += "Source: supplied vendor specifications and research records\n"
+        for key in (
+            "peptide_sequence", "purity_percentage",
+            "molecular_weight", "cas_number",
+        ):
+            if _field_is_conflicted(conflicted_fields, key):
+                block += (
+                    f"  {key.replace('_', ' ').title()}: "
+                    "QUARANTINED — incompatible source values; omit from draft\n"
+                )
+                continue
+            block += (
+                f"  {key.replace('_', ' ').title()}: "
+                f"{product.get(key) or 'NOT ESTABLISHED'}\n"
+            )
+        block += (
+            "Do not present research-use material as approved for human use.\n"
+        )
     elif product_type == "financial":
         financial_claims = (
             (full_data.get("claims_by_type") or {}).get(
@@ -1961,7 +1974,23 @@ provided for reader awareness, not as a contraindication for the product itself.
 
     # ── C19: SERVING SIZE / SUPPLY DURATION ──
     block += "\n"
-    if product_type == "financial":
+    if product_type == "research_peptide":
+        block += "C19 — VIAL / STORAGE / RESEARCH-USE DETAILS\n"
+        for key in (
+            "amount_per_vial", "form", "storage_requirements",
+            "research_use_only_disclaimer",
+        ):
+            if _field_is_conflicted(conflicted_fields, key):
+                block += (
+                    f"  {key.replace('_', ' ').title()}: "
+                    "QUARANTINED — incompatible source values; omit from draft\n"
+                )
+                continue
+            block += (
+                f"  {key.replace('_', ' ').title()}: "
+                f"{product.get(key) or 'NOT ESTABLISHED'}\n"
+            )
+    elif product_type == "financial":
         block += "C19 — SUBSCRIPTION / ACCESS TERMS [NO VERIFIED DATA]\n"
         block += "No subscription duration, renewal, cancellation, or access terms were established. Omit them.\n"
     elif product_type == "device":
