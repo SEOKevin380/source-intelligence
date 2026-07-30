@@ -18,11 +18,13 @@ from bs4 import BeautifulSoup
 
 from offering_taxonomy import exemplar_vertical
 from .prompts import (
+    SEALED_FACT_MARKER,
     compliance_prompt,
     detect_vertical,
     generation_prompt,
     revision_prompt,
     seo_prompt,
+    split_editorial_context,
 )
 from .learning import (
     PROMPT_VERSION, deterministic_findings, issue_fingerprint,
@@ -48,7 +50,7 @@ from .execution_budget import (
 WORKBENCH_SOURCE_CONTEXT_VERSION = (
     "grounding-first-device-depth-v40-terminal-report-reconciliation"
 )
-WORKBENCH_RUNTIME_REVISION = "terminal-report-reconciliation-20260729-r42"
+WORKBENCH_RUNTIME_REVISION = "audit-residual-reconciliation-20260730-r43"
 
 STAGES = (
     "source_ready",
@@ -92,6 +94,67 @@ def _hash(text):
 def _estimate_prompt_tokens(prompt):
     """Use the same conservative estimator at preflight and provider gates."""
     return max(1, len(str(prompt or "")) // 4)
+
+
+def _review_context_layer_estimates(
+    project,
+    *,
+    article,
+    previous_report=None,
+    editorial_truth_packet=None,
+    final=False,
+):
+    """Measure cumulative review layers with the real prompt builder.
+
+    These estimates classify the first layer that crosses the paid-call
+    ceiling. They are diagnostic; the exact complete prompt remains the
+    authoritative provider gate.
+    """
+    editorial_context, _sealed_facts = split_editorial_context(
+        project["source_text"]
+    )
+    editorial_only_source = (
+        editorial_context.strip()
+        + "\n"
+        + SEALED_FACT_MARKER
+        if editorial_context.strip()
+        else SEALED_FACT_MARKER
+    )
+    common = {
+        "platform": project["platform"],
+        "vertical": project["vertical"],
+        "final": final,
+        "release_title": project.get(
+            "release_title", project["title"]
+        ),
+    }
+
+    def estimate(source_text, current_article, report=None, packet=None):
+        return _estimate_prompt_tokens(compliance_prompt(
+            source_text,
+            current_article,
+            previous_report=report or {},
+            editorial_truth_packet=packet,
+            **common,
+        ))
+
+    empty_packet = {"candidate_set_hash": "", "source_excerpts": [],
+                    "candidates": []}
+    return {
+        "fixed_contract": estimate("", ""),
+        "trusted_editorial_context": estimate(editorial_only_source, ""),
+        "sealed_source_record": estimate(project["source_text"], ""),
+        "article_context": estimate(project["source_text"], article),
+        "prior_report": estimate(
+            project["source_text"], article, previous_report
+        ),
+        "truth_packet": estimate(
+            project["source_text"],
+            article,
+            previous_report,
+            editorial_truth_packet or empty_packet,
+        ),
+    }
 
 
 def _provenance_findings(ledger):
@@ -2078,16 +2141,19 @@ class WorkbenchEngine:
     def admin_review_queue(
         self,
         current_workflow_version=WORKBENCH_SOURCE_CONTEXT_VERSION,
+        *,
+        resolve_actions=True,
     ):
         """Return every admin-review project, oldest idle item first.
 
         The queue is an observability surface, not a second workflow engine.
-        Each row delegates recovery ownership to ``run_action`` so the UI
-        cannot invent a different action from the durable transaction.
+        The default preserves the complete engine-owned action contract for
+        API callers. UI list views can request metadata only and resolve the
+        selected row separately, avoiding one full audit per waiting project.
         """
         with self._connect() as conn:
             rows = conn.execute(
-                """SELECT id,title,platform,vertical,updated_at,source_text
+                """SELECT id,title,platform,vertical,updated_at
                 FROM projects
                 WHERE stage='admin_review'
                 ORDER BY updated_at ASC, rowid ASC"""
@@ -2106,23 +2172,7 @@ class WorkbenchEngine:
                 )
             except (TypeError, ValueError):
                 pass
-            try:
-                workflow_version = (
-                    current_workflow_version
-                    if self._uses_locked_call_path(row)
-                    else ""
-                )
-                action = self.run_action(row["id"], workflow_version)
-            except Exception as exc:
-                # One corrupt historical transaction must never hide the rest
-                # of the operator queue.
-                action = {
-                    "action": "human_decision",
-                    "label": "Review Required",
-                    "reason": f"Action lookup failed: {exc}",
-                    "may_start_paid_call": False,
-                }
-            queue.append({
+            item = {
                 "project_id": row["id"],
                 "title": row["title"],
                 "platform": row["platform"],
@@ -2130,14 +2180,47 @@ class WorkbenchEngine:
                 "stage": "admin_review",
                 "updated_at": row["updated_at"],
                 "age_hours": age_hours,
-                "action": action.get("action", "human_decision"),
-                "action_label": action.get("label", "Review Required"),
-                "action_reason": action.get("reason", ""),
-                "may_start_paid_call": bool(
-                    action.get("may_start_paid_call", False)
-                ),
-            })
+            }
+            if resolve_actions:
+                action = self.admin_review_action(
+                    row["id"], current_workflow_version
+                )
+                item.update({
+                    "action": action.get("action", "human_decision"),
+                    "action_label": action.get(
+                        "label", "Review Required"
+                    ),
+                    "action_reason": action.get("reason", ""),
+                    "may_start_paid_call": bool(
+                        action.get("may_start_paid_call", False)
+                    ),
+                })
+            queue.append(item)
         return queue
+
+    def admin_review_action(
+        self,
+        project_id,
+        current_workflow_version=WORKBENCH_SOURCE_CONTEXT_VERSION,
+    ):
+        """Resolve one selected queue row through the durable engine."""
+        try:
+            project = self.get(project_id)
+            workflow_version = (
+                current_workflow_version
+                if self._uses_locked_call_path(project)
+                else ""
+            )
+            return self.run_action(project_id, workflow_version)
+        except Exception as exc:
+            # One corrupt historical transaction must never hide the rest of
+            # the operator queue or crash its selected-row detail.
+            return {
+                "action": "human_decision",
+                "label": "Review Required",
+                "reason": f"Action lookup failed: {exc}",
+                "may_start_paid_call": False,
+            }
 
     def run_action(self, project_id, current_workflow_version=""):
         """Return the single engine-owned action for the durable project.
@@ -2232,10 +2315,17 @@ class WorkbenchEngine:
                 None,
             )
             if prompt_budget:
+                action_name = (
+                    "refresh_source_policy"
+                    if prompt_budget.get("requires_reseal")
+                    else "system_blocked"
+                )
                 return {
                     **action,
-                    "action": "refresh_source_policy",
-                    "label": "Trim and Reseal Source Pack",
+                    "action": action_name,
+                    "label": prompt_budget.get(
+                        "action_label", "Repair Review Context"
+                    ),
                     "reason": prompt_budget["issue"],
                 }
             return {
@@ -2637,13 +2727,15 @@ class WorkbenchEngine:
         )
         if project.get("article_text"):
             _truth_audit, truth_packet = self._editorial_truth_packet(project)
+            previous_report = project.get("last_report") or {}
+            review_final = project["stage"] != "drafted"
             review_probe = compliance_prompt(
                 project["source_text"],
                 project["article_text"],
                 project["platform"],
                 project["vertical"],
-                project.get("last_report") or {},
-                final=project["stage"] != "drafted",
+                previous_report,
+                final=review_final,
                 release_title=project.get(
                     "release_title", project["title"]
                 ),
@@ -2653,6 +2745,9 @@ class WorkbenchEngine:
             report_allowance_tokens = 0
             projection_mode = "exact_current_article"
             estimated_review_tokens = _estimate_prompt_tokens(review_probe)
+            layer_article = project["article_text"]
+            layer_report = previous_report
+            layer_truth_packet = truth_packet
         else:
             draft_route = route_for("draft", project["vertical"])
             try:
@@ -2669,7 +2764,7 @@ class WorkbenchEngine:
             except ValueError:
                 configured_report_allowance = 0
             article_allowance_tokens = max(
-                0, configured_article_allowance
+                draft_route.max_tokens, configured_article_allowance
             )
             report_allowance_tokens = max(
                 0, configured_report_allowance
@@ -2690,21 +2785,143 @@ class WorkbenchEngine:
                 _estimate_prompt_tokens(review_probe)
                 + report_allowance_tokens
             )
+            review_final = False
+            layer_article = placeholder_article
+            layer_report = {}
+            layer_truth_packet = {
+                "candidate_set_hash": "",
+                "source_excerpts": [],
+                "candidates": [],
+            }
         if estimated_review_tokens > ceiling:
+            layer_estimates = _review_context_layer_estimates(
+                project,
+                article=layer_article,
+                previous_report=layer_report,
+                editorial_truth_packet=layer_truth_packet,
+                final=review_final,
+            )
+            failure_layer = next(
+                (
+                    layer_name
+                    for layer_name in (
+                        "fixed_contract",
+                        "trusted_editorial_context",
+                        "sealed_source_record",
+                        "article_context",
+                        "prior_report",
+                        "truth_packet",
+                    )
+                    if layer_estimates[layer_name] > ceiling
+                ),
+                "",
+            )
+            if (
+                not failure_layer
+                and report_allowance_tokens
+                and estimated_review_tokens > ceiling
+            ):
+                failure_layer = "projected_report_allowance"
+            if failure_layer == "article_context":
+                failure_layer = (
+                    "current_article"
+                    if projection_mode == "exact_current_article"
+                    else "projected_article"
+                )
+            action_labels = {
+                "fixed_contract": "Repair Review Prompt Contract",
+                "trusted_editorial_context": (
+                    "Reduce Governed Review Context"
+                ),
+                "sealed_source_record": "Trim and Reseal Source Pack",
+                "projected_article": "Reduce Context Before Drafting",
+                "projected_report_allowance": (
+                    "Reduce Context Before Drafting"
+                ),
+                "current_article": (
+                    "Preserve Draft; Repair Article Context"
+                ),
+                "prior_report": (
+                    "Preserve Draft; Compact Prior Review"
+                ),
+                "truth_packet": (
+                    "Preserve Draft; Repair Truth-Review Context"
+                ),
+            }
+            action_label = action_labels.get(
+                failure_layer,
+                (
+                    "Preserve Draft; Repair Review Context"
+                    if projection_mode == "exact_current_article"
+                    else "Reduce Context Before Drafting"
+                ),
+            )
+            requires_reseal = failure_layer == "sealed_source_record"
+            if projection_mode == "exact_current_article":
+                boundary_instruction = (
+                    "No further paid request may start. The current draft "
+                    "and its immutable usage ledger remain preserved. "
+                )
+            else:
+                boundary_instruction = (
+                    "No paid drafting call may start. "
+                )
+            if requires_reseal:
+                recovery_instruction = (
+                    "Trim low-value claims and oversized artifact excerpts, "
+                    "reseal the source pack, and create a fresh transaction "
+                    "without deleting the blocked transaction."
+                )
+            elif projection_mode == "exact_current_article":
+                recovery_instruction = (
+                    "Repair the identified review-context layer through an "
+                    "owned deterministic path; do not discard the draft or "
+                    "buy a replacement draft."
+                )
+            else:
+                recovery_instruction = (
+                    "Reduce the identified governed context or the enforced "
+                    "draft-route output cap before starting the transaction. "
+                    "Never weaken only the preflight allowance."
+                )
             blockers.append({
                 "id": "PROMPT-BUDGET",
                 "issue": (
                     "The locked call path is not executable end to end: the "
                     "independent-review context is projected at approximately "
                     f"{estimated_review_tokens:,} tokens against the "
-                    f"{ceiling:,}-token pre-call ceiling. No paid drafting "
-                    "call may start. Trim low-value claims and oversized "
-                    "artifact excerpts, reseal the source pack, and create a "
-                    "fresh transaction."
+                    f"{ceiling:,}-token pre-call ceiling. "
+                    + boundary_instruction
+                    + recovery_instruction
                 ),
                 "estimated_tokens": estimated_review_tokens,
                 "ceiling_tokens": ceiling,
+                "excess_tokens": estimated_review_tokens - ceiling,
                 "projection_mode": projection_mode,
+                "failure_layer": failure_layer or "combined_context",
+                "recovery_scope": action_label,
+                "action_label": action_label,
+                "requires_reseal": requires_reseal,
+                "requires_fresh_transaction": requires_reseal,
+                "paid_recovery_authorized": False,
+                "fixed_contract_tokens": layer_estimates[
+                    "fixed_contract"
+                ],
+                "trusted_editorial_tokens": layer_estimates[
+                    "trusted_editorial_context"
+                ],
+                "sealed_source_tokens": layer_estimates[
+                    "sealed_source_record"
+                ],
+                "article_context_tokens": layer_estimates[
+                    "article_context"
+                ],
+                "report_context_tokens": layer_estimates[
+                    "prior_report"
+                ],
+                "truth_packet_context_tokens": layer_estimates[
+                    "truth_packet"
+                ],
                 "article_allowance_tokens": article_allowance_tokens,
                 "report_allowance_tokens": report_allowance_tokens,
             })
@@ -2718,6 +2935,7 @@ class WorkbenchEngine:
         if not blockers:
             return []
         blocked_stage = project["stage"]
+        usage_before_block = self.usage_summary(project["id"])
         self._set_stage(project["id"], "admin_review")
         self._event(
             project["id"],
@@ -2728,7 +2946,12 @@ class WorkbenchEngine:
                 "blocked_stage": blocked_stage,
                 "blockers": blockers,
                 "operator_decision_required": False,
-                "paid_call_started": False,
+                "paid_calls_before_block": usage_before_block["calls"],
+                "paid_attempts_before_block": usage_before_block["attempts"],
+                "paid_call_started": bool(
+                    usage_before_block["calls"]
+                ),
+                "paid_call_started_for_blocked_stage": False,
             },
         )
         return blockers
@@ -4562,29 +4785,47 @@ class WorkbenchEngine:
                 project["source_text"], project["platform"]
             ),
         )
+        source_excerpts = []
+        excerpt_ids = {}
+        candidates = []
+        for item in truth_audit["review_candidates"]:
+            excerpt_key = (
+                item["best_source_id"],
+                item.get("best_source_artifact_id") or "",
+                item["best_source_excerpt"],
+            )
+            excerpt_id = excerpt_ids.get(excerpt_key)
+            if excerpt_id is None:
+                excerpt_id = f"E-{len(source_excerpts) + 1}"
+                excerpt_ids[excerpt_key] = excerpt_id
+                source_excerpts.append({
+                    "excerpt_id": excerpt_id,
+                    "source_id": item["best_source_id"],
+                    "artifact_id": (
+                        item.get("best_source_artifact_id") or ""
+                    ),
+                    "text": item["best_source_excerpt"],
+                })
+            candidates.append({
+                "sentence_id": item["sentence_id"],
+                "exact_text": item["exact_text"],
+                "best_source_id": item["best_source_id"],
+                "allowed_source_ids": sorted({
+                    source_id
+                    for source_id in (
+                        item["best_source_id"],
+                        item.get("best_source_artifact_id") or "",
+                    )
+                    if source_id
+                }),
+                "best_source_excerpt_id": excerpt_id,
+            })
         truth_packet = {
             "candidate_set_hash": truth_audit[
                 "review_candidate_set_hash"
             ],
-            "candidates": [
-                {
-                    "sentence_id": item["sentence_id"],
-                    "exact_text": item["exact_text"],
-                    "best_source_id": item["best_source_id"],
-                    "allowed_source_ids": sorted({
-                        source_id
-                        for source_id in (
-                            item["best_source_id"],
-                            item.get("best_source_artifact_id") or "",
-                        )
-                        if source_id
-                    }),
-                    "best_source_excerpt": item[
-                        "best_source_excerpt"
-                    ],
-                }
-                for item in truth_audit["review_candidates"]
-            ],
+            "source_excerpts": source_excerpts,
+            "candidates": candidates,
         }
         return truth_audit, truth_packet
 

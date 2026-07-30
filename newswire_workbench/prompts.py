@@ -555,6 +555,7 @@ def compliance_prompt(source_text: str, article: str, platform: str,
     truth_packet = json.dumps(
         editorial_truth_packet or {
             "candidate_set_hash": "",
+            "source_excerpts": [],
             "candidates": [],
         },
         ensure_ascii=False,
@@ -714,7 +715,11 @@ Review all applicable categories:
     evidence. Return exactly one decision for every candidate ID and echo the
     packet hash. `source_supported` requires at least one supplied
     `allowed_source_ids` value whose excerpt or artifact entails the entire
-    sentence, not merely shares a topic. Use `non_material`
+    sentence, not merely shares a topic. Shared `source_excerpts` are included
+    once by ID; follow each candidate's `best_source_excerpt_id` to inspect
+    its exact excerpt. Excerpt IDs are lookup-only, are not
+    `allowed_source_ids`, and must never be returned in `source_ids`. Use
+    `non_material`
     only for pure navigation, disclosure, question, or reader advice that
     asserts no product fact. Use `unsupported` for any invented bridge fact,
     and provide a mandatory exact replacement or deletion.

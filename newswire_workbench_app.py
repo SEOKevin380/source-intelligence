@@ -14,6 +14,15 @@ st.set_page_config(page_title="Newswire Compliance Workbench", page_icon="📰",
 st.title("Newswire Compliance Workbench")
 st.caption("Sealed source pack → routed draft → independent compliance → bounded repair → SEO regression → approved package")
 
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_admin_review_action(
+    workbench_root, project_id, project_updated_at
+):
+    """Cache only the explicitly selected durable action."""
+    return WorkbenchEngine(workbench_root).admin_review_action(project_id)
+
+
 engine = WorkbenchEngine()
 caps = engine.capabilities()
 
@@ -46,7 +55,7 @@ with st.sidebar:
         except Exception as exc:
             st.error(str(exc))
 
-_stuck = engine.admin_review_queue()
+_stuck = engine.admin_review_queue(resolve_actions=False)
 if _stuck:
     _oldest = max((item.get("age_hours") or 0) for item in _stuck)
     with st.expander(
@@ -64,21 +73,29 @@ if _stuck:
         _queue_id = st.selectbox(
             "Waiting transaction",
             list(_queue_labels),
+            index=None,
+            placeholder="Select a transaction to inspect",
             format_func=_queue_labels.get,
             key="admin_review_queue_project",
         )
-        _queue_item = next(
-            item for item in _stuck
-            if item["project_id"] == _queue_id
-        )
-        st.markdown(f"**{_queue_item['action_label']}**")
-        st.caption(_queue_item["action_reason"])
-        if st.button(
-            "Open waiting transaction",
-            key=f"open_admin_review_{_queue_id}",
-        ):
-            st.session_state.project_id = _queue_id
-            st.rerun()
+        if _queue_id:
+            _queue_item = next(
+                item for item in _stuck
+                if item["project_id"] == _queue_id
+            )
+            _queue_action = _cached_admin_review_action(
+                str(engine.root),
+                _queue_id,
+                _queue_item["updated_at"],
+            )
+            st.markdown(f"**{_queue_action['label']}**")
+            st.caption(_queue_action["reason"])
+            if st.button(
+                "Open waiting transaction",
+                key=f"open_admin_review_{_queue_id}",
+            ):
+                st.session_state.project_id = _queue_id
+                st.rerun()
 
 projects = engine.list_projects()
 if not projects:

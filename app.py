@@ -31,10 +31,22 @@ st.set_page_config(
 
 @st.cache_data(ttl=30, show_spinner=False)
 def _cached_admin_review_queue(workbench_root):
-    """Avoid recomputing every historical transaction on each app rerun."""
+    """Cache queue metadata without auditing every waiting transaction."""
     from newswire_workbench import WorkbenchEngine
 
-    return WorkbenchEngine(workbench_root).admin_review_queue()
+    return WorkbenchEngine(workbench_root).admin_review_queue(
+        resolve_actions=False
+    )
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_admin_review_action(
+    workbench_root, project_id, project_updated_at
+):
+    """Cache one selected action until its durable project changes."""
+    from newswire_workbench import WorkbenchEngine
+
+    return WorkbenchEngine(workbench_root).admin_review_action(project_id)
 
 
 # ── Dark theme CSS overrides ──
@@ -331,26 +343,42 @@ if _global_admin_queue:
         _selected_admin_id = st.selectbox(
             "Waiting transaction",
             list(_admin_labels),
+            index=None,
+            placeholder="Select a transaction to inspect",
             format_func=_admin_labels.get,
             key="source_intelligence_admin_review_queue",
         )
-        _selected_admin = next(
-            item for item in _global_admin_queue
-            if item["project_id"] == _selected_admin_id
-        )
-        st.markdown(f"**{_selected_admin['action_label']}**")
-        st.caption(_selected_admin["action_reason"])
-        st.caption(
-            "Project "
-            f"`{_selected_admin['project_id']}` · "
-            f"{_selected_admin['vertical']} · "
-            "paid call allowed: "
-            + (
-                "yes"
-                if _selected_admin["may_start_paid_call"]
-                else "no"
+        if _selected_admin_id:
+            _selected_admin = next(
+                item for item in _global_admin_queue
+                if item["project_id"] == _selected_admin_id
             )
-        )
+            try:
+                _selected_admin_action = _cached_admin_review_action(
+                    str(NEWSWIRE_WORKBENCH_PATH),
+                    _selected_admin_id,
+                    _selected_admin["updated_at"],
+                )
+            except Exception as _admin_action_error:
+                _selected_admin_action = {
+                    "action": "human_decision",
+                    "label": "Review Required",
+                    "reason": f"Action lookup failed: {_admin_action_error}",
+                    "may_start_paid_call": False,
+                }
+            st.markdown(f"**{_selected_admin_action['label']}**")
+            st.caption(_selected_admin_action["reason"])
+            st.caption(
+                "Project "
+                f"`{_selected_admin['project_id']}` · "
+                f"{_selected_admin['vertical']} · "
+                "paid call allowed: "
+                + (
+                    "yes"
+                    if _selected_admin_action["may_start_paid_call"]
+                    else "no"
+                )
+            )
 
 st.sidebar.markdown("---")
 

@@ -11,7 +11,9 @@ from newswire_workbench.engine import (
     WORKBENCH_RUNTIME_REVISION,
     WORKBENCH_SOURCE_CONTEXT_VERSION,
     WorkbenchEngine,
+    _estimate_prompt_tokens,
     _pack_fact_source_hash,
+    _review_context_layer_estimates,
     _source_affiliate_link,
 )
 from newswire_workbench.prompts import detect_vertical
@@ -5828,6 +5830,44 @@ def test_prompt_budget_discriminates_normal_and_oversized_packs(tmp_path):
         prompt_budget["article_allowance_tokens"]
         == route_for("draft", "device").max_tokens
     )
+    assert prompt_budget["failure_layer"] == "sealed_source_record"
+    assert prompt_budget["requires_reseal"] is True
+    assert prompt_budget["action_label"] == "Trim and Reseal Source Pack"
+
+
+def test_prompt_budget_allowance_cannot_undercut_draft_route(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv(
+        "NEWSWIRE_PREFLIGHT_ARTICLE_ALLOWANCE_TOKENS", "1"
+    )
+    engine = WorkbenchEngine(tmp_path)
+    project_id = engine.create_project_from_pack(
+        _prompt_budget_pack("Oversized route-cap fact " * 1000),
+        "AccessNewsWire",
+        force_new=True,
+    )
+    project = engine.get(project_id)
+    draft_route = route_for("draft", project["vertical"])
+    expected_prompt = compliance_prompt(
+        project["source_text"],
+        "x" * (draft_route.max_tokens * 4),
+        project["platform"],
+        project["vertical"],
+    )
+
+    prompt_budget = next(
+        item
+        for item in engine._prepaid_contract_blockers(project)
+        if item["id"] == "PROMPT-BUDGET"
+    )
+
+    assert prompt_budget["article_allowance_tokens"] == (
+        draft_route.max_tokens
+    )
+    assert prompt_budget["estimated_tokens"] == (
+        _estimate_prompt_tokens(expected_prompt)
+    )
 
 
 @pytest.mark.parametrize("entrypoint", ["run_next", "run_to_completion"])
@@ -5916,3 +5956,443 @@ def test_admin_review_queue_empty_when_nothing_is_stuck(tmp_path):
         "Official URL: https://example.com\nProduct: Device",
     )
     assert engine.admin_review_queue() == []
+
+
+def test_admin_review_queue_light_mode_never_resolves_actions(
+    tmp_path, monkeypatch,
+):
+    engine = WorkbenchEngine(tmp_path)
+    project_ids = []
+    for index in range(2):
+        project_id = engine.create_project(
+            f"Waiting Release {index}",
+            "AccessNewsWire",
+            f"Official URL: https://example.com/{index}\nProduct: Device",
+        )
+        engine._set_stage(project_id, "admin_review")
+        project_ids.append(project_id)
+
+    def forbidden_heavy_lookup(*_args, **_kwargs):
+        pytest.fail("Queue metadata must not resolve full project actions")
+
+    monkeypatch.setattr(engine, "run_action", forbidden_heavy_lookup)
+    monkeypatch.setattr(
+        engine, "article_diagnostics", forbidden_heavy_lookup
+    )
+    monkeypatch.setattr(engine, "offline_preflight", forbidden_heavy_lookup)
+
+    queue = engine.admin_review_queue(resolve_actions=False)
+
+    assert {item["project_id"] for item in queue} == set(project_ids)
+    assert all(item["age_hours"] is not None for item in queue)
+    assert all("action" not in item for item in queue)
+    assert all("action_label" not in item for item in queue)
+
+
+def test_admin_review_action_resolves_only_selected_locked_row(
+    tmp_path, monkeypatch,
+):
+    engine = WorkbenchEngine(tmp_path)
+    selected_id = engine.create_project_from_pack(
+        _prompt_budget_pack("Selected literal fact"),
+        "AccessNewsWire",
+        force_new=True,
+    )
+    other_id = engine.create_project_from_pack(
+        _prompt_budget_pack(
+            "Other literal fact", product_name="Other Device"
+        ),
+        "AccessNewsWire",
+        force_new=True,
+    )
+    engine._set_stage(selected_id, "admin_review")
+    engine._set_stage(other_id, "admin_review")
+    calls = []
+
+    def owned_action(project_id, workflow_version=""):
+        calls.append((project_id, workflow_version))
+        return {
+            "action": "human_decision",
+            "label": "Selected Action",
+            "reason": "Resolved once.",
+            "may_start_paid_call": False,
+        }
+
+    monkeypatch.setattr(engine, "run_action", owned_action)
+
+    queue = engine.admin_review_queue(resolve_actions=False)
+    assert len(queue) == 2
+    action = engine.admin_review_action(selected_id)
+
+    assert action["label"] == "Selected Action"
+    assert calls == [
+        (selected_id, WORKBENCH_SOURCE_CONTEXT_VERSION)
+    ]
+
+
+def test_editorial_truth_packet_deduplicates_shared_excerpts_losslessly(
+    tmp_path, monkeypatch,
+):
+    engine = WorkbenchEngine(tmp_path)
+    project_id = engine.create_project_from_pack(
+        _prompt_budget_pack("Shared excerpt fact"),
+        "AccessNewsWire",
+        force_new=True,
+    )
+    shared_excerpt = "A complete source excerpt " * 80
+
+    def fake_truth_audit(_pack, _article, _affiliate):
+        return {
+            "review_candidate_set_hash": "candidate-hash",
+            "review_candidates": [
+                {
+                    "sentence_id": f"S-{index}",
+                    "exact_text": f"Candidate sentence {index}.",
+                    "best_source_id": "claim-1",
+                    "best_source_artifact_id": "artifact-1",
+                    "best_source_excerpt": shared_excerpt,
+                }
+                for index in range(12)
+            ],
+        }
+
+    monkeypatch.setattr(
+        "newswire_workbench.editorial_truth.audit_editorial_truth",
+        fake_truth_audit,
+    )
+
+    _audit, packet = engine._editorial_truth_packet(
+        engine.get(project_id)
+    )
+
+    assert len(packet["source_excerpts"]) == 1
+    assert packet["source_excerpts"][0]["text"] == shared_excerpt
+    assert len(packet["candidates"]) == 12
+    assert {
+        item["best_source_excerpt_id"]
+        for item in packet["candidates"]
+    } == {"E-1"}
+    assert all(
+        "best_source_excerpt" not in item
+        for item in packet["candidates"]
+    )
+    assert json.dumps(packet).count(shared_excerpt) == 1
+
+
+def test_lossless_truth_packet_compaction_removes_residual_band_amplifier(
+    tmp_path, monkeypatch,
+):
+    engine = WorkbenchEngine(tmp_path)
+    project_id = engine.create_project_from_pack(
+        _prompt_budget_pack("Residual-band fact"),
+        "AccessNewsWire",
+        force_new=True,
+    )
+    article = "".join(
+        f"<p>Material candidate sentence {index}.</p>"
+        for index in range(80)
+    )
+    engine._set_article(
+        engine.get(project_id), article, "drafted", "draft.html"
+    )
+    shared_excerpt = "Complete retained evidence excerpt. " * 60
+    fake_candidates = [
+        {
+            "sentence_id": f"S-{index}",
+            "exact_text": f"Material candidate sentence {index}.",
+            "best_source_id": "claim-shared",
+            "best_source_artifact_id": "artifact-shared",
+            "best_source_excerpt": shared_excerpt,
+        }
+        for index in range(80)
+    ]
+
+    def fake_truth_audit(_pack, _article, _affiliate):
+        return {
+            "review_candidate_set_hash": "residual-band-hash",
+            "review_candidates": fake_candidates,
+        }
+
+    monkeypatch.setattr(
+        "newswire_workbench.editorial_truth.audit_editorial_truth",
+        fake_truth_audit,
+    )
+    project = engine.get(project_id)
+    _audit, compact_packet = engine._editorial_truth_packet(project)
+    repeated_packet = {
+        "candidate_set_hash": "residual-band-hash",
+        "candidates": [
+            {
+                "sentence_id": item["sentence_id"],
+                "exact_text": item["exact_text"],
+                "best_source_id": item["best_source_id"],
+                "allowed_source_ids": [
+                    "artifact-shared", "claim-shared"
+                ],
+                "best_source_excerpt": shared_excerpt,
+            }
+            for item in fake_candidates
+        ],
+    }
+    compact_prompt = compliance_prompt(
+        project["source_text"],
+        project["article_text"],
+        project["platform"],
+        project["vertical"],
+        editorial_truth_packet=compact_packet,
+    )
+    repeated_prompt = compliance_prompt(
+        project["source_text"],
+        project["article_text"],
+        project["platform"],
+        project["vertical"],
+        editorial_truth_packet=repeated_packet,
+    )
+    compact_tokens = _estimate_prompt_tokens(compact_prompt)
+    repeated_tokens = _estimate_prompt_tokens(repeated_prompt)
+    assert repeated_tokens > compact_tokens * 2
+    ceiling = (compact_tokens + repeated_tokens) // 2
+    monkeypatch.setenv("NEWSWIRE_PROMPT_TOKEN_CEILING", str(ceiling))
+
+    blockers = engine._prepaid_contract_blockers(project)
+
+    assert "PROMPT-BUDGET" not in {
+        item["id"] for item in blockers
+    }
+    assert json.dumps(compact_packet).count(shared_excerpt) == 1
+
+
+def test_exact_prompt_budget_classifies_article_without_reseal(
+    tmp_path, monkeypatch,
+):
+    engine = WorkbenchEngine(tmp_path)
+    project_id = engine.create_project_from_pack(
+        _prompt_budget_pack("Exact-context fact"),
+        "AccessNewsWire",
+        force_new=True,
+    )
+    article = "<p>" + ("Long exact article sentence. " * 1800) + "</p>"
+    engine._set_article(
+        engine.get(project_id), article, "drafted", "draft.html"
+    )
+    empty_truth_packet = {
+        "candidate_set_hash": "",
+        "source_excerpts": [],
+        "candidates": [],
+    }
+    monkeypatch.setattr(
+        engine,
+        "_editorial_truth_packet",
+        lambda _project: ({}, empty_truth_packet),
+    )
+    project = engine.get(project_id)
+    layers = _review_context_layer_estimates(
+        project,
+        article=article,
+        editorial_truth_packet=empty_truth_packet,
+        final=False,
+    )
+    assert layers["article_context"] > layers["sealed_source_record"]
+    ceiling = (
+        layers["sealed_source_record"]
+        + layers["article_context"]
+    ) // 2
+    monkeypatch.setenv("NEWSWIRE_PROMPT_TOKEN_CEILING", str(ceiling))
+
+    prompt_budget = next(
+        item
+        for item in engine._prepaid_contract_blockers(project)
+        if item["id"] == "PROMPT-BUDGET"
+    )
+
+    assert prompt_budget["projection_mode"] == "exact_current_article"
+    assert prompt_budget["failure_layer"] == "current_article"
+    assert prompt_budget["requires_reseal"] is False
+    assert prompt_budget["requires_fresh_transaction"] is False
+    assert prompt_budget["action_label"] == (
+        "Preserve Draft; Repair Article Context"
+    )
+    assert "No further paid request may start" in prompt_budget["issue"]
+    assert "No paid drafting call may start" not in prompt_budget["issue"]
+    action = engine.run_action(
+        project_id, WORKBENCH_SOURCE_CONTEXT_VERSION
+    )
+    assert action["action"] == "system_blocked"
+    assert action["label"] == "Preserve Draft; Repair Article Context"
+    assert action["may_start_paid_call"] is False
+
+
+def test_postdraft_prompt_block_records_prior_paid_usage_truthfully(
+    tmp_path, monkeypatch,
+):
+    engine = WorkbenchEngine(tmp_path)
+    project_id = engine.create_project_from_pack(
+        _prompt_budget_pack("Preserved draft fact"),
+        "AccessNewsWire",
+        force_new=True,
+    )
+    article = "<p>" + ("Preserved article sentence. " * 1600) + "</p>"
+    engine._set_article(
+        engine.get(project_id), article, "drafted", "draft.html"
+    )
+    empty_truth_packet = {
+        "candidate_set_hash": "",
+        "source_excerpts": [],
+        "candidates": [],
+    }
+    monkeypatch.setattr(
+        engine,
+        "_editorial_truth_packet",
+        lambda _project: ({}, empty_truth_packet),
+    )
+    project = engine.get(project_id)
+    layers = _review_context_layer_estimates(
+        project,
+        article=article,
+        editorial_truth_packet=empty_truth_packet,
+        final=False,
+    )
+    ceiling = (
+        layers["sealed_source_record"]
+        + layers["article_context"]
+    ) // 2
+    monkeypatch.setenv("NEWSWIRE_PROMPT_TOKEN_CEILING", str(ceiling))
+    engine._record_llm_call(
+        project_id,
+        "draft",
+        route_for("draft", "device"),
+        input_tokens=100,
+        output_tokens=100,
+        status="success",
+    )
+
+    blockers = engine._quarantine_prepaid_contract_blockers(
+        engine.get(project_id)
+    )
+
+    assert "PROMPT-BUDGET" in {item["id"] for item in blockers}
+    assert engine.usage_summary(project_id)["calls"] == 1
+    event = next(
+        event
+        for event in reversed(engine.events(project_id))
+        if event["event_type"] == "prepaid_contract_blocked"
+    )
+    payload = json.loads(event["payload"])
+    assert payload["blocked_stage"] == "drafted"
+    assert payload["paid_calls_before_block"] == 1
+    assert payload["paid_attempts_before_block"] == 1
+    assert payload["paid_call_started"] is True
+    assert payload["paid_call_started_for_blocked_stage"] is False
+
+
+def test_exact_prompt_budget_keeps_reseal_for_source_layer_overflow(
+    tmp_path, monkeypatch,
+):
+    engine = WorkbenchEngine(tmp_path)
+    project_id = engine.create_project_from_pack(
+        _prompt_budget_pack("Oversized source fact " * 1000),
+        "AccessNewsWire",
+        force_new=True,
+    )
+    engine._set_article(
+        engine.get(project_id),
+        "<p>Short preserved draft.</p>",
+        "drafted",
+        "draft.html",
+    )
+    empty_truth_packet = {
+        "candidate_set_hash": "",
+        "source_excerpts": [],
+        "candidates": [],
+    }
+    monkeypatch.setattr(
+        engine,
+        "_editorial_truth_packet",
+        lambda _project: ({}, empty_truth_packet),
+    )
+
+    prompt_budget = next(
+        item
+        for item in engine._prepaid_contract_blockers(
+            engine.get(project_id)
+        )
+        if item["id"] == "PROMPT-BUDGET"
+    )
+
+    assert prompt_budget["projection_mode"] == "exact_current_article"
+    assert prompt_budget["failure_layer"] == "sealed_source_record"
+    assert prompt_budget["requires_reseal"] is True
+    assert prompt_budget["action_label"] == "Trim and Reseal Source Pack"
+
+
+def test_exact_prompt_budget_classifies_truth_packet_without_reseal(
+    tmp_path, monkeypatch,
+):
+    engine = WorkbenchEngine(tmp_path)
+    project_id = engine.create_project_from_pack(
+        _prompt_budget_pack("Truth-packet fact"),
+        "AccessNewsWire",
+        force_new=True,
+    )
+    engine._set_article(
+        engine.get(project_id),
+        "<p>One preserved candidate sentence.</p>",
+        "drafted",
+        "draft.html",
+    )
+    truth_packet = {
+        "candidate_set_hash": "large-truth-packet",
+        "source_excerpts": [
+            {
+                "excerpt_id": "E-1",
+                "source_id": "claim-1",
+                "artifact_id": "artifact-1",
+                "text": "Unique retained evidence " * 1800,
+            }
+        ],
+        "candidates": [
+            {
+                "sentence_id": "S-1",
+                "exact_text": "One preserved candidate sentence.",
+                "best_source_id": "claim-1",
+                "allowed_source_ids": ["artifact-1", "claim-1"],
+                "best_source_excerpt_id": "E-1",
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        engine,
+        "_editorial_truth_packet",
+        lambda _project: ({}, truth_packet),
+    )
+    project = engine.get(project_id)
+    layers = _review_context_layer_estimates(
+        project,
+        article=project["article_text"],
+        editorial_truth_packet=truth_packet,
+        final=False,
+    )
+    assert layers["truth_packet"] > layers["prior_report"]
+    ceiling = (
+        layers["prior_report"] + layers["truth_packet"]
+    ) // 2
+    monkeypatch.setenv("NEWSWIRE_PROMPT_TOKEN_CEILING", str(ceiling))
+
+    prompt_budget = next(
+        item
+        for item in engine._prepaid_contract_blockers(project)
+        if item["id"] == "PROMPT-BUDGET"
+    )
+
+    assert prompt_budget["failure_layer"] == "truth_packet"
+    assert prompt_budget["requires_reseal"] is False
+    assert prompt_budget["action_label"] == (
+        "Preserve Draft; Repair Truth-Review Context"
+    )
+    action = engine.run_action(
+        project_id, WORKBENCH_SOURCE_CONTEXT_VERSION
+    )
+    assert action["action"] == "system_blocked"
+    assert action["label"] == (
+        "Preserve Draft; Repair Truth-Review Context"
+    )
